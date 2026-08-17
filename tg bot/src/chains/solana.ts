@@ -227,15 +227,25 @@ export async function sendAndConfirm(
  * A confirmation timeout is not proof that a transaction failed — it may simply
  * be slow. Re-sending on that assumption is how one intended buy becomes two, so
  * anything that retries a spend checks here first.
+ *
+ * `unknown` is deliberately distinct from `missing`. If the status cannot be
+ * read, the transaction may well be in flight, and a caller that treats "could
+ * not check" as "did not land" reintroduces exactly the double-spend this guards
+ * against. Not trading is recoverable; trading twice is not.
  */
-export async function signatureLanded(signature: string): Promise<boolean> {
+export type SignatureState = 'landed' | 'missing' | 'unknown';
+
+export async function signatureLanded(signature: string): Promise<SignatureState> {
   try {
-    const { value } = await rpc().getSignatureStatuses([signature]);
+    const { value } = await retry(() => rpc().getSignatureStatuses([signature]), { attempts: 3 });
     const status = value[0];
-    if (!status || status.err) return false;
-    return status.confirmationStatus === 'confirmed' || status.confirmationStatus === 'finalized';
+    if (!status) return 'missing';
+    if (status.err) return 'missing';
+    return status.confirmationStatus === 'confirmed' || status.confirmationStatus === 'finalized'
+      ? 'landed'
+      : 'unknown';
   } catch {
-    return false;
+    return 'unknown';
   }
 }
 
@@ -331,7 +341,7 @@ export async function sweepSol(
   reserveSol: number,
   priorityFeeSol: number,
 ): Promise<{ signature: string; sol: number } | null> {
-  const lamports = BigInt(await rpc().getBalance(from.publicKey));
+  const lamports = BigInt(await retry(() => rpc().getBalance(from.publicKey), { attempts: 3 }));
 
   const priorityLamports = BigInt(Math.floor(priorityFeeSol * LAMPORTS));
   const reserveLamports = BigInt(Math.floor(reserveSol * LAMPORTS));

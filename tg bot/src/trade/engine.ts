@@ -208,8 +208,18 @@ async function tradeOneWallet(
 
     const signature = await retry(
       async () => {
-        // a retry after a timeout must not spend again if the first attempt landed
-        if (lastSignature && (await signatureLanded(lastSignature))) return lastSignature;
+        if (lastSignature) {
+          // a retry after a timeout must not spend again if the first attempt
+          // landed — nor if we simply cannot tell whether it did
+          const state = await signatureLanded(lastSignature);
+          if (state === 'landed') return lastSignature;
+          if (state === 'unknown') {
+            throw new Error(
+              `Sent ${lastSignature.slice(0, 12)}… but could not confirm it. Not retried, ` +
+                'to avoid trading twice — check the wallet before trying again.',
+            );
+          }
+        }
 
         // rebuilt each attempt so the blockhash is fresh
         const tx = lastSignature === undefined ? built : await buildTrade(args);

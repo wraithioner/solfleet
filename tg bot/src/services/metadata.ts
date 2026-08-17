@@ -1,6 +1,6 @@
 import { PublicKey } from '@solana/web3.js';
 import { rpc } from '../chains/solana.js';
-import { fetchJson } from '../util.js';
+import { fetchJson, retry } from '../util.js';
 
 /**
  * On-chain token metadata, for the window where a token exists but no indexer
@@ -34,9 +34,15 @@ function readString(buf: Buffer, offset: number): { value: string; next: number 
   return { value: raw.replace(/\0+$/, '').trim(), next: start + len };
 }
 
-/** Reads name/symbol/uri from the Metaplex metadata account. */
+/**
+ * Reads name/symbol/uri from the Metaplex metadata account.
+ *
+ * Retried, because this is the only name a token has in the minutes before an
+ * indexer picks it up — losing it to one dropped connection leaves the card
+ * showing "Unknown token" for exactly the launches worth looking at.
+ */
 export async function getOnChainMetadata(mint: string): Promise<TokenMetadata | null> {
-  const info = await rpc().getAccountInfo(metadataPda(new PublicKey(mint)));
+  const info = await retry(() => rpc().getAccountInfo(metadataPda(new PublicKey(mint))), { attempts: 3 });
   if (!info) return null;
 
   const buf = Buffer.from(info.data);

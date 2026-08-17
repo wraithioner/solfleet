@@ -1,5 +1,6 @@
 import { PublicKey } from '@solana/web3.js';
 import { rpc, LAMPORTS } from '../chains/solana.js';
+import { retry } from '../util.js';
 
 /**
  * Direct reads of the pump.fun bonding curve.
@@ -37,9 +38,18 @@ export function bondingCurvePda(mint: string): PublicKey {
   return pda;
 }
 
-/** Returns null when the mint was never a pump.fun token. */
+/**
+ * Returns null when the mint was never a pump.fun token.
+ *
+ * The retry matters more than it looks: callers treat a throw as "not a pump.fun
+ * token", so a dropped connection would render a live curve token as an ordinary
+ * SPL one — no progress bar, no graduation warning, and no batch simulation on
+ * the buy screen. A wrong answer is worse than a slow one.
+ */
 export async function fetchBondingCurve(mint: string): Promise<BondingCurve | null> {
-  const info = await rpc().getAccountInfo(bondingCurvePda(mint));
+  // two attempts, not more: this sits in front of the buy confirmation screen
+  // with the operator waiting, and a dropped connection is usually a one-off
+  const info = await retry(() => rpc().getAccountInfo(bondingCurvePda(mint)), { attempts: 2 });
   if (!info || info.data.length < 49) return null;
 
   const buf = Buffer.from(info.data);
