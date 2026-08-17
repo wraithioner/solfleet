@@ -125,37 +125,72 @@ export function buyPriceImpact(curve: BondingCurve, solIn: number): number {
   return (effective - spot) / spot;
 }
 
+export interface BatchBuySimulation {
+  totalTokens: number;
+  totalSol: number;
+  /** Spot price before the first wallet buys. */
+  startPrice: number;
+  /** Spot price after the last wallet has bought. */
+  finalPrice: number;
+  /** What the batch actually paid per token, across every wallet. */
+  avgPrice: number;
+  /** How far the batch walks the curve up, as a percentage. */
+  priceMovePct: number;
+  /** How much worse the average fill is than the price on screen, as a percentage. */
+  avgVsSpotPct: number;
+  /** Tokens the first and last wallet receive — the spread the operator feels. */
+  firstWalletTokens: number;
+  lastWalletTokens: number;
+}
+
 /**
  * Simulate N wallets buying `solEach` one after another, so the UI can show the
  * true aggregate cost rather than N times the first wallet's quote.
+ *
+ * Every number the confirmation screen needs comes from here, so the maths lives
+ * in one testable place rather than being re-derived in the handler.
  */
 export function simulateSequentialBuys(
   curve: BondingCurve,
   solEach: number,
   wallets: number,
-): { totalTokens: number; totalSol: number; finalPrice: number; avgPrice: number } {
+): BatchBuySimulation {
   let vSol = curve.virtualSolReserves;
   let vTok = curve.virtualTokenReserves;
   let totalTokens = 0;
+  let firstWalletTokens = 0;
+  let lastWalletTokens = 0;
 
   const lamportsIn = BigInt(Math.floor(solEach * LAMPORTS));
   const afterFee = lamportsIn - (lamportsIn * FEE_BPS) / BPS;
+  const startPrice = curvePrice(curve);
 
   for (let i = 0; i < wallets; i++) {
     const out = (afterFee * vTok) / (vSol + afterFee);
-    totalTokens += Number(out) / 10 ** TOKEN_DECIMALS;
+    const tokens = Number(out) / 10 ** TOKEN_DECIMALS;
+
+    totalTokens += tokens;
+    if (i === 0) firstWalletTokens = tokens;
+    lastWalletTokens = tokens;
+
     vSol += afterFee;
     vTok -= out;
   }
 
   const totalSol = solEach * wallets;
   const finalPrice = Number(vSol) / LAMPORTS / (Number(vTok) / 10 ** TOKEN_DECIMALS);
+  const avgPrice = totalTokens > 0 ? totalSol / totalTokens : 0;
 
   return {
     totalTokens,
     totalSol,
+    startPrice,
     finalPrice,
-    avgPrice: totalTokens > 0 ? totalSol / totalTokens : 0,
+    avgPrice,
+    priceMovePct: startPrice > 0 ? ((finalPrice - startPrice) / startPrice) * 100 : 0,
+    avgVsSpotPct: startPrice > 0 && avgPrice > 0 ? ((avgPrice - startPrice) / startPrice) * 100 : 0,
+    firstWalletTokens,
+    lastWalletTokens,
   };
 }
 

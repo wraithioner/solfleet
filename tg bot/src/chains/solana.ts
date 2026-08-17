@@ -25,7 +25,7 @@ export const LAMPORTS = LAMPORTS_PER_SOL;
 export const WSOL_MINT = 'So11111111111111111111111111111111111111112';
 
 /** Base signature fee. Real cost is this times the number of signatures. */
-const BASE_FEE_LAMPORTS = 5000;
+export const BASE_FEE_LAMPORTS = 5000;
 
 let connection: Connection | null = null;
 let sendConnection: Connection | null = null;
@@ -120,6 +120,66 @@ export async function getTokenBalance(address: string, mint: string): Promise<Sp
   return all.find((h) => h.mint === mint) ?? null;
 }
 
+/**
+ * Raw amount held in an SPL token account, read straight from its data buffer.
+ * Layout: mint(32) || owner(32) || amount(u64 LE). Token-2022 keeps the same
+ * first 72 bytes and appends its extensions afterwards.
+ */
+export function parseTokenAccountAmount(data: Uint8Array): bigint {
+  if (data.length < 72) return 0n;
+  return Buffer.from(data.subarray(64, 72)).readBigUInt64LE(0);
+}
+
+/**
+ * How much of one mint each of many wallets holds.
+ *
+ * Deriving the associated token address and reading those accounts directly
+ * costs one RPC round trip per 100 wallets, where
+ * `getParsedTokenAccountsByOwner` costs one per wallet. That difference is the
+ * gap between a token card that renders instantly and one that takes ten
+ * seconds — or gets the operator rate limited mid-batch.
+ *
+ * The trade-off: this sees *associated* token accounts only. Every position
+ * these wallets can acquire through this bot lands in one — PumpPortal, Jupiter
+ * and the token sweep all use the associated account — but a balance parked in a
+ * non-associated account by some other tool reads here as zero. Use
+ * `getSplBalances` when an exhaustive answer matters more than the round trips.
+ */
+export async function getMintBalances(addresses: string[], mint: string): Promise<Map<string, bigint>> {
+  const out = new Map<string, bigint>();
+  if (addresses.length === 0) return out;
+
+  const mintKey = new PublicKey(mint);
+
+  // A mint belongs to exactly one token program, so classic is checked first and
+  // Token-2022 only when that turned up nothing at all.
+  for (const program of [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID]) {
+    const atas = addresses.map((a) =>
+      getAssociatedTokenAddressSync(mintKey, new PublicKey(a), true, program),
+    );
+
+    let found = false;
+    for (let i = 0; i < atas.length; i += 100) {
+      const slice = atas.slice(i, i + 100);
+      const infos = await retry(() => rpc().getMultipleAccountsInfo(slice), { attempts: 2 });
+
+      slice.forEach((_, j) => {
+        const info = infos[j];
+        if (!info) return;
+        const amount = parseTokenAccountAmount(info.data);
+        if (amount > 0n) {
+          out.set(addresses[i + j]!, amount);
+          found = true;
+        }
+      });
+    }
+
+    if (found) return out;
+  }
+
+  return out;
+}
+
 // ── transaction plumbing ──────────────────────────────────────────────────────
 
 export function priorityFeeInstructions(priorityFeeSol: number, computeUnits = 200_000): TransactionInstruction[] {
@@ -162,6 +222,24 @@ export async function sendAndConfirm(
 }
 
 /**
+ * Did this signature already land?
+ *
+ * A confirmation timeout is not proof that a transaction failed — it may simply
+ * be slow. Re-sending on that assumption is how one intended buy becomes two, so
+ * anything that retries a spend checks here first.
+ */
+export async function signatureLanded(signature: string): Promise<boolean> {
+  try {
+    const { value } = await rpc().getSignatureStatuses([signature]);
+    const status = value[0];
+    if (!status || status.err) return false;
+    return status.confirmationStatus === 'confirmed' || status.confirmationStatus === 'finalized';
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Poll for confirmation rather than using `confirmTransaction`, which subscribes
  * over websocket and tends to hang on providers that throttle subscriptions.
  */
@@ -201,6 +279,42 @@ export async function sendSol(
       toPubkey: new PublicKey(to),
       lamports,
     }),
+  ];
+
+  return sendAndConfirm(await buildAndSign(from, ixs));
+}
+
+/**
+ * Pay many recipients in a single transaction.
+ *
+ * Funding 50 wallets one transaction at a time costs 50 signature fees and 50
+ * confirmations; packing the transfers into one message costs one of each. The
+ * cap exists because a Solana transaction is limited to 1232 bytes and every
+ * recipient adds a 32-byte account key plus its instruction — 16 recipients
+ * serialises to 1004 bytes, which leaves real headroom rather than scraping the
+ * limit.
+ */
+export const MAX_TRANSFERS_PER_TX = 16;
+
+export async function sendSolBatch(
+  from: Keypair,
+  transfers: Array<{ to: string; lamports: bigint }>,
+  priorityFeeSol: number,
+): Promise<string> {
+  if (transfers.length === 0) throw new Error('Nothing to send.');
+  if (transfers.length > MAX_TRANSFERS_PER_TX) {
+    throw new Error(`At most ${MAX_TRANSFERS_PER_TX} transfers fit in one transaction.`);
+  }
+
+  const ixs = [
+    ...priorityFeeInstructions(priorityFeeSol, 10_000 + 5_000 * transfers.length),
+    ...transfers.map((t) =>
+      SystemProgram.transfer({
+        fromPubkey: from.publicKey,
+        toPubkey: new PublicKey(t.to),
+        lamports: t.lamports,
+      }),
+    ),
   ];
 
   return sendAndConfirm(await buildAndSign(from, ixs));

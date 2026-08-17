@@ -92,7 +92,19 @@ Surface these on the card, computed not guessed:
 - Sell 25/50/75/100% **from every selected wallet**.
 - "Sell Everything" — discover every distinct mint held across all wallets, then
   sell 100% of each, one mint at a time.
-- Route automatically: bonding curve while live, AMM once graduated.
+- Route automatically: bonding curve while live, AMM once graduated, **and the
+  aggregator for anything pump.fun cannot route at all**. PumpPortal answers HTTP
+  400 for any mint it does not know, which is the normal response for a plain SPL
+  token — an airdrop, a Raydium-only coin, the USDC a wallet was funded with.
+  Treating that 400 as the end of the story makes "sell everything" quietly mean
+  "sell everything that happens to be a live pump.fun token". Fall back to
+  Jupiter per wallet. A token still on its curve exists nowhere else, so skip the
+  fallback there rather than paying for a request that cannot succeed.
+- Before a sell, read every wallet's balance in **one batched call** and skip the
+  wallets holding nothing. Selling across 50 wallets when 3 hold the token should
+  not produce 47 failures. Distrust an entirely empty read — that is far more
+  likely to be a bad response than 50 genuinely empty wallets the operator just
+  asked to sell.
 - Two execution modes, switchable at runtime:
   - **parallel** — independent sends with bounded concurrency. One wallet
     failing costs nothing on the others.
@@ -108,18 +120,43 @@ Before confirming a buy, simulate the wallets buying *in sequence* against the
 live curve reserves and show the true aggregate: total tokens, average fill
 price, and how far the price moved.
 
-Reference figure from testing: 10 wallets × 0.5 SOL into a fresh curve moved the
-price **+35.7%**. Showing `N × spot_quote` instead would be a material lie to the
-operator at the exact moment they are committing funds.
+Reference figures from testing, 10 wallets × 0.5 SOL into a fresh curve: the
+price moves **+35.7%**, the average fill lands **+17.7%** above spot, and the
+first wallet receives **17.4M** tokens where the last receives **13.2M** for the
+identical 0.5 SOL. Showing `N × spot_quote` instead would be a material lie to
+the operator at the exact moment they are committing funds.
 
-### 2.6 Consolidation
+Every one of those numbers must reach the screen. Computing the price move and
+then not rendering it is the same failure as never computing it — put the
+arithmetic in one tested function rather than re-deriving it in the handler,
+and call out a move past ~25% in bold.
+
+### 2.6 Moving funds — both directions
+
+**Distribution** (main wallet → trading wallets). Batch buying is worthless if
+the wallets doing the buying hold no SOL, and funding fifty wallets by hand is
+the exact drudgery this tool exists to remove.
+
+- Send a fixed amount to every selected wallet, **or** top every wallet up to a
+  target and skip the ones already there.
+- Pack transfers into multi-recipient transactions. One transaction per wallet
+  costs a signature fee per wallet for no reason; 16 recipients serialise to
+  ~1004 bytes, comfortably inside the 1232-byte transaction limit.
+- Send those transactions **sequentially** — they all spend from one wallet, and
+  firing them concurrently races the source balance into "insufficient lamports".
+- Compute the whole plan and **refuse up front** if the source cannot cover it.
+  Half-funding a set and leaving the operator to work out which wallets missed
+  is worse than not starting.
+
+**Consolidation** (trading wallets → main wallet).
 
 - Sweep all SOL from every wallet into the main wallet.
 - Sweep any SPL token, **closing the emptied token account** to reclaim its rent.
 - Sweep native balance on any configured EVM chain.
 - Leave a configurable reserve behind per wallet so it can still pay fees later.
 - A wallet holding less than its own transfer cost is **skipped, not failed** —
-  that is a normal outcome of a sweep, not an error.
+  that is a normal outcome of a sweep, not an error. The same applies to a wallet
+  that is already funded during a top-up.
 
 ### 2.7 Wallet management
 
@@ -190,6 +227,7 @@ src/
     jito.ts            bundle submission and status polling
     curve.ts           bonding curve reads, quotes, sequential simulation
     jupiter.ts         aggregator swaps for graduated / general SPL
+    fund.ts            distribution: planning (pure) + batched execution
     engine.ts          batch execution across wallets
 
   services/
@@ -462,7 +500,17 @@ Ship three layers, wired to `npm run check`.
   tagged wallets; disabled wallets excluded; exactly one main wallet per kind
 - Curve: spot price sane; a buy fills below spot-implied (slippage); a round trip
   returns less than it cost but is not catastrophic; sequential simulation yields
-  fewer tokens than N × single quote and moves the price up
+  fewer tokens than N × single quote and moves the price up; the price-move
+  figure measures final against *starting* price; the average fill sits between
+  spot and the final price; the first wallet fills better than the last; a
+  one-wallet batch reduces exactly to the plain quote
+- Funding: a flat send gives every wallet the full amount; a top-up funds only
+  the shortfall and reports already-funded wallets as skipped rather than failed;
+  transfers pack into the expected number of transactions and cost per
+  transaction, not per wallet; a plan exceeding the source balance throws before
+  anything is signed; a zero amount is rejected
+- Token accounts: the balance is read from the right offset, and an empty or
+  truncated account reads as zero rather than throwing
 - Parsing: bare mint, mint in a sentence, mint in a pump.fun URL, EVM address;
   and rejection of a 44-char string that is not valid base58
 - `pMap` preserves input order under concurrency; `retry` backs off then succeeds
@@ -526,7 +574,12 @@ funds.
 - The bot boots, warns about a public RPC, and creates a vault on first `/start`
 - Pasting a token address returns a card with logo, market data, holder
   distribution and working buy/sell buttons
-- A batch buy shows a simulated average fill before the confirm tap
+- A batch buy shows the simulated average fill **and the price move** before the
+  confirm tap
+- One tap funds every wallet from the main wallet, in batched transactions, and
+  refuses outright if the main wallet cannot cover the plan
+- A sell reaches tokens that never launched on pump.fun, and reports wallets
+  holding none of it as skipped rather than failed
 - A sweep moves funds to the main wallet and skips dust wallets without
   reporting them as failures
 - Non-owner Telegram IDs receive no response of any kind

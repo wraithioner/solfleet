@@ -163,7 +163,26 @@ const sim = curve.simulateSequentialBuys(fresh, 0.5, 10);
 const single = curve.quoteBuy(fresh, 0.5);
 assert.ok(sim.totalTokens < single * 10, 'later wallets in a batch get fewer tokens');
 assert.ok(sim.finalPrice > price, 'the batch walks the curve up');
-ok(`10 wallets × 0.5 SOL: ${sim.totalTokens.toFixed(0)} tokens, avg ${sim.avgPrice.toExponential(3)}, price moved +${(((sim.finalPrice - price) / price) * 100).toFixed(1)}%`);
+ok(`10 wallets × 0.5 SOL: ${sim.totalTokens.toFixed(0)} tokens, avg ${sim.avgPrice.toExponential(3)}, price moved +${sim.priceMovePct.toFixed(1)}%`);
+
+// the confirmation screen quotes these directly, so they have to be right
+assert.equal(sim.startPrice, price, 'simulation starts from the live spot price');
+assert.ok(sim.priceMovePct > 0, 'a batch buy moves the price up');
+assert.ok(
+  Math.abs(sim.priceMovePct - ((sim.finalPrice - price) / price) * 100) < 1e-9,
+  'priceMovePct measures final against starting price',
+);
+assert.ok(sim.avgPrice > sim.startPrice, 'the average fill is worse than spot');
+assert.ok(sim.avgVsSpotPct > 0 && sim.avgVsSpotPct < sim.priceMovePct, 'avg fill sits between spot and final price');
+ok(`avg fill is +${sim.avgVsSpotPct.toFixed(1)}% vs spot, final price +${sim.priceMovePct.toFixed(1)}%`);
+
+assert.ok(sim.firstWalletTokens > sim.lastWalletTokens, 'the first wallet fills better than the last');
+ok(`first wallet ${sim.firstWalletTokens.toFixed(0)} tokens vs last ${sim.lastWalletTokens.toFixed(0)} for the same spend`);
+
+const solo = curve.simulateSequentialBuys(fresh, 0.5, 1);
+assert.equal(solo.firstWalletTokens, solo.lastWalletTokens);
+assert.ok(Math.abs(solo.totalTokens - single) < 1e-6, 'a one-wallet batch matches the plain quote');
+ok('a single-wallet batch reduces to the plain quote');
 
 const progress = curve.curveProgress(fresh);
 assert.ok(progress >= 0 && progress <= 1);
@@ -236,7 +255,117 @@ assert.equal(result, 'recovered');
 assert.equal(attempts, 3);
 ok('retry backs off and eventually succeeds');
 
-console.log('\n[7] Secret redaction in logs');
+console.log('\n[7] Funding plan');
+const { planFunding } = await import('../src/trade/fund.js');
+const LAMPORTS_PER_SOL = 1_000_000_000;
+
+const targets = [
+  { id: 'a', label: 'A', address: 'AAA' },
+  { id: 'b', label: 'B', address: 'BBB' },
+  { id: 'c', label: 'C', address: 'CCC' },
+];
+
+const rich = BigInt(100 * LAMPORTS_PER_SOL);
+
+const each = planFunding({
+  targets,
+  balances: new Map(),
+  mode: 'each',
+  sol: 0.1,
+  sourceLamports: rich,
+  priorityFeeSol: 0.00005,
+});
+assert.equal(each.transfers.length, 3);
+assert.equal(each.totalLamports, BigInt(0.3 * LAMPORTS_PER_SOL));
+assert.ok(each.transfers.every((t) => t.lamports === BigInt(0.1 * LAMPORTS_PER_SOL)));
+ok('"send each" gives every wallet the full amount');
+
+// a wallet already holding more than the target needs nothing
+const topup = planFunding({
+  targets,
+  balances: new Map([
+    ['AAA', BigInt(0.5 * LAMPORTS_PER_SOL)],
+    ['BBB', BigInt(0.2 * LAMPORTS_PER_SOL)],
+  ]),
+  mode: 'topup',
+  sol: 0.5,
+  sourceLamports: rich,
+  priorityFeeSol: 0.00005,
+});
+assert.equal(topup.transfers.length, 2, 'the already-funded wallet is left alone');
+assert.equal(topup.skipped.length, 1);
+assert.equal(topup.skipped[0]!.address, 'AAA');
+assert.equal(topup.transfers.find((t) => t.address === 'BBB')!.lamports, BigInt(0.3 * LAMPORTS_PER_SOL));
+assert.equal(topup.transfers.find((t) => t.address === 'CCC')!.lamports, BigInt(0.5 * LAMPORTS_PER_SOL));
+ok('"top up to" funds only the shortfall, and skips wallets already there');
+
+// skipping is not failing — the same distinction the sweep makes
+assert.match(topup.skipped[0]!.reason, /already funded/);
+ok('a wallet needing nothing is reported as skipped, not failed');
+
+// fees are counted per transaction, not per wallet
+assert.equal(each.txCount, 1);
+const many = planFunding({
+  targets: Array.from({ length: 25 }, (_, i) => ({ id: `w${i}`, label: `W${i}`, address: `ADDR${i}` })),
+  balances: new Map(),
+  mode: 'each',
+  sol: 0.01,
+  sourceLamports: rich,
+  priorityFeeSol: 0.00005,
+});
+assert.equal(many.txCount, 2, '25 transfers pack into 2 transactions');
+
+// what the same funding run would cost as one transaction per wallet
+const perTxFee = BigInt(5000 + Math.floor(0.00005 * LAMPORTS_PER_SOL));
+assert.equal(many.feeLamports, BigInt(many.txCount) * perTxFee, 'fees are charged per transaction');
+assert.ok(many.feeLamports < BigInt(25) * perTxFee, 'batching costs less than one transfer per wallet');
+ok(`25 wallets funded in ${many.txCount} transactions, not 25 (${Number(many.feeLamports) / LAMPORTS_PER_SOL} SOL of fees)`);
+
+// refusing up front beats half-funding the set
+assert.throws(
+  () =>
+    planFunding({
+      targets,
+      balances: new Map(),
+      mode: 'each',
+      sol: 1,
+      sourceLamports: BigInt(0.5 * LAMPORTS_PER_SOL),
+      priorityFeeSol: 0.00005,
+    }),
+  /holds .* but this needs/,
+);
+ok('a plan the main wallet cannot afford is rejected before anything is signed');
+
+assert.throws(
+  () => planFunding({ targets, balances: new Map(), mode: 'each', sol: 0, sourceLamports: rich, priorityFeeSol: 0 }),
+  /greater than zero/,
+);
+ok('a zero amount is rejected');
+
+// the main wallet must keep enough back to pay a fee afterwards
+const exact = { targets, balances: new Map(), mode: 'each' as const, sol: 1, priorityFeeSol: 0 };
+const justEnough = BigInt(3 * LAMPORTS_PER_SOL + 5000);
+assert.doesNotThrow(() => planFunding({ ...exact, sourceLamports: justEnough }));
+assert.throws(
+  () => planFunding({ ...exact, sourceLamports: justEnough, reserveSol: 0.01 }),
+  /reserve/,
+);
+ok('a plan that would drain the main wallet to zero is rejected when a reserve is set');
+
+console.log('\n[8] Token account parsing');
+const { parseTokenAccountAmount } = await import('../src/chains/solana.js');
+
+// SPL token account: mint(32) || owner(32) || amount(u64 LE)
+const account = Buffer.alloc(165);
+account.writeBigUInt64LE(123_456_789n, 64);
+assert.equal(parseTokenAccountAmount(account), 123_456_789n);
+ok('reads the balance out of a token account buffer');
+
+assert.equal(parseTokenAccountAmount(Buffer.alloc(165)), 0n);
+assert.equal(parseTokenAccountAmount(Buffer.alloc(8)), 0n, 'a truncated account reads as empty, not a crash');
+ok('empty and truncated accounts read as zero');
+
+console.log('\n[9] Secret redaction in logs');
 const { redact } = await import('../src/logger.js');
 assert.ok(!redact(`key is ${exported}`).includes(exported), 'base58 secret key redacted');
 assert.ok(!redact(`pk 0x${'a'.repeat(64)}`).includes('a'.repeat(64)), 'hex private key redacted');

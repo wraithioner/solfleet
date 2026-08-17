@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import type { Context } from 'grammy';
 
 /**
  * In-memory conversational state. Single-operator bot, so a plain Map keyed by
@@ -19,6 +20,7 @@ export type PendingInput =
   | { kind: 'custom_buy'; mint: string }
   | { kind: 'custom_sell'; mint: string }
   | { kind: 'send_to_address'; chainKind: 'solana' | 'evm'; token?: string }
+  | { kind: 'fund_amount'; mode: 'each' | 'topup' }
   | { kind: 'set_slippage' }
   | { kind: 'set_priority_fee' }
   | { kind: 'set_jito_tip' }
@@ -36,7 +38,13 @@ export interface SessionState {
 export interface ConfirmAction {
   label: string;
   createdAt: number;
-  run: () => Promise<void>;
+  /**
+   * Receives the context of the tap that confirmed it, not the one that staged
+   * it. A confirmation staged from a typed message has no message to edit, so an
+   * action holding on to that context would post its progress as a stream of new
+   * messages instead of updating one in place.
+   */
+  run: (ctx: Context) => Promise<void>;
 }
 
 const sessions = new Map<number, SessionState>();
@@ -62,7 +70,11 @@ export function takePending(userId: number): PendingInput | undefined {
 }
 
 /** Register an action behind a confirm button. Expires after five minutes. */
-export function stageConfirmation(userId: number, label: string, run: () => Promise<void>): string {
+export function stageConfirmation(
+  userId: number,
+  label: string,
+  run: (ctx: Context) => Promise<void>,
+): string {
   const s = session(userId);
   const id = crypto.randomBytes(4).toString('hex');
 
@@ -91,6 +103,17 @@ export function takeConfirmation(userId: number, id: string): ConfirmAction | un
 const tokenIds = new Map<string, string>();
 const idsByToken = new Map<string, string>();
 
+/** Drop the oldest entries once a registry grows past its bound. */
+function evictOldest(byId: Map<string, string>, byValue: Map<string, string>, max: number): void {
+  while (byId.size > max) {
+    const oldest = byId.keys().next().value;
+    if (!oldest) return;
+    const value = byId.get(oldest);
+    byId.delete(oldest);
+    if (value && byValue.get(value) === oldest) byValue.delete(value);
+  }
+}
+
 export function tokenId(mint: string): string {
   const existing = idsByToken.get(mint);
   if (existing) return existing;
@@ -100,14 +123,7 @@ export function tokenId(mint: string): string {
   idsByToken.set(mint, id);
 
   // bound the registry; these are only needed while a card is on screen
-  if (tokenIds.size > 500) {
-    const oldest = tokenIds.keys().next().value;
-    if (oldest) {
-      const mintForOldest = tokenIds.get(oldest);
-      tokenIds.delete(oldest);
-      if (mintForOldest) idsByToken.delete(mintForOldest);
-    }
-  }
+  evictOldest(tokenIds, idsByToken, 500);
 
   return id;
 }
@@ -126,6 +142,7 @@ export function shortWalletId(walletId: string): string {
   const id = crypto.randomBytes(3).toString('hex');
   walletIds.set(id, walletId);
   idsByWallet.set(walletId, id);
+  evictOldest(walletIds, idsByWallet, 2000);
   return id;
 }
 

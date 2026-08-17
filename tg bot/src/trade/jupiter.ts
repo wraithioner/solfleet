@@ -1,7 +1,7 @@
 import { VersionedTransaction, Keypair } from '@solana/web3.js';
 import { endpoints } from '../config.js';
 import { fetchJson } from '../util.js';
-import { LAMPORTS, WSOL_MINT } from '../chains/solana.js';
+import { LAMPORTS, WSOL_MINT, sendAndConfirm } from '../chains/solana.js';
 
 /**
  * Jupiter aggregator. Used for anything that is not a live pump.fun curve —
@@ -64,6 +64,74 @@ export async function buildSwap(
 export function signSwap(tx: VersionedTransaction, signer: Keypair): VersionedTransaction {
   tx.sign([signer]);
   return tx;
+}
+
+/**
+ * Quote, build, sign and send one swap.
+ *
+ * This is the fallback route for everything pump.fun cannot handle — a token
+ * that graduated to Raydium, an airdrop nobody launched on a curve, the USDC a
+ * wallet was funded with. Without it, "sell everything" quietly means "sell
+ * everything that happens to be a live pump.fun token".
+ */
+export async function executeSwap(
+  signer: Keypair,
+  params: {
+    inputMint: string;
+    outputMint: string;
+    /** Raw amount in the input mint's smallest unit. */
+    amount: bigint;
+    slippageBps: number;
+    priorityFeeSol: number;
+  },
+): Promise<{ signature: string; outAmount: bigint }> {
+  if (params.amount <= 0n) throw new Error('Nothing to swap.');
+
+  const quote = await getQuote({
+    inputMint: params.inputMint,
+    outputMint: params.outputMint,
+    amount: params.amount,
+    slippageBps: params.slippageBps,
+  });
+
+  const tx = await buildSwap(quote, signer.publicKey.toBase58(), params.priorityFeeSol);
+  const signature = await sendAndConfirm(signSwap(tx, signer), { skipPreflight: true });
+
+  return { signature, outAmount: BigInt(quote.outAmount) };
+}
+
+/** Sell a token position back to SOL. */
+export function swapToSol(
+  signer: Keypair,
+  mint: string,
+  rawAmount: bigint,
+  slippageBps: number,
+  priorityFeeSol: number,
+): Promise<{ signature: string; outAmount: bigint }> {
+  return executeSwap(signer, {
+    inputMint: mint,
+    outputMint: WSOL_MINT,
+    amount: rawAmount,
+    slippageBps,
+    priorityFeeSol,
+  });
+}
+
+/** Buy a token with SOL. */
+export function swapFromSol(
+  signer: Keypair,
+  mint: string,
+  sol: number,
+  slippageBps: number,
+  priorityFeeSol: number,
+): Promise<{ signature: string; outAmount: bigint }> {
+  return executeSwap(signer, {
+    inputMint: WSOL_MINT,
+    outputMint: mint,
+    amount: BigInt(Math.floor(sol * LAMPORTS)),
+    slippageBps,
+    priorityFeeSol,
+  });
 }
 
 /** Convenience: quote how much SOL a token position is worth right now. */

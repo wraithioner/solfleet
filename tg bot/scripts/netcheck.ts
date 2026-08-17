@@ -52,6 +52,20 @@ await check('getTokenSupply', async () => {
   return `USDC supply ${Number(supply.value.uiAmountString).toLocaleString()}`;
 }).catch(() => {});
 
+/**
+ * The batched holdings read behind the token card's sell buttons and the
+ * "skip wallets holding nothing" pass on a sell. Fresh keypairs hold nothing,
+ * so an empty map is the correct answer — what is being checked is that
+ * deriving the token accounts and reading them in one call still works.
+ */
+await check('getMintBalances (batched token account read)', async () => {
+  const { getMintBalances } = await import('../src/chains/solana.js');
+  const addresses = Array.from({ length: 3 }, () => Keypair.generate().publicKey.toBase58());
+  const held = await getMintBalances(addresses, BONK);
+  if (held.size !== 0) throw new Error('fresh keypairs should hold nothing');
+  return '3 wallets checked in one round trip, none holding';
+});
+
 console.log('\n── Token info pipeline ──');
 
 const { getTokenInfo, extractTokenAddress } = await import('../src/services/tokeninfo.js');
@@ -122,7 +136,7 @@ await check('CoinGecko native prices', async () => {
 
 console.log('\n── Jupiter swap API ──');
 
-const { getQuote } = await import('../src/trade/jupiter.js');
+const { getQuote, buildSwap } = await import('../src/trade/jupiter.js');
 
 await check('quote 1 SOL → USDC', async () => {
   const q = await getQuote({
@@ -132,6 +146,22 @@ await check('quote 1 SOL → USDC', async () => {
     slippageBps: 100,
   });
   return `${(Number(q.outAmount) / 1e6).toFixed(2)} USDC, impact ${(Number(q.priceImpactPct) * 100).toFixed(3)}%, ${q.routePlan.length} hop(s)`;
+});
+
+/**
+ * The fallback route. A token that never launched on pump.fun — or graduated
+ * away from it — is only sellable through here, so the request shape matters as
+ * much as PumpPortal's. Built for a throwaway key and thrown away unsigned.
+ */
+await check('build a sell swap for a non-pump token (BONK → SOL)', async () => {
+  const q = await getQuote({
+    inputMint: BONK,
+    outputMint: WSOL,
+    amount: 1_000_000_000n,
+    slippageBps: 1500,
+  });
+  const tx = await buildSwap(q, Keypair.generate().publicKey.toBase58(), 0.00001);
+  return `${tx.message.compiledInstructions.length} instructions, ${tx.message.addressTableLookups.length} lookup tables`;
 });
 
 console.log('\n── PumpPortal (build only, never signed or sent) ──');

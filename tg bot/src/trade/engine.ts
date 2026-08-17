@@ -1,15 +1,25 @@
 import bs58 from 'bs58';
-import type { VersionedTransaction } from '@solana/web3.js';
+import type { VersionedTransaction, Keypair } from '@solana/web3.js';
 import { config, type ExecutionMode } from '../config.js';
 import { chunk, pMap, errMessage, retry } from '../util.js';
 import { log } from '../logger.js';
 import { solanaKeypair, evmAccount } from '../store/wallets.js';
 import { db } from '../store/db.js';
-import { sendAndConfirm, sweepSol, sendSplToken, getSplBalances, getTokenBalance } from '../chains/solana.js';
+import {
+  sendAndConfirm,
+  sweepSol,
+  sendSplToken,
+  getSplBalances,
+  getTokenBalance,
+  getMintBalances,
+  signatureLanded,
+  WSOL_MINT,
+} from '../chains/solana.js';
 import { sweepNative, sendErc20, getErc20Balances } from '../chains/evm.js';
 import { buildTrade, buildTradeBundle, signTx, toTradeArgs, type TradeArgs } from './pumpportal.js';
 import { sendBundle, waitForBundle } from './jito.js';
 import { detectPool } from './curve.js';
+import { swapToSol, swapFromSol } from './jupiter.js';
 import type {
   WalletRecord,
   TradeRequest,
@@ -69,43 +79,175 @@ export async function batchPumpTrade(
     );
   }
 
+  const ctx: TradeContext = {
+    // A token still on its curve exists nowhere else, so there is no aggregator
+    // to fall back to. Anything else might be routable by Jupiter even when
+    // PumpPortal refuses it.
+    allowJupiter: req.pool !== 'pump',
+    holdings: req.action === 'sell' ? await readHoldings(solWallets, req.mint) : undefined,
+  };
+
+  // A wallet with nothing to sell has nothing to do — it is not a failure, and
+  // it must not be packed into a bundle either, where one wallet's empty balance
+  // fails the build for the other four.
+  const idle: ExecutionResult[] = [];
+  let active = solWallets;
+
+  if (ctx.holdings) {
+    const holdings = ctx.holdings;
+    active = solWallets.filter((w) => (holdings.get(w.address) ?? 0n) > 0n);
+    for (const w of solWallets) {
+      if ((holdings.get(w.address) ?? 0n) === 0n) {
+        idle.push({ walletId: w.id, label: w.label, address: w.address, ok: true, detail: 'no balance' });
+      }
+    }
+  }
+
   log.info(
-    `Batch ${req.action} ${req.mint} across ${solWallets.length} wallets (mode=${mode}, pool=${req.pool})`,
+    `Batch ${req.action} ${req.mint} across ${active.length} wallets ` +
+      `(mode=${mode}, pool=${req.pool}, jupiterFallback=${ctx.allowJupiter}` +
+      `${idle.length > 0 ? `, ${idle.length} holding none` : ''})`,
   );
 
-  return mode === 'bundle'
-    ? bundleTrades(solWallets, req, startedAt, onProgress)
-    : parallelTrades(solWallets, req, startedAt, onProgress);
+  if (active.length === 0) return summarise(idle, startedAt);
+
+  const summary =
+    mode === 'bundle'
+      ? await bundleTrades(active, req, startedAt, ctx, onProgress)
+      : await parallelTrades(active, req, startedAt, ctx, onProgress);
+
+  return summarise([...summary.results, ...idle], startedAt);
+}
+
+interface TradeContext {
+  /** Whether a failed PumpPortal build may be retried through the aggregator. */
+  allowJupiter: boolean;
+  /** Raw balances for a sell, so wallets holding nothing are skipped, not failed. */
+  holdings?: Map<string, bigint>;
+}
+
+/**
+ * Read what each wallet actually holds before a sell.
+ *
+ * Selling 100% across fifty wallets when three of them hold the token used to
+ * mean forty-seven failed transactions and forty-seven red rows to read past.
+ * The map is only trusted when at least one wallet came back holding something
+ * — an entirely empty result is far more likely to be a bad read than fifty
+ * genuinely empty wallets the operator just asked to sell.
+ */
+async function readHoldings(
+  wallets: WalletRecord[],
+  mint: string,
+): Promise<Map<string, bigint> | undefined> {
+  try {
+    const held = await getMintBalances(wallets.map((w) => w.address), mint);
+    return held.size > 0 ? held : undefined;
+  } catch (err) {
+    log.warn(`Could not pre-read holdings for ${mint}: ${errMessage(err)}`);
+    return undefined;
+  }
+}
+
+/**
+ * One wallet's trade, with the aggregator as a second chance.
+ *
+ * PumpPortal answers HTTP 400 for any mint it cannot route, which is the normal
+ * response for a plain SPL token. Treating that as the end of the story is what
+ * made "sell everything" silently skip everything that never launched on
+ * pump.fun.
+ *
+ * The venue only switches when the *build* failed, never when a send did. A
+ * failed send may still be in flight, and re-buying the same token through a
+ * second venue because the first one timed out spends the operator's money
+ * twice.
+ */
+async function tradeOneWallet(
+  w: WalletRecord,
+  req: TradeRequest,
+  ctx: TradeContext,
+): Promise<ExecutionResult> {
+  const kp = solanaKeypair(w);
+  const args = toTradeArgs(req, w.address);
+
+  // probe the route before committing to it — this request signs nothing
+  let built;
+  try {
+    built = await buildTrade(args);
+  } catch (buildErr) {
+    if (!ctx.allowJupiter) return fail(w, buildErr);
+    return tradeViaJupiter(w, req, ctx, kp, buildErr);
+  }
+
+  try {
+    let lastSignature: string | undefined;
+
+    const signature = await retry(
+      async () => {
+        // a retry after a timeout must not spend again if the first attempt landed
+        if (lastSignature && (await signatureLanded(lastSignature))) return lastSignature;
+
+        // rebuilt each attempt so the blockhash is fresh
+        const tx = lastSignature === undefined ? built : await buildTrade(args);
+        const signed = signTx(tx, kp);
+        lastSignature = bs58Signature(signed);
+
+        return sendAndConfirm(signed, { skipPreflight: true });
+      },
+      { attempts: 2, baseDelayMs: 600 },
+    );
+
+    return { walletId: w.id, label: w.label, address: w.address, ok: true, signature };
+  } catch (sendErr) {
+    return fail(w, sendErr);
+  }
+}
+
+/** The fallback venue, for mints pump.fun will not route at all. */
+async function tradeViaJupiter(
+  w: WalletRecord,
+  req: TradeRequest,
+  ctx: TradeContext,
+  kp: Keypair,
+  pumpErr: unknown,
+): Promise<ExecutionResult> {
+  const slippageBps = Math.round(req.slippagePercent * 100);
+
+  try {
+    if (req.action === 'buy') {
+      const { signature } = await swapFromSol(kp, req.mint, req.amount, slippageBps, req.priorityFeeSol);
+      return { walletId: w.id, label: w.label, address: w.address, ok: true, signature, detail: 'via Jupiter' };
+    }
+
+    // a percentage of whatever the wallet actually holds right now
+    const held = ctx.holdings?.get(w.address) ?? (await getTokenBalance(w.address, req.mint))?.rawAmount ?? 0n;
+    const rawAmount = (held * BigInt(Math.round(req.amount))) / 100n;
+    if (rawAmount <= 0n) {
+      return { walletId: w.id, label: w.label, address: w.address, ok: true, detail: 'no balance' };
+    }
+
+    const { signature } = await swapToSol(kp, req.mint, rawAmount, slippageBps, req.priorityFeeSol);
+    return { walletId: w.id, label: w.label, address: w.address, ok: true, signature, detail: 'via Jupiter' };
+  } catch (jupErr) {
+    // the pump.fun error is usually the more informative one; keep both
+    return {
+      ...fail(w, pumpErr),
+      detail: `Jupiter also failed: ${errMessage(jupErr).slice(0, 80)}`,
+    };
+  }
 }
 
 async function parallelTrades(
   wallets: WalletRecord[],
   req: TradeRequest,
   startedAt: number,
+  ctx: TradeContext,
   onProgress?: ProgressFn,
 ): Promise<BatchSummary> {
   let done = 0;
 
   const results = await pMap(wallets, config.trading.concurrency, async (w) => {
     try {
-      const kp = solanaKeypair(w);
-      const args = toTradeArgs(req, w.address);
-
-      const signature = await retry(
-        async () => {
-          const tx = await buildTrade(args);
-          return sendAndConfirm(signTx(tx, kp), { skipPreflight: true });
-        },
-        { attempts: 2, baseDelayMs: 600 },
-      );
-
-      return {
-        walletId: w.id,
-        label: w.label,
-        address: w.address,
-        ok: true,
-        signature,
-      } satisfies ExecutionResult;
+      return await tradeOneWallet(w, req, ctx);
     } catch (err) {
       return fail(w, err);
     } finally {
@@ -121,6 +263,7 @@ async function bundleTrades(
   wallets: WalletRecord[],
   req: TradeRequest,
   startedAt: number,
+  ctx: TradeContext,
   onProgress?: ProgressFn,
 ): Promise<BatchSummary> {
   const results: ExecutionResult[] = [];
@@ -137,7 +280,26 @@ async function bundleTrades(
         priorityFee: i === 0 ? tip : 0,
       }));
 
-      const unsigned = await buildTradeBundle(argsList);
+      let unsigned;
+      try {
+        unsigned = await buildTradeBundle(argsList);
+      } catch (buildErr) {
+        // Nothing was submitted, so re-running this group unbundled cannot
+        // double-spend. Atomicity is lost, which the result rows say plainly.
+        if (!ctx.allowJupiter) throw buildErr;
+
+        log.warn(`Bundle ${gi + 1} could not be built, falling back to individual sends.`);
+        const fallback = await parallelTrades(group, req, startedAt, ctx);
+        for (const r of fallback.results) {
+          results.push({ ...r, detail: [r.detail, 'unbundled fallback'].filter(Boolean).join(' · ') });
+        }
+        continue;
+      }
+
+      if (unsigned.length !== group.length) {
+        throw new Error(`PumpPortal returned ${unsigned.length} transactions for ${group.length} wallets.`);
+      }
+
       const signed = unsigned.map((tx, i) => signTx(tx, solanaKeypair(group[i]!)));
 
       const bundleId = await sendBundle(signed);
@@ -298,6 +460,9 @@ export async function batchSellAllPositions(
       log.warn(`Could not read positions for ${w.label}: ${errMessage(err)}`);
     }
   }
+
+  // wrapped SOL is already SOL — there is nothing to sell it for
+  mintSet.delete(WSOL_MINT);
 
   const mints = [...mintSet];
   const summaries: Record<string, BatchSummary> = {};

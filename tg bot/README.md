@@ -1,8 +1,9 @@
 # Multi-Wallet Command Center
 
-A Telegram bot that drives many Solana and EVM wallets at once. Paste a token
-address to get a full breakdown, then buy or sell it across every wallet with one
-tap — and pull everything back to a main wallet when you're done.
+A Telegram bot that drives many Solana and EVM wallets at once. Fund every wallet
+from one tap, paste a token address to get a full breakdown, buy or sell it
+across every wallet at once — and pull everything back to a main wallet when
+you're done.
 
 Single-operator by design: only the Telegram user IDs in `OWNER_IDS` are answered
 at all. Everyone else gets silence, not an error.
@@ -27,16 +28,23 @@ at all. Everyone else gets silence, not an error.
 - Works on tokens minutes old, before any indexer knows them, by reading Metaplex
   metadata and the bonding curve directly
 
-**Trading (Solana / pump.fun)**
+**Trading (Solana)**
 - Buy a preset or custom SOL amount **from every wallet at once**
 - Sell 25 / 50 / 75 / 100% **from every wallet at once**
 - **Sell Everything** — discovers every token held across every wallet and dumps
   it all
-- Routing is automatic: the bonding curve while it's live, the AMM once graduated
+- Routing is automatic: the bonding curve while it's live, the AMM once
+  graduated, and Jupiter for anything pump.fun can't route at all — so a plain
+  SPL token, an airdrop or a Raydium-only coin sells like everything else
+- Wallets holding none of the token are skipped, not failed
 - Before you confirm a buy, it simulates the wallets buying *in sequence* and
-  shows the true average fill — not N × the spot quote
+  shows the true average fill, how far the batch moves the price, and what the
+  first and last wallet each get for the same spend
 
-**Consolidation**
+**Moving funds**
+- **Fund every wallet from the main wallet** — send the same amount to each, or
+  top every wallet up to a target and skip the ones already there. Transfers are
+  packed into batched transactions, so 50 wallets cost 4 fees rather than 50
 - Sweep all SOL from every wallet into the main wallet, one tap
 - Sweep any SPL token, closing the emptied token accounts to reclaim their rent
 - Sweep native balances on any configured EVM chain
@@ -133,7 +141,12 @@ Set in `.env`:
   Multiplied across 50 wallets, a fat-fingered amount gets expensive fast.
 - `REQUIRE_CONFIRMATION` — second tap before anything that spends or moves funds.
 - `sweepReserveSol` (in Settings) — SOL left behind in each wallet so it can
-  still pay fees after a sweep.
+  still pay fees after a sweep. The main wallet keeps the same amount back when
+  funding, so a distribution can't drain it to the point where it cannot pay for
+  its own next transaction.
+
+Funding refuses outright if the main wallet cannot cover the whole plan, rather
+than half-funding the set and leaving you to work out which wallets missed.
 
 ---
 
@@ -157,10 +170,12 @@ Toggle it in Settings, or set `DEFAULT_EXECUTION_MODE`.
 Buying the same token from many wallets walks the bonding curve. The tenth wallet
 does not get the first wallet's price.
 
-The bot simulates this before you confirm and shows the real aggregate. In
-testing, 10 wallets × 0.5 SOL into a fresh curve moved the price **+35.7%** and
-the average fill landed well above spot. That number is on the confirmation
-screen for a reason — read it before tapping.
+The bot simulates this before you confirm and shows the real aggregate: 10
+wallets × 0.5 SOL into a fresh curve moves the price **+35.7%**, the average fill
+lands **+17.7%** above the price on screen, and the first wallet receives
+17.4M tokens where the last receives 13.2M for the identical 0.5 SOL. Those
+numbers are on the confirmation screen for a reason — read them before tapping.
+Past +25% the screen says so in bold.
 
 ---
 
@@ -173,11 +188,13 @@ npm run check
 Runs three layers:
 
 - `typecheck` — full TypeScript strict-mode pass
-- `smoke` — 42 offline assertions: vault crypto (round-trip, unique IVs, tamper
+- `smoke` — 54 offline assertions: vault crypto (round-trip, unique IVs, tamper
   rejection, lock/unlock, passphrase rotation re-sealing every key), wallet
-  derivation, group and main-wallet invariants, bonding curve maths, address
+  derivation, group and main-wallet invariants, bonding curve maths and batch
+  simulation, funding arithmetic (shortfall-only top-ups, transaction packing,
+  refusing a plan the main wallet can't afford), token account parsing, address
   parsing, concurrency helpers, log redaction
-- `netcheck` — 18 live read-only checks against Solana RPC, DexScreener, Jupiter,
+- `netcheck` — 20 live read-only checks against Solana RPC, DexScreener, Jupiter,
   PumpPortal and the pump.fun program
 
 `netcheck` never signs or broadcasts anything. It builds unsigned transactions
@@ -223,6 +240,7 @@ src/
     jito.ts            bundle submission and status polling
     curve.ts           bonding curve reads, quotes, batch simulation
     jupiter.ts         aggregator swaps for graduated and general SPL
+    fund.ts            distribution: main wallet → every trading wallet
     engine.ts          batch execution across wallets
   services/
     tokeninfo.ts       the token card: market data, holders, warnings

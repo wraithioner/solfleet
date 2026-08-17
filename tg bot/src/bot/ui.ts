@@ -23,7 +23,7 @@ export function mainMenu(): InlineKeyboard {
     .row()
     .text('👛 Wallets', 'wallets').text('⚡ Quick Trade', 'trade_menu')
     .row()
-    .text('💸 Consolidate', 'consolidate_menu').text('🔥 Sell Everything', 'sell_all_confirm')
+    .text('💸 Move Funds', 'consolidate_menu').text('🔥 Sell Everything', 'sell_all_confirm')
     .row()
     .text('⚙️ Settings', 'settings').text('🔒 Lock', 'lock');
 }

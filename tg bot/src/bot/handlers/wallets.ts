@@ -269,9 +269,9 @@ export async function promptRemove(ctx: Context, walletId: string): Promise<void
   const w = walletById(walletId);
   if (!w) return;
 
-  const id = stageConfirmation(ctx.from!.id, `remove ${w.label}`, async () => {
+  const id = stageConfirmation(ctx.from!.id, `remove ${w.label}`, async (confirmCtx) => {
     removeWallet(walletId);
-    await render(ctx, `🗑 Removed <b>${h(w.label)}</b>.`, new InlineKeyboard().text('👛 Wallets', 'wallets'));
+    await render(confirmCtx, `🗑 Removed <b>${h(w.label)}</b>.`, new InlineKeyboard().text('👛 Wallets', 'wallets'));
   });
 
   await render(

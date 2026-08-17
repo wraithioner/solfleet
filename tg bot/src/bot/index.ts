@@ -138,6 +138,8 @@ function registerCommands(bot: Bot): void {
         '/history — recent batch operations',
         '',
         '<b>Paste any token address</b> to get its stats, holder breakdown and trade buttons.',
+        '',
+        'Wallets need SOL before they can buy: <b>Move Funds → Fund wallets from main</b>.',
       ].join('\n'),
       { parse_mode: 'HTML' },
     );
@@ -202,7 +204,7 @@ async function routeCallback(ctx: Context, action: string, args: string[]): Prom
         return;
       }
       log.info(`Confirmed action: ${confirmation.label}`);
-      return confirmation.run();
+      return confirmation.run(ctx);
     }
 
     // token card
@@ -243,7 +245,11 @@ async function routeCallback(ctx: Context, action: string, args: string[]): Prom
     case 'sell_all_confirm':
       return T.promptSellEverything(ctx);
 
-    // consolidation
+    // funding + consolidation
+    case 'fund_menu':
+      return T.showFundMenu(ctx);
+    case 'fund':
+      return T.promptFundAmount(ctx, args[0] === 'topup' ? 'topup' : 'each');
     case 'sweep_sol_confirm':
       return T.promptSweepSol(ctx);
     case 'sweep_token_prompt':
@@ -447,6 +453,15 @@ async function handlePending(
         return;
       }
       return T.promptSell(ctx, pending.mint, pct);
+    }
+
+    case 'fund_amount': {
+      const sol = Number(text);
+      if (!Number.isFinite(sol) || sol <= 0) {
+        await ctx.reply('That is not a valid SOL amount.');
+        return;
+      }
+      return T.promptFund(ctx, pending.mode, sol);
     }
 
     case 'send_to_address': {

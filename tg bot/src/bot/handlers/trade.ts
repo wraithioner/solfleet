@@ -4,7 +4,7 @@ import { config } from '../../config.js';
 import { db } from '../../store/db.js';
 import { selectWallets, mainWallet } from '../../store/wallets.js';
 import { getTokenInfo } from '../../services/tokeninfo.js';
-import { getSplBalances } from '../../chains/solana.js';
+import { getMintBalances, getSolBalance, LAMPORTS } from '../../chains/solana.js';
 import { simulateSequentialBuys, fetchBondingCurve } from '../../trade/curve.js';
 import {
   batchPumpTrade,
@@ -13,8 +13,9 @@ import {
   batchSellAllPositions,
   batchSweepEvmNative,
 } from '../../trade/engine.js';
+import { planFunding, executeFunding, fundingBalances, type FundMode } from '../../trade/fund.js';
 import { enabledChains } from '../../chains/evm.js';
-import { errMessage, fmtAmount, fmtUsd, shortAddr } from '../../util.js';
+import { errMessage, fmtAmount, shortAddr } from '../../util.js';
 import { log } from '../../logger.js';
 import { stageConfirmation, setPending, tokenId, mintFromId } from '../session.js';
 import {
@@ -67,20 +68,18 @@ export async function showTokenCard(ctx: Context, mint: string, replace = false)
     const info = await getTokenInfo(mint, mint.startsWith('0x') ? 'evm' : 'solana');
     const settings = db.settings();
 
-    // does any selected wallet already hold this? decides whether to offer sells
+    // Does any selected wallet already hold this? Decides whether to offer
+    // sells. Reading the derived token accounts in one batched call covers
+    // every wallet, where the old per-wallet scan covered the first ten and
+    // cost ten sequential round trips to do it.
     let holdsPosition = false;
     if (info.chain === 'solana') {
-      const wallets = selectWallets({ kind: 'solana' });
-      for (const w of wallets.slice(0, 10)) {
-        try {
-          const held = await getSplBalances(w.address);
-          if (held.some((t) => t.mint === mint && t.rawAmount > 0n)) {
-            holdsPosition = true;
-            break;
-          }
-        } catch {
-          /* a single wallet failing to read should not hide the card */
-        }
+      try {
+        const wallets = selectWallets({ kind: 'solana' });
+        const held = await getMintBalances(wallets.map((w) => w.address), mint);
+        holdsPosition = held.size > 0;
+      } catch {
+        /* a failed balance read should not hide the card */
       }
     }
 
@@ -171,24 +170,39 @@ export async function promptBuy(ctx: Context, mint: string, solPerWallet: number
     const curve = await fetchBondingCurve(mint);
     if (curve && !curve.complete) {
       const sim = simulateSequentialBuys(curve, solPerWallet, wallets.length);
+
       lines.push('');
       lines.push(`Est. tokens: <b>${fmtAmount(sim.totalTokens, 0)}</b>`);
-      lines.push(`Est. avg price: ${sim.avgPrice.toExponential(4)} SOL`);
-      const impact = ((sim.finalPrice - (sim.totalSol / sim.totalTokens)) / sim.finalPrice) * 100;
-      if (Number.isFinite(impact)) {
-        lines.push(`<i>Sequential fills move the curve — later wallets pay more.</i>`);
+      lines.push(`Spot now: ${sim.startPrice.toExponential(4)} SOL`);
+      lines.push(
+        `Avg fill: <b>${sim.avgPrice.toExponential(4)} SOL</b>` +
+          ` (${sim.avgVsSpotPct >= 0 ? '+' : ''}${sim.avgVsSpotPct.toFixed(1)}% vs spot)`,
+      );
+      lines.push(`Price after: ${sim.finalPrice.toExponential(4)} SOL (<b>+${sim.priceMovePct.toFixed(1)}%</b>)`);
+
+      if (wallets.length > 1) {
+        lines.push(
+          `<i>First wallet gets ${fmtAmount(sim.firstWalletTokens, 0)}, ` +
+            `last gets ${fmtAmount(sim.lastWalletTokens, 0)} for the same ${solPerWallet} SOL.</i>`,
+        );
+      }
+
+      // the number worth stopping for, not buried in a paragraph of italics
+      if (sim.priceMovePct >= 25) {
+        lines.push('');
+        lines.push(`⚠️ <b>This batch moves the price +${sim.priceMovePct.toFixed(0)}% on its own.</b>`);
       }
     }
   } catch {
     /* quoting is a nicety; never block the trade on it */
   }
 
-  const run = async () => {
-    await executeBuy(ctx, mint, solPerWallet);
+  const run = async (confirmCtx: Context) => {
+    await executeBuy(confirmCtx, mint, solPerWallet);
   };
 
   if (!config.safety.requireConfirmation) {
-    await run();
+    await run(ctx);
     return;
   }
 
@@ -263,12 +277,12 @@ export async function promptSell(ctx: Context, mint: string, percent: number): P
     `Slippage: ${settings.slippagePercent}%  ·  Mode: ${settings.executionMode}`,
   ];
 
-  const run = async () => {
-    await executeSell(ctx, mint, percent);
+  const run = async (confirmCtx: Context) => {
+    await executeSell(confirmCtx, mint, percent);
   };
 
   if (!config.safety.requireConfirmation) {
-    await run();
+    await run(ctx);
     return;
   }
 
@@ -328,7 +342,7 @@ async function executeSell(ctx: Context, mint: string, percent: number): Promise
 export async function promptSellEverything(ctx: Context): Promise<void> {
   const wallets = selectWallets({ kind: 'solana' });
 
-  const run = async () => {
+  const run = async (ctx: Context) => {
     await render(ctx, '<b>🔥 Selling every position…</b>\n\n<i>Discovering token accounts…</i>');
 
     try {
@@ -397,21 +411,22 @@ export async function showConsolidateMenu(ctx: Context): Promise<void> {
   const mainSol = mainWallet('solana');
   const mainEvm = mainWallet('evm');
 
-  const lines = ['<b>💸 Consolidate</b>', ''];
+  const lines = ['<b>💸 Move funds</b>', ''];
   lines.push(
     mainSol
-      ? `Solana destination: <b>${h(mainSol.label)}</b> <code>${shortAddr(mainSol.address, 6, 6)}</code>`
+      ? `Solana main: <b>${h(mainSol.label)}</b> <code>${shortAddr(mainSol.address, 6, 6)}</code>`
       : '<i>No Solana main wallet set.</i>',
   );
   lines.push(
     mainEvm
-      ? `EVM destination: <b>${h(mainEvm.label)}</b> <code>${shortAddr(mainEvm.address, 6, 6)}</code>`
+      ? `EVM main: <b>${h(mainEvm.label)}</b> <code>${shortAddr(mainEvm.address, 6, 6)}</code>`
       : '<i>No EVM main wallet set.</i>',
   );
   lines.push('');
-  lines.push(`<i>Each wallet keeps ${db.settings().sweepReserveSol} SOL back for future fees.</i>`);
+  lines.push(`<i>Sweeps leave ${db.settings().sweepReserveSol} SOL in each wallet for future fees.</i>`);
 
   const kb = new InlineKeyboard();
+  if (mainSol) kb.text('⬇️ Fund wallets from main', 'fund_menu').row();
   if (mainSol) kb.text('◎ Sweep all SOL → main', 'sweep_sol_confirm').row();
   if (mainSol) kb.text('🪙 Sweep a token → main', 'sweep_token_prompt').row();
 
@@ -421,6 +436,167 @@ export async function showConsolidateMenu(ctx: Context): Promise<void> {
 
   kb.text('← Menu', 'home');
   await render(ctx, lines.join('\n'), kb);
+}
+
+// ── funding: main wallet → every trading wallet ───────────────────────────────
+
+export async function showFundMenu(ctx: Context): Promise<void> {
+  const main = mainWallet('solana');
+  if (!main) {
+    await ctx.answerCallbackQuery({ text: 'Set a main Solana wallet first.', show_alert: true });
+    return;
+  }
+
+  const targets = selectWallets({ kind: 'solana', excludeMain: true });
+
+  let balanceLine = '';
+  try {
+    const { sol } = await getSolBalance(main.address);
+    balanceLine = `Main wallet holds <b>${fmtAmount(sol, 4)} SOL</b>`;
+  } catch {
+    balanceLine = '<i>Could not read the main wallet balance.</i>';
+  }
+
+  await render(
+    ctx,
+    [
+      '<b>⬇️ Fund wallets from main</b>',
+      '',
+      balanceLine,
+      `Targets: <b>${targets.length}</b> wallets${db.settings().activeGroup ? ` in <i>${h(db.settings().activeGroup!)}</i>` : ''}`,
+      '',
+      '<b>Send each</b> — every wallet receives the same amount, on top of whatever it already has.',
+      '<b>Top up each to</b> — every wallet is brought <i>up to</i> the amount. Wallets already there are skipped.',
+      '',
+      '<i>Transfers are packed into batched transactions, so fifty wallets cost a handful of fees rather than fifty.</i>',
+    ].join('\n'),
+    new InlineKeyboard()
+      .text('◎ Send each…', 'fund:each')
+      .text('◎ Top up each to…', 'fund:topup')
+      .row()
+      .text('← Back', 'consolidate_menu'),
+  );
+}
+
+export async function promptFundAmount(ctx: Context, mode: FundMode): Promise<void> {
+  setPending(ctx.from!.id, { kind: 'fund_amount', mode });
+
+  await render(
+    ctx,
+    mode === 'each'
+      ? '<b>⬇️ Send how much SOL to each wallet?</b>\n\n<i>e.g. 0.1</i>'
+      : '<b>⬇️ Top every wallet up to how much SOL?</b>\n\n<i>e.g. 0.5 — wallets already holding that much are skipped.</i>',
+    backButton('fund_menu'),
+  );
+}
+
+export async function promptFund(ctx: Context, mode: FundMode, sol: number): Promise<void> {
+  const main = mainWallet('solana');
+  if (!main) {
+    await ctx.reply('Set a main Solana wallet first.');
+    return;
+  }
+
+  const targets = selectWallets({ kind: 'solana', excludeMain: true });
+  if (targets.length === 0) {
+    await ctx.reply('No wallets to fund. Generate or derive some first.');
+    return;
+  }
+
+  const settings = db.settings();
+
+  let plan;
+  try {
+    const [balances, source] = await Promise.all([
+      // a top-up needs to know what each wallet already holds; sending a flat
+      // amount does not, but the numbers cost one call either way
+      fundingBalances(targets.map((w) => w.address)),
+      getSolBalance(main.address),
+    ]);
+
+    plan = planFunding({
+      targets,
+      balances,
+      mode,
+      sol,
+      sourceLamports: source.lamports,
+      priorityFeeSol: settings.priorityFeeSol,
+      reserveSol: settings.sweepReserveSol,
+    });
+  } catch (err) {
+    await ctx.reply(`❌ ${errMessage(err)}`, { reply_markup: backButton('fund_menu') });
+    return;
+  }
+
+  if (plan.transfers.length === 0) {
+    await ctx.reply(
+      mode === 'topup'
+        ? `Every wallet already holds at least ${sol} SOL. Nothing to do.`
+        : 'Nothing to send — the amount is below the transfer fee.',
+      { reply_markup: backButton('fund_menu') },
+    );
+    return;
+  }
+
+  const total = Number(plan.totalLamports) / LAMPORTS;
+  const fees = Number(plan.feeLamports) / LAMPORTS;
+
+  const lines = [
+    '<b>⬇️ Confirm funding</b>',
+    '',
+    `From: <b>${h(main.label)}</b> <code>${shortAddr(main.address, 6, 6)}</code>`,
+    `To: <b>${plan.transfers.length}</b> wallets`,
+    mode === 'each'
+      ? `Amount: <b>${sol} SOL</b> each`
+      : `Topping up to: <b>${sol} SOL</b> each`,
+    `Total: <b>${fmtAmount(total, 6)} SOL</b> + ~${fmtAmount(fees, 6)} SOL fees`,
+    `Transactions: ${plan.txCount}`,
+  ];
+
+  if (plan.skipped.length > 0) {
+    lines.push('');
+    lines.push(`<i>${plan.skipped.length} wallet${plan.skipped.length === 1 ? '' : 's'} skipped — already funded.</i>`);
+  }
+
+  const run = async (ctx: Context) => {
+    await render(ctx, `<b>⬇️ Funding ${plan.transfers.length} wallets…</b>`);
+
+    try {
+      const summary = await executeFunding(
+        main,
+        plan,
+        settings.priorityFeeSol,
+        throttledProgress(ctx, 'Funding wallets'),
+      );
+
+      db.appendTradeLog({
+        at: Date.now(),
+        action: mode === 'each' ? `fund ${sol} SOL each` : `top up to ${sol} SOL`,
+        walletCount: plan.transfers.length,
+        succeeded: summary.succeeded,
+        failed: summary.failed,
+      });
+
+      await render(
+        ctx,
+        renderBatchSummary(`⬇️ Funded ${plan.transfers.length} wallets`, summary),
+        new InlineKeyboard().text('💼 Portfolio', 'portfolio').row().text('← Menu', 'home'),
+      );
+    } catch (err) {
+      await render(ctx, `❌ ${h(errMessage(err))}`, backButton('fund_menu'));
+    }
+  };
+
+  if (!config.safety.requireConfirmation) {
+    await run(ctx);
+    return;
+  }
+
+  const id = stageConfirmation(ctx.from!.id, `fund ${plan.transfers.length} wallets`, run);
+  await ctx.reply(lines.join('\n'), {
+    parse_mode: 'HTML',
+    reply_markup: confirmKeyboard(id, 'fund_menu'),
+  });
 }
 
 export async function promptSweepSol(ctx: Context): Promise<void> {
@@ -438,7 +614,7 @@ export async function promptSweepSol(ctx: Context): Promise<void> {
     return;
   }
 
-  const run = async () => {
+  const run = async (ctx: Context) => {
     await render(ctx, `<b>💸 Sweeping ${wallets.length} wallets…</b>`);
     try {
       const summary = await batchSweepSol(wallets, main.address, throttledProgress(ctx, 'Sweeping SOL'));
@@ -528,7 +704,7 @@ export async function promptSweepEvm(ctx: Context, chain: EvmChain): Promise<voi
   const wallets = selectWallets({ kind: 'evm', excludeMain: true });
   const info = enabledChains().find((c) => c.key === chain);
 
-  const run = async () => {
+  const run = async (ctx: Context) => {
     await render(ctx, `<b>⬡ Sweeping ${info?.name ?? chain}…</b>`);
     try {
       const summary = await batchSweepEvmNative(
