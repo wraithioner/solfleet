@@ -100,6 +100,12 @@ Surface these on the card, computed not guessed:
   "sell everything that happens to be a live pump.fun token". Fall back to
   Jupiter per wallet. A token still on its curve exists nowhere else, so skip the
   fallback there rather than paying for a request that cannot succeed.
+- Before a buy, read every wallet's SOL balance in one batched call and skip the
+  wallets that cannot cover it, saying so on the confirmation screen *before* the
+  tap. A wallet holding less than the trade is about to spend cannot succeed, and
+  firing at it anyway turns an underfunded set into a wall of identical failures.
+  Keep the test permissive — amount plus fee, no allowance for token account rent
+  — so only wallets that certainly cannot pay are excluded.
 - Before a sell, read every wallet's balance in **one batched call** and skip the
   wallets holding nothing. Selling across 50 wallets when 3 hold the token should
   not produce 47 failures. Distrust an entirely empty read — that is far more
@@ -508,7 +514,12 @@ Ship three layers, wired to `npm run check`.
   the shortfall and reports already-funded wallets as skipped rather than failed;
   transfers pack into the expected number of transactions and cost per
   transaction, not per wallet; a plan exceeding the source balance throws before
-  anything is signed; a zero amount is rejected
+  anything is signed; a zero amount is rejected; a plan that would drain the
+  source to zero is rejected when a reserve is set
+- Affordability: wallets that cannot cover a buy are separated out while
+  exact-balance wallets still trade; the requirement includes the fee, not just
+  the amount; an **incomplete** balance read skips nobody, since a short read is
+  not evidence of empty wallets
 - Token accounts: the balance is read from the right offset, and an empty or
   truncated account reads as zero rather than throwing
 - Parsing: bare mint, mint in a sentence, mint in a pump.fun URL, EVM address;

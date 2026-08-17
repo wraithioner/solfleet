@@ -13,7 +13,14 @@ import {
   batchSellAllPositions,
   batchSweepEvmNative,
 } from '../../trade/engine.js';
-import { planFunding, executeFunding, fundingBalances, type FundMode } from '../../trade/fund.js';
+import {
+  planFunding,
+  executeFunding,
+  fundingBalances,
+  partitionByBalance,
+  requiredForBuy,
+  type FundMode,
+} from '../../trade/fund.js';
 import { enabledChains } from '../../chains/evm.js';
 import { errMessage, fmtAmount, shortAddr } from '../../util.js';
 import { log } from '../../logger.js';
@@ -164,6 +171,27 @@ export async function promptBuy(ctx: Context, mint: string, solPerWallet: number
     `Total spend: <b>${fmtAmount(total, 4)} SOL</b> + fees`,
     `Slippage: ${settings.slippagePercent}%  ·  Mode: ${settings.executionMode}`,
   ];
+
+  // which wallets can actually pay for this — better seen now than as a column
+  // of identical failures afterwards
+  try {
+    const balances = await fundingBalances(wallets.map((w) => w.address));
+    const { unfunded } = partitionByBalance(
+      wallets,
+      balances,
+      requiredForBuy(solPerWallet, settings.priorityFeeSol),
+    );
+
+    if (unfunded.length > 0) {
+      lines.push('');
+      lines.push(
+        `⚠️ <b>${unfunded.length} of ${wallets.length} wallets cannot cover this</b> and will be skipped.`,
+      );
+      lines.push('<i>Move Funds → Fund wallets from main.</i>');
+    }
+  } catch {
+    /* the trade is not blocked on a balance read */
+  }
 
   // walk the curve so the operator sees the real average fill, not N × spot
   try {

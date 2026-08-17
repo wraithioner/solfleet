@@ -36,7 +36,10 @@ at all. Everyone else gets silence, not an error.
 - Routing is automatic: the bonding curve while it's live, the AMM once
   graduated, and Jupiter for anything pump.fun can't route at all — so a plain
   SPL token, an airdrop or a Raydium-only coin sells like everything else
-- Wallets holding none of the token are skipped, not failed
+- Wallets holding none of the token are skipped, not failed — and neither are
+  wallets that can't cover a buy. The confirmation screen says how many of them
+  there are *before* you tap, rather than showing you a column of identical
+  failures afterwards
 - Before you confirm a buy, it simulates the wallets buying *in sequence* and
   shows the true average fill, how far the batch moves the price, and what the
   first and last wallet each get for the same spend
@@ -188,12 +191,13 @@ npm run check
 Runs three layers:
 
 - `typecheck` — full TypeScript strict-mode pass
-- `smoke` — 54 offline assertions: vault crypto (round-trip, unique IVs, tamper
+- `smoke` — 57 offline assertions: vault crypto (round-trip, unique IVs, tamper
   rejection, lock/unlock, passphrase rotation re-sealing every key), wallet
   derivation, group and main-wallet invariants, bonding curve maths and batch
   simulation, funding arithmetic (shortfall-only top-ups, transaction packing,
-  refusing a plan the main wallet can't afford), token account parsing, address
-  parsing, concurrency helpers, log redaction
+  refusing a plan the main wallet can't afford, skipping wallets that cannot
+  cover a buy), token account parsing, address parsing, concurrency helpers,
+  log redaction
 - `netcheck` — 20 live read-only checks against Solana RPC, DexScreener, Jupiter,
   PumpPortal and the pump.fun program
 

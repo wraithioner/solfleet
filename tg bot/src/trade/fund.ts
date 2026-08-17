@@ -206,6 +206,45 @@ export async function fundingBalances(addresses: string[]): Promise<Map<string, 
   return getSolBalances(addresses);
 }
 
+/**
+ * Split wallets into those that can cover a spend and those that cannot.
+ *
+ * A wallet holding less SOL than the trade is about to spend cannot succeed, and
+ * firing at it anyway turns an underfunded set into a wall of red rows. The test
+ * is deliberately permissive — the amount plus its own transaction fee, with no
+ * allowance for the token account rent a first buy may also need — so it only
+ * excludes wallets that certainly cannot pay, and leaves marginal cases to fail
+ * honestly on chain rather than being second-guessed here.
+ */
+export function partitionByBalance<T extends { address: string }>(
+  wallets: T[],
+  balances: Map<string, bigint>,
+  requiredLamports: bigint,
+): { funded: T[]; unfunded: T[] } {
+  // a short read is not evidence of empty wallets; treat it as unknown and let
+  // every wallet through rather than silently skipping a trade the operator asked for
+  if (balances.size < wallets.length) return { funded: wallets, unfunded: [] };
+
+  const funded: T[] = [];
+  const unfunded: T[] = [];
+
+  for (const w of wallets) {
+    if ((balances.get(w.address) ?? 0n) >= requiredLamports) funded.push(w);
+    else unfunded.push(w);
+  }
+
+  return { funded, unfunded };
+}
+
+/** What one wallet must hold to have any chance of completing a buy. */
+export function requiredForBuy(solPerWallet: number, priorityFeeSol: number): bigint {
+  return (
+    BigInt(Math.floor(solPerWallet * LAMPORTS)) +
+    BigInt(BASE_FEE_LAMPORTS) +
+    BigInt(Math.floor(priorityFeeSol * LAMPORTS))
+  );
+}
+
 function summarise(results: ExecutionResult[], startedAt: number): BatchSummary {
   return {
     results,

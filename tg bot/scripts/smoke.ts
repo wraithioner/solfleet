@@ -352,6 +352,40 @@ assert.throws(
 );
 ok('a plan that would drain the main wallet to zero is rejected when a reserve is set');
 
+// a wallet that cannot pay for the trade is skipped, not fired at
+const { partitionByBalance, requiredForBuy } = await import('../src/trade/fund.js');
+
+const buyers = [
+  { address: 'RICH' },
+  { address: 'EXACT' },
+  { address: 'SHORT' },
+  { address: 'EMPTY' },
+];
+const need = requiredForBuy(0.5, 0.00005);
+const split = partitionByBalance(
+  buyers,
+  new Map([
+    ['RICH', BigInt(2 * LAMPORTS_PER_SOL)],
+    ['EXACT', need],
+    ['SHORT', need - 1n],
+    ['EMPTY', 0n],
+  ]),
+  need,
+);
+assert.deepEqual(split.funded.map((w) => w.address), ['RICH', 'EXACT']);
+assert.deepEqual(split.unfunded.map((w) => w.address), ['SHORT', 'EMPTY']);
+ok('wallets that cannot cover a buy are separated out, and exact-balance wallets still trade');
+
+// the buy needs its own fee on top of the amount, not just the amount
+assert.ok(need > BigInt(0.5 * LAMPORTS_PER_SOL), 'the requirement includes the transaction fee');
+ok('a buy requirement covers the amount plus its fee');
+
+// a short read must not be mistaken for a set of empty wallets
+const shortRead = partitionByBalance(buyers, new Map([['RICH', BigInt(2 * LAMPORTS_PER_SOL)]]), need);
+assert.equal(shortRead.funded.length, 4, 'an incomplete balance read skips nobody');
+assert.equal(shortRead.unfunded.length, 0);
+ok('an incomplete balance read lets every wallet through rather than skipping trades');
+
 console.log('\n[8] Token account parsing');
 const { parseTokenAccountAmount } = await import('../src/chains/solana.js');
 

@@ -20,6 +20,7 @@ import { buildTrade, buildTradeBundle, signTx, toTradeArgs, type TradeArgs } fro
 import { sendBundle, waitForBundle } from './jito.js';
 import { detectPool } from './curve.js';
 import { swapToSol, swapFromSol } from './jupiter.js';
+import { fundingBalances, partitionByBalance, requiredForBuy } from './fund.js';
 import type {
   WalletRecord,
   TradeRequest,
@@ -87,9 +88,9 @@ export async function batchPumpTrade(
     holdings: req.action === 'sell' ? await readHoldings(solWallets, req.mint) : undefined,
   };
 
-  // A wallet with nothing to sell has nothing to do — it is not a failure, and
-  // it must not be packed into a bundle either, where one wallet's empty balance
-  // fails the build for the other four.
+  // A wallet with nothing to sell — or nothing to spend — has nothing to do. It
+  // is not a failure, and it must not be packed into a bundle either, where one
+  // such wallet fails the build for the other four.
   const idle: ExecutionResult[] = [];
   let active = solWallets;
 
@@ -100,6 +101,30 @@ export async function batchPumpTrade(
       if ((holdings.get(w.address) ?? 0n) === 0n) {
         idle.push({ walletId: w.id, label: w.label, address: w.address, ok: true, detail: 'no balance' });
       }
+    }
+  }
+
+  if (req.action === 'buy') {
+    try {
+      const balances = await fundingBalances(active.map((w) => w.address));
+      const { funded, unfunded } = partitionByBalance(
+        active,
+        balances,
+        requiredForBuy(req.amount, req.priorityFeeSol),
+      );
+
+      active = funded;
+      for (const w of unfunded) {
+        idle.push({
+          walletId: w.id,
+          label: w.label,
+          address: w.address,
+          ok: true,
+          detail: 'unfunded — send it SOL first',
+        });
+      }
+    } catch (err) {
+      log.warn(`Could not pre-read wallet balances: ${errMessage(err)}`);
     }
   }
 
