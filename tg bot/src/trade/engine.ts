@@ -131,7 +131,7 @@ export async function batchPumpTrade(
   log.info(
     `Batch ${req.action} ${req.mint} across ${active.length} wallets ` +
       `(mode=${mode}, pool=${req.pool}, jupiterFallback=${ctx.allowJupiter}` +
-      `${idle.length > 0 ? `, ${idle.length} holding none` : ''})`,
+      `${idle.length > 0 ? `, ${idle.length} skipped as ${req.action === 'buy' ? 'unfunded' : 'holding none'}` : ''})`,
   );
 
   if (active.length === 0) return summarise(idle, startedAt);
