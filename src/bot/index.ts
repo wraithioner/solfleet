@@ -22,7 +22,15 @@ import {
   walletFromShortId,
 } from './session.js';
 import { mainMenu, backButton, h } from './ui.js';
-import { render, showHome, showPortfolio, showPositions, showSettings } from './handlers/core.js';
+import {
+  render,
+  showHome,
+  showPortfolio,
+  showPositions,
+  showSettings,
+  showFactoryReset,
+  executeFactoryReset,
+} from './handlers/core.js';
 import * as W from './handlers/wallets.js';
 import * as T from './handlers/trade.js';
 import type { EvmChain } from '../types.js';
@@ -153,8 +161,10 @@ function registerCallbacks(bot: Bot): void {
     const data = ctx.callbackQuery.data;
     const [action, ...args] = data.split(':');
 
-    // every screen except the vault prompts needs an unlocked vault
-    if (!isUnlocked() && action !== 'home') {
+    // Every screen except the vault prompts needs an unlocked vault. Factory
+    // reset is the exception: a forgotten passphrase is the likeliest reason to
+    // need it, and it destroys the keys rather than using them.
+    if (!isUnlocked() && action !== 'home' && action !== 'factory_reset') {
       await ctx.answerCallbackQuery({ text: '🔒 Vault is locked. Send /unlock <passphrase>.', show_alert: true });
       return;
     }
@@ -331,6 +341,9 @@ async function routeCallback(ctx: Context, action: string, args: string[]): Prom
       setPending(userId, { kind: 'change_passphrase', stage: 'current' });
       return render(ctx, '<b>🔑 Send your current passphrase.</b>', backButton('settings'));
 
+    case 'factory_reset':
+      return showFactoryReset(ctx);
+
     default:
       await ctx.answerCallbackQuery({ text: 'Unknown action.', show_alert: false });
   }
@@ -453,6 +466,12 @@ async function handlePending(
         return;
       }
       return T.promptSell(ctx, pending.mint, pct);
+    }
+
+    case 'factory_reset': {
+      // the phrase itself is not a secret, but the screen it came from is noisy
+      await deleteMessage(ctx);
+      return executeFactoryReset(ctx, text);
     }
 
     case 'fund_amount': {

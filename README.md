@@ -179,6 +179,22 @@ specifically need it.
 **Back up `data/vault.json` and `data/wallets.json` together.** One is useless
 without the other, and there is no recovery path for a lost passphrase.
 
+### Starting over
+
+**Settings → 🧨 Factory reset** deletes the vault, every private key, the seed
+phrase, every label and group, and the trade history — then drops back to the
+first-run state so `/start` builds a new vault from scratch.
+
+Before it does anything it shows you what you are about to destroy, including
+**the live SOL balance held across those wallets**, because that is the one fact
+that should stop a reset that is about to burn real money. Sweep or export first.
+Confirming means typing `RESET EVERYTHING` exactly — a button is too easy to
+press by accident.
+
+It works **while the vault is locked**, on purpose: forgetting the passphrase is
+the most likely reason to need it, and the keys are already unreachable at that
+point. Anything those wallets still hold is gone for good.
+
 ---
 
 ## Safety rails
@@ -236,12 +252,13 @@ npm run check
 Runs three layers:
 
 - `typecheck` — full TypeScript strict-mode pass
-- `smoke` — 57 offline assertions: vault crypto (round-trip, unique IVs, tamper
+- `smoke` — 61 offline assertions: vault crypto (round-trip, unique IVs, tamper
   rejection, lock/unlock, passphrase rotation re-sealing every key), wallet
   derivation, group and main-wallet invariants, bonding curve maths and batch
   simulation, funding arithmetic (shortfall-only top-ups, transaction packing,
   refusing a plan the main wallet can't afford, skipping wallets that cannot
-  cover a buy), token account parsing, address parsing, concurrency helpers,
+  cover a buy), token account parsing, factory reset (files removed from disk,
+  fresh setup possible afterwards), address parsing, concurrency helpers,
   log redaction
 - `netcheck` — 20 live read-only checks against Solana RPC, DexScreener, Jupiter,
   PumpPortal and the pump.fun program

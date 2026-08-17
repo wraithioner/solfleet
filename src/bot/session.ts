@@ -21,6 +21,7 @@ export type PendingInput =
   | { kind: 'custom_sell'; mint: string }
   | { kind: 'send_to_address'; chainKind: 'solana' | 'evm'; token?: string }
   | { kind: 'fund_amount'; mode: 'each' | 'topup' }
+  | { kind: 'factory_reset' }
   | { kind: 'set_slippage' }
   | { kind: 'set_priority_fee' }
   | { kind: 'set_jito_tip' }

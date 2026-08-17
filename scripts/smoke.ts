@@ -399,7 +399,43 @@ assert.equal(parseTokenAccountAmount(Buffer.alloc(165)), 0n);
 assert.equal(parseTokenAccountAmount(Buffer.alloc(8)), 0n, 'a truncated account reads as empty, not a crash');
 ok('empty and truncated accounts read as zero');
 
-console.log('\n[9] Secret redaction in logs');
+console.log('\n[9] Factory reset');
+const { destroyVault, vaultExists } = await import('../src/store/vault.js');
+const { db } = await import('../src/store/db.js');
+
+assert.equal(vaultExists(), true, 'a vault exists before the reset');
+assert.ok(wallets.allWallets().length > 0, 'wallets exist before the reset');
+assert.ok(db.mnemonic(), 'a seed phrase is stored before the reset');
+
+destroyVault();
+db.wipe();
+
+assert.equal(vaultExists(), false, 'the vault file is gone');
+assert.equal(wallets.allWallets().length, 0, 'every wallet is gone');
+assert.equal(db.mnemonic(), undefined, 'the stored seed phrase is gone');
+assert.equal(isUnlocked(), false, 'the reset leaves the vault locked');
+ok('reset destroys the vault, the wallets and the seed phrase');
+
+// files must be gone from disk, not merely emptied in memory
+assert.equal(fs.existsSync(`${DATA}/vault.json`), false);
+assert.equal(fs.existsSync(`${DATA}/wallets.json`), false);
+ok('both files are removed from disk');
+
+// the point of a reset is being able to start over — prove it
+await initVault('a completely fresh start');
+assert.equal(isUnlocked(), true);
+const rebuilt = wallets.generateSolanaWallet('post-reset');
+assert.equal(rebuilt.isMain, true, 'the first wallet after a reset is main again');
+assert.equal(wallets.solanaKeypair(rebuilt).publicKey.toBase58(), rebuilt.address);
+ok('a new vault can be created afterwards, from zero');
+
+// and the old passphrase must not open the new vault
+lockVault();
+await assert.rejects(() => unlockVault('a much better passphrase'), /Wrong passphrase/);
+await unlockVault('a completely fresh start');
+ok('the old passphrase is dead; the new one works');
+
+console.log('\n[10] Secret redaction in logs');
 const { redact } = await import('../src/logger.js');
 assert.ok(!redact(`key is ${exported}`).includes(exported), 'base58 secret key redacted');
 assert.ok(!redact(`pk 0x${'a'.repeat(64)}`).includes('a'.repeat(64)), 'hex private key redacted');

@@ -235,6 +235,20 @@ export function writeAtomic(file: string, contents: string): void {
   fs.renameSync(tmp, file);
 }
 
+/**
+ * Delete the vault outright and return to the first-run state.
+ *
+ * Deliberately available while locked: forgetting the passphrase is precisely
+ * when starting over is the only option left, and a bot that can only be reset
+ * by someone who can already unlock it is no use in that situation. The keys are
+ * gone either way — what this changes is whether the operator can carry on.
+ */
+export function destroyVault(): void {
+  lockVault();
+  fs.rmSync(vaultPath(), { force: true });
+  log.warn('Vault destroyed. Every stored key is now unrecoverable.');
+}
+
 /** Unlock automatically when the operator has accepted the risk of VAULT_PASSPHRASE. */
 export async function autoUnlockIfConfigured(): Promise<boolean> {
   const pass = config.vault.passphrase;

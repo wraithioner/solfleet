@@ -369,6 +369,8 @@ export function settingsKeyboard(s: Settings): InlineKeyboard {
     .row()
     .text('🔑 Change passphrase', 'change_passphrase')
     .row()
+    .text('🧨 Factory reset', 'factory_reset')
+    .row()
     .text('← Menu', 'home');
 }
 

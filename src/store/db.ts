@@ -131,4 +131,15 @@ export const db = {
   raw(): DbShape {
     return load();
   },
+
+  /**
+   * Delete the wallet index and return to an empty store.
+   *
+   * The in-memory cache is reset too, so the running process forgets the old
+   * wallets immediately rather than writing them back out on the next flush.
+   */
+  wipe(): void {
+    fs.rmSync(dbPath(), { force: true });
+    cache = { version: 1, wallets: [], settings: defaultSettings(), tradeLog: [] };
+  },
 };

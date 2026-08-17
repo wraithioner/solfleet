@@ -1,10 +1,12 @@
 import type { Context } from 'grammy';
 import { db } from '../../store/db.js';
 import { allWallets, selectWallets } from '../../store/wallets.js';
-import { isUnlocked, vaultExists } from '../../store/vault.js';
+import { isUnlocked, vaultExists, destroyVault } from '../../store/vault.js';
 import { buildPortfolio, listPositions } from '../../services/portfolio.js';
+import { getSolBalances, LAMPORTS } from '../../chains/solana.js';
 import { fmtAmount, fmtUsd, errMessage } from '../../util.js';
-import { tokenId } from '../session.js';
+import { log } from '../../logger.js';
+import { tokenId, setPending, clearSession } from '../session.js';
 import {
   mainMenu,
   renderPortfolio,
@@ -135,6 +137,105 @@ export async function showPositions(ctx: Context): Promise<void> {
   } catch (err) {
     await render(ctx, `❌ Could not load positions.\n\n<i>${h(errMessage(err))}</i>`, backButton());
   }
+}
+
+// ── factory reset ─────────────────────────────────────────────────────────────
+
+/** The operator must type this exactly. A tap is too easy to do by accident. */
+export const RESET_PHRASE = 'RESET EVERYTHING';
+
+/**
+ * Show what a reset would destroy, priced in real money where possible.
+ *
+ * Wallet addresses are stored in the clear, so the balances can be read even
+ * when the vault is locked — which matters, because a forgotten passphrase is
+ * the most likely reason to be here, and "you still have 3.4 SOL in there" is
+ * the one fact that should stop someone mid-reset.
+ */
+export async function showFactoryReset(ctx: Context): Promise<void> {
+  const wallets = allWallets();
+  const solWallets = wallets.filter((w) => w.kind === 'solana');
+  const evmWallets = wallets.filter((w) => w.kind === 'evm');
+
+  const lines = [
+    '<b>🧨 Factory reset</b>',
+    '',
+    'This deletes <b>everything</b>: the vault, every private key, the seed phrase, every wallet label and group, and the trade history.',
+    '',
+    `<b>${solWallets.length}</b> Solana · <b>${evmWallets.length}</b> EVM wallets stored`,
+  ];
+
+  if (wallets.length === 0) {
+    lines.push('');
+    lines.push('<i>Nothing is stored yet — a reset would be a no-op.</i>');
+    await render(ctx, lines.join('\n'), backButton('settings'));
+    return;
+  }
+
+  // the number that should stop someone who is about to make a mistake
+  let funded = 0;
+  try {
+    const balances = await getSolBalances(solWallets.map((w) => w.address));
+    let total = 0n;
+    for (const lamports of balances.values()) {
+      total += lamports;
+      if (lamports > 0n) funded++;
+    }
+
+    const sol = Number(total) / LAMPORTS;
+    lines.push('');
+    if (total > 0n) {
+      lines.push(`⚠️ <b>These wallets currently hold ${fmtAmount(sol, 6)} SOL</b> across ${funded} wallet${funded === 1 ? '' : 's'}.`);
+      lines.push('<b>That balance becomes permanently unspendable.</b> Sweep it to a wallet you control first, or export the keys.');
+    } else {
+      lines.push('<i>No SOL balance found in these wallets.</i>');
+    }
+  } catch {
+    lines.push('');
+    lines.push('<i>⚠️ Could not read balances — assume the wallets still hold funds.</i>');
+  }
+
+  if (evmWallets.length > 0) {
+    lines.push('');
+    lines.push(`<i>EVM balances are not checked here. ${evmWallets.length} EVM wallet${evmWallets.length === 1 ? '' : 's'} will also be destroyed.</i>`);
+  }
+
+  lines.push('');
+  lines.push('There is no undo and no backup. To go ahead, send this exactly:');
+  lines.push(`<code>${RESET_PHRASE}</code>`);
+
+  setPending(ctx.from!.id, { kind: 'factory_reset' });
+  await render(ctx, lines.join('\n'), backButton('settings'));
+}
+
+/** Runs only after the operator typed the phrase verbatim. */
+export async function executeFactoryReset(ctx: Context, text: string): Promise<void> {
+  if (text.trim() !== RESET_PHRASE) {
+    await ctx.reply(
+      `Reset cancelled — that did not match.\n\nSend <code>${RESET_PHRASE}</code> exactly, or open Settings again.`,
+      { parse_mode: 'HTML', reply_markup: backButton('settings') },
+    );
+    return;
+  }
+
+  const had = allWallets().length;
+
+  destroyVault();
+  db.wipe();
+  clearSession(ctx.from!.id);
+
+  log.warn(`Factory reset performed. ${had} wallets and the vault were deleted.`);
+
+  await ctx.reply(
+    [
+      '<b>🧨 Factory reset complete</b>',
+      '',
+      `Deleted the vault and ${had} wallet${had === 1 ? '' : 's'}.`,
+      '',
+      'Send /start to set up a new vault from scratch.',
+    ].join('\n'),
+    { parse_mode: 'HTML' },
+  );
 }
 
 export async function showSettings(ctx: Context): Promise<void> {
