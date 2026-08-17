@@ -102,9 +102,10 @@ encrypted under it before touching disk.
 The bot is a worker, not a web service — it long-polls Telegram and never
 listens on a port. Railway runs it fine, but three settings are not optional.
 
-**1. Root directory.** The project lives in the `tg bot` subdirectory, so in
-Settings → Source, set **Root Directory** to `tg bot` (the space is part of the
-name). Without it Railway finds no `package.json` and the build fails.
+**1. Nothing to configure for the build.** `package.json` sits at the repo root,
+so Railway detects a Node app and runs `npm start` on its own. (It previously
+lived in a `tg bot/` subdirectory, which made Railpack fail with "could not
+determine how to build the app" — that is why the layout is flat.)
 
 **2. A volume — do this before you create any wallets.** Container storage is
 erased on every redeploy. The encrypted vault is the *only* copy of your private
