@@ -399,7 +399,33 @@ assert.equal(parseTokenAccountAmount(Buffer.alloc(165)), 0n);
 assert.equal(parseTokenAccountAmount(Buffer.alloc(8)), 0n, 'a truncated account reads as empty, not a crash');
 ok('empty and truncated accounts read as zero');
 
-console.log('\n[9] Factory reset');
+console.log('\n[9] Token card rendering');
+const { renderTokenCard } = await import('../src/bot/ui.js');
+
+// a token on a chain this bot has no RPC for must still say where it trades
+const card = renderTokenCard({
+  address: '0xd5bf43f29bf7aa5bb42ae9e217b84b86eb7a4b94',
+  chain: 'ethereum',
+  chainLabel: 'robinhood',
+  dex: 'uniswap',
+  name: 'HoodLock',
+  symbol: 'LOCK',
+  priceUsd: 0.00006255,
+  warnings: [],
+});
+assert.ok(card.includes('robinhood'), 'the real chain is named on the card');
+assert.ok(card.includes('uniswap'), 'the venue is named on the card');
+ok('a token on an unmapped chain still reports where its price comes from');
+
+// holder failure must never render as an empty section
+const unavailable = renderTokenCard({
+  address: 'x', chain: 'solana', holdersUnavailable: true,
+  warnings: ['Holder distribution unavailable — the RPC rejected the query.'],
+});
+assert.ok(/Unavailable/i.test(unavailable), 'unknown holders say so explicitly');
+ok('unavailable holder data renders as "unknown", never as silence');
+
+console.log('\n[10] Factory reset');
 const { destroyVault, vaultExists } = await import('../src/store/vault.js');
 const { db } = await import('../src/store/db.js');
 
@@ -435,7 +461,7 @@ await assert.rejects(() => unlockVault('a much better passphrase'), /Wrong passp
 await unlockVault('a completely fresh start');
 ok('the old passphrase is dead; the new one works');
 
-console.log('\n[10] Secret redaction in logs');
+console.log('\n[11] Secret redaction in logs');
 const { redact } = await import('../src/logger.js');
 assert.ok(!redact(`key is ${exported}`).includes(exported), 'base58 secret key redacted');
 assert.ok(!redact(`pk 0x${'a'.repeat(64)}`).includes('a'.repeat(64)), 'hex private key redacted');

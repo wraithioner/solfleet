@@ -105,6 +105,12 @@ export function renderTokenCard(info: TokenInfo): string {
 
   lines.push(`<b>${h(name)}</b>${symbol}`);
   lines.push(`<code>${h(info.address)}</code>`);
+
+  // which chain and venue this price actually comes from — the same address can
+  // exist on several chains, so an unlabelled price is a guess
+  const venue = [info.chainLabel, info.dex].filter(Boolean).join(' · ');
+  if (venue) lines.push(`<i>${h(venue)}</i>`);
+
   lines.push('');
 
   if (info.priceUsd !== undefined) {

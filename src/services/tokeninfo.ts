@@ -26,6 +26,8 @@ export interface HolderInfo {
 export interface TokenInfo {
   address: string;
   chain: Chain;
+  /** The chain as the indexer names it — may be one this bot has no RPC for. */
+  chainLabel?: string;
   name?: string;
   symbol?: string;
   /** Token logo, used as the photo on the info card. */
@@ -144,15 +146,46 @@ async function fetchPairsOnChain(chainId: string, address: string): Promise<DexP
   }
 }
 
+/**
+ * Last resort: ask DexScreener where this token trades, on any chain at all.
+ *
+ * The scoped lookup exists because an address is not unique across chains and
+ * this endpoint will happily answer with a fork's pair — querying USDT here
+ * once returned only pulsechain and reported $0.0009 instead of $0.9993. It is
+ * safe as a *fallback* though: it only runs when none of the known chains had a
+ * market, so there is no correct answer being overridden, and the chain it
+ * found is displayed on the card so the operator can see what they are looking
+ * at. This is what lets a token on a brand new L2 resolve at all.
+ */
+async function fetchPairsAnywhere(address: string): Promise<DexPair[]> {
+  try {
+    const res = await fetchJson<{ pairs?: DexPair[] | null }>(
+      `${endpoints.dexscreenerTokens}/${address}`,
+      { timeoutMs: 12_000 },
+    );
+    return (res.pairs ?? []).filter(
+      (p) => p.baseToken?.address?.toLowerCase() === address.toLowerCase(),
+    );
+  } catch {
+    return [];
+  }
+}
+
 async function loadMarketData(address: string, kind: 'solana' | 'evm'): Promise<Partial<TokenInfo>> {
   try {
     // An EVM address is not unique across chains — forks reuse the exact same
     // contract address — so search each chain explicitly instead of trusting an
     // unscoped lookup to guess right.
-    const pairs =
+    let pairs =
       kind === 'solana'
         ? await fetchPairsOnChain('solana', address)
         : (await Promise.all(EVM_LOOKUP_CHAINS.map((c) => fetchPairsOnChain(c, address)))).flat();
+
+    // nothing on any chain we know by name — widen the search rather than
+    // reporting a token that plainly exists as "unknown"
+    if (pairs.length === 0 && kind === 'evm') {
+      pairs = await fetchPairsAnywhere(address);
+    }
 
     if (pairs.length === 0) return {};
 
@@ -161,6 +194,10 @@ async function loadMarketData(address: string, kind: 'solana' | 'evm'): Promise<
 
     return {
       chain: dexChainToChain(best.chainId),
+      // the chain exactly as DexScreener names it, including chains this bot has
+      // no `Chain` value for — without it a Robinhood Chain token would silently
+      // render as Ethereum
+      chainLabel: best.chainId,
       name: best.baseToken?.name,
       symbol: best.baseToken?.symbol,
       priceUsd: best.priceUsd ? Number(best.priceUsd) : undefined,

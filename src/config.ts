@@ -96,4 +96,5 @@ export const EVM_LOOKUP_CHAINS = [
   'polygon',
   'optimism',
   'avalanche',
+  'robinhood',
 ] as const;
