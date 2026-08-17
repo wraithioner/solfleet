@@ -1,0 +1,99 @@
+import 'dotenv/config';
+import path from 'node:path';
+
+function req(name: string): string {
+  const v = process.env[name]?.trim();
+  if (!v) throw new Error(`Missing required env var ${name}. Copy .env.example to .env and fill it in.`);
+  return v;
+}
+
+function opt(name: string, fallback = ''): string {
+  return process.env[name]?.trim() || fallback;
+}
+
+function num(name: string, fallback: number): number {
+  const raw = process.env[name]?.trim();
+  if (!raw) return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function bool(name: string, fallback: boolean): boolean {
+  const raw = process.env[name]?.trim().toLowerCase();
+  if (!raw) return fallback;
+  return raw === 'true' || raw === '1' || raw === 'yes';
+}
+
+export type ExecutionMode = 'bundle' | 'parallel';
+
+export const config = {
+  botToken: req('BOT_TOKEN'),
+
+  ownerIds: req('OWNER_IDS')
+    .split(',')
+    .map((s) => Number(s.trim()))
+    .filter((n) => Number.isInteger(n) && n > 0),
+
+  solana: {
+    rpcUrl: opt('SOLANA_RPC_URL', 'https://api.mainnet-beta.solana.com'),
+    sendRpcUrl: opt('SOLANA_SEND_RPC_URL') || opt('SOLANA_RPC_URL', 'https://api.mainnet-beta.solana.com'),
+  },
+
+  /** Only chains with a configured RPC are enabled. */
+  evmRpc: {
+    ethereum: opt('ETHEREUM_RPC_URL'),
+    base: opt('BASE_RPC_URL'),
+    arbitrum: opt('ARBITRUM_RPC_URL'),
+    bsc: opt('BSC_RPC_URL'),
+    polygon: opt('POLYGON_RPC_URL'),
+    optimism: opt('OPTIMISM_RPC_URL'),
+  } as Record<string, string>,
+
+  vault: {
+    passphrase: opt('VAULT_PASSPHRASE'),
+    autolockMinutes: num('VAULT_AUTOLOCK_MINUTES', 30),
+  },
+
+  trading: {
+    slippagePercent: num('DEFAULT_SLIPPAGE_PERCENT', 15),
+    priorityFeeSol: num('DEFAULT_PRIORITY_FEE_SOL', 0.00005),
+    executionMode: (opt('DEFAULT_EXECUTION_MODE', 'parallel') as ExecutionMode),
+    concurrency: Math.max(1, num('EXECUTION_CONCURRENCY', 5)),
+    jitoTipSol: num('JITO_TIP_SOL', 0.0001),
+  },
+
+  safety: {
+    maxBuySolPerWallet: num('MAX_BUY_SOL_PER_WALLET', 5),
+    requireConfirmation: bool('REQUIRE_CONFIRMATION', true),
+  },
+
+  dataDir: path.resolve(process.cwd(), opt('DATA_DIR', './data')),
+} as const;
+
+if (config.ownerIds.length === 0) {
+  throw new Error('OWNER_IDS did not contain a valid numeric Telegram user ID.');
+}
+
+/** Endpoints for the external services the bot talks to. */
+export const endpoints = {
+  pumpPortalTradeLocal: 'https://pumpportal.fun/api/trade-local',
+  jitoBundles: 'https://mainnet.block-engine.jito.wtf/api/v1/bundles',
+  jupiterQuote: 'https://lite-api.jup.ag/swap/v1/quote',
+  jupiterSwap: 'https://lite-api.jup.ag/swap/v1/swap',
+  jupiterPrice: 'https://lite-api.jup.ag/price/v3',
+  dexscreenerTokens: 'https://api.dexscreener.com/latest/dex/tokens',
+  /** Chain-scoped lookup. The unscoped one mixes in forked chains that reuse the
+   *  same contract address, which produces wildly wrong prices. */
+  dexscreenerByChain: 'https://api.dexscreener.com/tokens/v1',
+} as const;
+
+/** DexScreener chain ids we search when resolving an EVM token address. */
+export const EVM_LOOKUP_CHAINS = [
+  'ethereum',
+  'base',
+  'bsc',
+  'arbitrum',
+  'polygon',
+  'optimism',
+  'avalanche',
+] as const;

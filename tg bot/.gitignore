@@ -1,0 +1,21 @@
+# Secrets — never commit these
+.env
+.env.*
+!.env.example
+
+# Encrypted vault + wallet database. Still sensitive: back these up somewhere safe,
+# but do not put them in git.
+data/
+*.vault.json
+*.keystore.json
+
+# test scratch dirs
+.smoke-data/
+.netcheck-data/
+
+node_modules/
+dist/
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db

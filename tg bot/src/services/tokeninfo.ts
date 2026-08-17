@@ -1,0 +1,355 @@
+import { PublicKey } from '@solana/web3.js';
+import { rpc } from '../chains/solana.js';
+import { endpoints, EVM_LOOKUP_CHAINS } from '../config.js';
+import { fetchJson, errMessage } from '../util.js';
+import { log } from '../logger.js';
+import { fetchBondingCurve, curveMarketCapSol, curveProgress, bondingCurvePda } from '../trade/curve.js';
+import { getSolPrice } from './prices.js';
+import { getTokenMetadata } from './metadata.js';
+import { allWallets } from '../store/wallets.js';
+import type { Chain } from '../types.js';
+
+/**
+ * Everything worth knowing about a token, assembled from three sources:
+ * DexScreener for market data, the chain itself for holder distribution, and
+ * the pump.fun curve for pre-graduation tokens that no DEX has indexed yet.
+ */
+
+export interface HolderInfo {
+  owner: string;
+  amount: number;
+  pctOfSupply: number;
+  /** Set when we can name the holder: our own wallet, the curve, a pool, ... */
+  tag?: string;
+}
+
+export interface TokenInfo {
+  address: string;
+  chain: Chain;
+  name?: string;
+  symbol?: string;
+  /** Token logo, used as the photo on the info card. */
+  imageUrl?: string;
+  description?: string;
+  priceUsd?: number;
+  priceChange24h?: number;
+  priceChange1h?: number;
+  marketCap?: number;
+  fdv?: number;
+  liquidityUsd?: number;
+  volume24h?: number;
+  volume1h?: number;
+  buys24h?: number;
+  sells24h?: number;
+  pairCreatedAt?: number;
+  dex?: string;
+  websites?: string[];
+  socials?: string[];
+
+  /** pump.fun specific. */
+  isPumpFun?: boolean;
+  curveComplete?: boolean;
+  curveProgressPct?: number;
+  curveMcapSol?: number;
+
+  totalSupply?: number;
+  holders?: HolderInfo[];
+  /** True when the holder query failed — distinct from "no holders". */
+  holdersUnavailable?: boolean;
+  top10Pct?: number;
+  /** How much of the supply the operator's own wallets control. */
+  ownedPct?: number;
+  ownedAmount?: number;
+
+  warnings: string[];
+}
+
+// ── address detection ─────────────────────────────────────────────────────────
+
+const SOLANA_MINT_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+const EVM_ADDR_RE = /^0x[a-fA-F0-9]{40}$/;
+
+/** Pull a token address out of arbitrary pasted text, if there is one. */
+export function extractTokenAddress(text: string): { address: string; kind: 'solana' | 'evm' } | null {
+  const cleaned = text.trim();
+
+  // handle pasted links: pump.fun/coin/<mint>, dexscreener.com/solana/<pair>, ...
+  const fromUrl = cleaned.match(/(?:coin|token|solana|ethereum|base|bsc|arbitrum|polygon)\/([1-9A-HJ-NP-Za-km-z]{32,44}|0x[a-fA-F0-9]{40})/);
+  const candidate = fromUrl?.[1] ?? cleaned.split(/\s+/).find((w) => SOLANA_MINT_RE.test(w) || EVM_ADDR_RE.test(w));
+
+  if (!candidate) return null;
+  if (EVM_ADDR_RE.test(candidate)) return { address: candidate, kind: 'evm' };
+
+  // a base58 string of the right length is not necessarily a valid pubkey
+  try {
+    new PublicKey(candidate);
+    return { address: candidate, kind: 'solana' };
+  } catch {
+    return null;
+  }
+}
+
+// ── DexScreener ───────────────────────────────────────────────────────────────
+
+interface DexPair {
+  chainId: string;
+  dexId: string;
+  baseToken: { address: string; name: string; symbol: string };
+  priceUsd?: string;
+  txns?: { h24?: { buys: number; sells: number } };
+  volume?: { h24?: number; h1?: number };
+  priceChange?: { h24?: number; h1?: number };
+  liquidity?: { usd?: number };
+  fdv?: number;
+  marketCap?: number;
+  pairCreatedAt?: number;
+  info?: {
+    imageUrl?: string;
+    header?: string;
+    websites?: Array<{ url: string }>;
+    socials?: Array<{ type: string; url: string }>;
+  };
+}
+
+const DEX_CHAIN_MAP: Record<string, Chain> = {
+  solana: 'solana',
+  ethereum: 'ethereum',
+  base: 'base',
+  bsc: 'bsc',
+  arbitrum: 'arbitrum',
+  polygon: 'polygon',
+  optimism: 'optimism',
+};
+
+function dexChainToChain(chainId: string): Chain | undefined {
+  return DEX_CHAIN_MAP[chainId];
+}
+
+/**
+ * Pairs for one token on one specific chain.
+ *
+ * Every field DexScreener reports — price, mcap, volume — describes the pair's
+ * BASE token, so pairs where our address is the quote side are dropped.
+ */
+async function fetchPairsOnChain(chainId: string, address: string): Promise<DexPair[]> {
+  try {
+    const res = await fetchJson<DexPair[] | { pairs?: DexPair[] }>(
+      `${endpoints.dexscreenerByChain}/${chainId}/${address}`,
+      { timeoutMs: 12_000 },
+    );
+    const pairs = Array.isArray(res) ? res : (res.pairs ?? []);
+    return pairs.filter((p) => p.baseToken?.address?.toLowerCase() === address.toLowerCase());
+  } catch {
+    return [];
+  }
+}
+
+async function loadMarketData(address: string, kind: 'solana' | 'evm'): Promise<Partial<TokenInfo>> {
+  try {
+    // An EVM address is not unique across chains — forks reuse the exact same
+    // contract address — so search each chain explicitly instead of trusting an
+    // unscoped lookup to guess right.
+    const pairs =
+      kind === 'solana'
+        ? await fetchPairsOnChain('solana', address)
+        : (await Promise.all(EVM_LOOKUP_CHAINS.map((c) => fetchPairsOnChain(c, address)))).flat();
+
+    if (pairs.length === 0) return {};
+
+    // the deepest pool is the one whose price and market cap mean anything
+    const best = pairs.reduce((a, b) => ((b.liquidity?.usd ?? 0) > (a.liquidity?.usd ?? 0) ? b : a));
+
+    return {
+      chain: dexChainToChain(best.chainId),
+      name: best.baseToken?.name,
+      symbol: best.baseToken?.symbol,
+      priceUsd: best.priceUsd ? Number(best.priceUsd) : undefined,
+      priceChange24h: best.priceChange?.h24,
+      priceChange1h: best.priceChange?.h1,
+      marketCap: best.marketCap,
+      fdv: best.fdv,
+      liquidityUsd: best.liquidity?.usd,
+      volume24h: best.volume?.h24,
+      volume1h: best.volume?.h1,
+      buys24h: best.txns?.h24?.buys,
+      sells24h: best.txns?.h24?.sells,
+      pairCreatedAt: best.pairCreatedAt,
+      dex: best.dexId,
+      imageUrl: best.info?.imageUrl,
+      websites: best.info?.websites?.map((w) => w.url),
+      socials: best.info?.socials?.map((s) => s.url),
+    };
+  } catch (err) {
+    log.warn(`DexScreener lookup failed for ${address}: ${errMessage(err)}`);
+    return {};
+  }
+}
+
+// ── Solana holder distribution ────────────────────────────────────────────────
+
+async function loadSolanaHolders(mint: string): Promise<Partial<TokenInfo>> {
+  try {
+    const mintKey = new PublicKey(mint);
+
+    const [supplyRes, largest] = await Promise.all([
+      rpc().getTokenSupply(mintKey),
+      rpc().getTokenLargestAccounts(mintKey),
+    ]);
+
+    const decimals = supplyRes.value.decimals;
+    const totalSupply = Number(supplyRes.value.amount) / 10 ** decimals;
+    if (totalSupply === 0) return { totalSupply: 0, holders: [] };
+
+    const accounts = largest.value.slice(0, 20);
+    if (accounts.length === 0) return { totalSupply, holders: [] };
+
+    // getTokenLargestAccounts returns token accounts, not owners — resolve them
+    const parsed = await rpc().getMultipleParsedAccounts(accounts.map((a) => a.address));
+
+    const curvePda = bondingCurvePda(mint).toBase58();
+    const ourAddresses = new Set(allWallets().filter((w) => w.kind === 'solana').map((w) => w.address));
+
+    const holders: HolderInfo[] = [];
+
+    accounts.forEach((acc, i) => {
+      const data = parsed.value[i]?.data;
+      const owner =
+        data && typeof data === 'object' && 'parsed' in data
+          ? ((data as { parsed: { info?: { owner?: string } } }).parsed?.info?.owner ?? acc.address.toBase58())
+          : acc.address.toBase58();
+
+      const amount = Number(acc.uiAmountString ?? 0);
+      if (amount === 0) return;
+
+      let tag: string | undefined;
+      if (owner === curvePda) tag = 'bonding curve';
+      else if (ourAddresses.has(owner)) tag = 'you';
+
+      holders.push({
+        owner,
+        amount,
+        pctOfSupply: (amount / totalSupply) * 100,
+        tag,
+      });
+    });
+
+    holders.sort((a, b) => b.amount - a.amount);
+
+    // liquidity sitting in the curve or a pool is not concentration risk, so
+    // exclude it from the "top holders" number that actually matters
+    const realHolders = holders.filter((h) => h.tag !== 'bonding curve');
+    const top10Pct = realHolders.slice(0, 10).reduce((sum, h) => sum + h.pctOfSupply, 0);
+
+    const owned = holders.filter((h) => h.tag === 'you');
+    const ownedAmount = owned.reduce((s, h) => s + h.amount, 0);
+
+    return {
+      totalSupply,
+      holders,
+      top10Pct,
+      ownedPct: (ownedAmount / totalSupply) * 100,
+      ownedAmount,
+    };
+  } catch (err) {
+    // Almost always the public RPC rate limiting getTokenLargestAccounts. Flag
+    // it so the card says "unknown" instead of implying a clean distribution.
+    log.warn(`Holder lookup failed for ${mint}: ${errMessage(err)}`);
+    return { holdersUnavailable: true };
+  }
+}
+
+// ── pump.fun curve ────────────────────────────────────────────────────────────
+
+async function loadCurveData(mint: string): Promise<Partial<TokenInfo>> {
+  try {
+    const curve = await fetchBondingCurve(mint);
+    if (!curve) return { isPumpFun: false };
+
+    const mcapSol = curveMarketCapSol(curve);
+    const solPrice = await getSolPrice().catch(() => 0);
+
+    return {
+      isPumpFun: true,
+      curveComplete: curve.complete,
+      curveProgressPct: curveProgress(curve) * 100,
+      curveMcapSol: mcapSol,
+      // a fresh launch has no DEX pair yet, so the curve is the only mcap there is
+      marketCap: solPrice > 0 ? mcapSol * solPrice : undefined,
+    };
+  } catch {
+    return { isPumpFun: false };
+  }
+}
+
+// ── assembly ──────────────────────────────────────────────────────────────────
+
+export async function getTokenInfo(address: string, kind: 'solana' | 'evm'): Promise<TokenInfo> {
+  const base: TokenInfo = {
+    address,
+    chain: kind === 'solana' ? 'solana' : 'ethereum',
+    warnings: [],
+  };
+
+  if (kind === 'solana') {
+    const [market, holders, curve, meta] = await Promise.all([
+      loadMarketData(address, 'solana'),
+      loadSolanaHolders(address),
+      loadCurveData(address),
+      getTokenMetadata(address).catch(() => null),
+    ]);
+
+    // DexScreener wins on market cap once a pool exists; before that the curve
+    // is the only source, so only let it fill an empty field
+    const merged: TokenInfo = { ...base, ...curve, ...holders, ...market, chain: 'solana' };
+    if (market.marketCap === undefined && curve.marketCap !== undefined) merged.marketCap = curve.marketCap;
+
+    // on-chain metadata is the fallback, never the override — an indexed name
+    // and logo are more reliable than whatever IPFS returns
+    if (meta) {
+      merged.name ??= meta.name;
+      merged.symbol ??= meta.symbol;
+      merged.imageUrl ??= meta.imageUrl;
+      merged.description ??= meta.description;
+    }
+
+    addWarnings(merged);
+    return merged;
+  }
+
+  const market = await loadMarketData(address, 'evm');
+  const merged: TokenInfo = { ...base, ...market, chain: market.chain ?? 'ethereum' };
+  addWarnings(merged);
+  return merged;
+}
+
+/** Heuristics worth seeing before committing several wallets to a position. */
+function addWarnings(info: TokenInfo): void {
+  if (info.holdersUnavailable) {
+    info.warnings.push('Holder distribution unavailable — the RPC rejected the query (rate limit?). Concentration is unknown, not zero.');
+  }
+
+  if (info.top10Pct !== undefined && info.top10Pct > 50) {
+    info.warnings.push(`Top 10 wallets hold ${info.top10Pct.toFixed(1)}% of supply — heavy concentration.`);
+  }
+
+  if (info.liquidityUsd !== undefined && info.liquidityUsd < 5_000 && !info.isPumpFun) {
+    info.warnings.push(`Only ${Math.round(info.liquidityUsd).toLocaleString()} USD of liquidity — expect severe slippage.`);
+  }
+
+  if (info.pairCreatedAt) {
+    const ageHours = (Date.now() - info.pairCreatedAt) / 3_600_000;
+    if (ageHours < 1) info.warnings.push(`Pair is ${Math.round(ageHours * 60)} minutes old.`);
+  }
+
+  if (info.volume24h !== undefined && info.liquidityUsd && info.volume24h > info.liquidityUsd * 50) {
+    info.warnings.push('Volume is very large relative to liquidity — possible wash trading.');
+  }
+
+  if (info.isPumpFun && info.curveComplete) {
+    info.warnings.push('Bonding curve has completed — trades route through the AMM.');
+  }
+
+  if (!info.priceUsd && !info.isPumpFun) {
+    info.warnings.push('No indexed market found. Double-check the address before trading.');
+  }
+}
