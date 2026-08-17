@@ -1,9 +1,9 @@
 # Multi-Wallet Command Center
 
-A Telegram bot that drives many Solana and EVM wallets at once. Fund every wallet
-from one tap, paste a token address to get a full breakdown, buy or sell it
-across every wallet at once — and pull everything back to a main wallet when
-you're done.
+A Telegram bot that drives many Solana wallets at once. Fund every wallet from
+one tap, paste a token address to get a full breakdown, buy or sell it across
+every wallet at once — and pull everything back to a main wallet when you're
+done.
 
 Single-operator by design: only the Telegram user IDs in `OWNER_IDS` are answered
 at all. Everyone else gets silence, not an error.
@@ -14,8 +14,7 @@ at all. Everyone else gets silence, not an error.
 
 **Portfolio**
 - SOL + SPL token balances for every wallet, with USD valuation and a grand total
-- Native balances across Ethereum, Base, Arbitrum, BNB Chain, Polygon, Optimism
-- A designated **main wallet** per chain, shown separately at the top
+- A designated **main wallet**, shown separately at the top
 - Open positions aggregated across all wallets, largest first
 
 **Token research — paste any contract address**
@@ -25,10 +24,12 @@ at all. Everyone else gets silence, not an error.
 - pump.fun curve progress bar and graduation status
 - Automatic risk warnings: holder concentration, thin liquidity, brand-new pairs,
   volume that looks like wash trading
+- Pasting a non-Solana address still returns a research card, labelled with the
+  chain and venue it trades on — read-only, since the bot trades Solana
 - Works on tokens minutes old, before any indexer knows them, by reading Metaplex
   metadata and the bonding curve directly
 
-**Trading (Solana)**
+**Trading**
 - Buy a preset or custom SOL amount **from every wallet at once**
 - Sell 25 / 50 / 75 / 100% **from every wallet at once**
 - **Sell Everything** — discovers every token held across every wallet and dumps
@@ -50,11 +51,10 @@ at all. Everyone else gets silence, not an error.
   packed into batched transactions, so 50 wallets cost 4 fees rather than 50
 - Sweep all SOL from every wallet into the main wallet, one tap
 - Sweep any SPL token, closing the emptied token accounts to reclaim their rent
-- Sweep native balances on any configured EVM chain
 
 **Wallet management**
-- Generate, import, or derive HD sets from one seed phrase (standard Phantom and
-  MetaMask paths, so they import cleanly elsewhere)
+- Generate, import, or derive HD sets from one seed phrase (Phantom's standard
+  path, so the wallets import cleanly elsewhere)
 - Label wallets, tag them into groups, and point batch operations at one group
 - Disable individual wallets to exclude them from batches
 - Export addresses as a file; export individual keys as self-destructing messages
@@ -252,7 +252,7 @@ npm run check
 Runs three layers:
 
 - `typecheck` — full TypeScript strict-mode pass
-- `smoke` — 63 offline assertions: vault crypto (round-trip, unique IVs, tamper
+- `smoke` — 61 offline assertions: vault crypto (round-trip, unique IVs, tamper
   rejection, lock/unlock, passphrase rotation re-sealing every key), wallet
   derivation, group and main-wallet invariants, bonding curve maths and batch
   simulation, funding arithmetic (shortfall-only top-ups, transaction packing,
@@ -260,7 +260,7 @@ Runs three layers:
   cover a buy), token account parsing, factory reset (files removed from disk,
   fresh setup possible afterwards), address parsing, concurrency helpers,
   log redaction
-- `netcheck` — 20 live read-only checks against Solana RPC, DexScreener, Jupiter,
+- `netcheck` — 18 live read-only checks against Solana RPC, DexScreener, Jupiter,
   PumpPortal and the pump.fun program
 
 `netcheck` never signs or broadcasts anything. It builds unsigned transactions
@@ -296,7 +296,6 @@ src/
   config.ts            env parsing, endpoints
   chains/
     solana.ts          balances, transfers, sweeps, confirmation polling
-    evm.ts             multicall balances, transfers, gas-aware sweeps
   store/
     vault.ts           scrypt + AES-256-GCM keystore
     wallets.ts         registry, HD derivation, the encryption boundary

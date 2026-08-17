@@ -106,15 +106,9 @@ await check('on-chain Metaplex metadata (BONK)', async () => {
   return `name="${meta.name}" symbol="${meta.symbol}"`;
 });
 
-await check('EVM token via DexScreener (USDT on Ethereum)', async () => {
-  const info = await getTokenInfo('0xdAC17F958D2ee523a2206206994597C13D831ec7', 'evm');
-  if (!info.priceUsd) throw new Error('no price');
-  return `${info.symbol} on ${info.chain} $${info.priceUsd.toFixed(4)}`;
-});
-
 console.log('\n── Pricing ──');
 
-const { getSolPrice, getSolanaPrices, getNativePrices } = await import('../src/services/prices.js');
+const { getSolPrice, getSolanaPrices } = await import('../src/services/prices.js');
 
 await check('Jupiter price API (SOL)', async () => {
   const price = await getSolPrice();
@@ -126,12 +120,6 @@ await check('Jupiter price API (batch)', async () => {
   const prices = await getSolanaPrices([USDC, BONK, WSOL]);
   if (prices.size === 0) throw new Error('empty response');
   return `${prices.size}/3 mints priced`;
-});
-
-await check('CoinGecko native prices', async () => {
-  const prices = await getNativePrices(['ethereum', 'bsc']);
-  if (prices.size === 0) throw new Error('empty response');
-  return [...prices.entries()].map(([k, v]) => `${k}=$${v.toFixed(0)}`).join(' ');
 });
 
 console.log('\n── Jupiter swap API ──');

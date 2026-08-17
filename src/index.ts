@@ -4,7 +4,6 @@ import { log } from './logger.js';
 import { createBot } from './bot/index.js';
 import { autoUnlockIfConfigured, vaultExists, isUnlocked, lockVault } from './store/vault.js';
 import { flush } from './store/db.js';
-import { enabledChains } from './chains/evm.js';
 import { allWallets } from './store/wallets.js';
 
 async function main(): Promise<void> {
@@ -14,9 +13,6 @@ async function main(): Promise<void> {
   log.info('Multi-wallet command center starting');
   log.info(`Data directory: ${config.dataDir}`);
   log.info(`Solana RPC: ${new URL(config.solana.rpcUrl).host}`);
-
-  const evm = enabledChains();
-  log.info(`EVM chains enabled: ${evm.length > 0 ? evm.map((c) => c.name).join(', ') : 'none'}`);
 
   if (config.solana.rpcUrl.includes('api.mainnet-beta.solana.com')) {
     log.warn('Using the public Solana RPC. Batch operations across many wallets will hit rate limits —');
@@ -36,10 +32,7 @@ async function main(): Promise<void> {
 
   if (isUnlocked()) {
     const wallets = allWallets();
-    log.info(
-      `Loaded ${wallets.length} wallets ` +
-        `(${wallets.filter((w) => w.kind === 'solana').length} Solana, ${wallets.filter((w) => w.kind === 'evm').length} EVM)`,
-    );
+    log.info(`Loaded ${wallets.length} wallets.`);
   }
 
   const bot = createBot();

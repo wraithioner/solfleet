@@ -1,7 +1,7 @@
 {
   "name": "multichain-wallet-bot",
   "version": "1.0.0",
-  "description": "Telegram command center for controlling many Solana + EVM wallets at once",
+  "description": "Telegram command center for controlling many Solana wallets at once",
   "type": "module",
   "private": true,
   "engines": {
@@ -23,8 +23,7 @@
     "dotenv": "^16.4.7",
     "ed25519-hd-key": "^1.3.0",
     "grammy": "^1.32.0",
-    "tsx": "^4.19.2",
-    "viem": "^2.21.55"
+    "tsx": "^4.19.2"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

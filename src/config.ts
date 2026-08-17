@@ -39,15 +39,6 @@ export const config = {
     sendRpcUrl: opt('SOLANA_SEND_RPC_URL') || opt('SOLANA_RPC_URL', 'https://api.mainnet-beta.solana.com'),
   },
 
-  /** Only chains with a configured RPC are enabled. */
-  evmRpc: {
-    ethereum: opt('ETHEREUM_RPC_URL'),
-    base: opt('BASE_RPC_URL'),
-    arbitrum: opt('ARBITRUM_RPC_URL'),
-    bsc: opt('BSC_RPC_URL'),
-    polygon: opt('POLYGON_RPC_URL'),
-    optimism: opt('OPTIMISM_RPC_URL'),
-  } as Record<string, string>,
 
   vault: {
     passphrase: opt('VAULT_PASSPHRASE'),
@@ -87,7 +78,10 @@ export const endpoints = {
   dexscreenerByChain: 'https://api.dexscreener.com/tokens/v1',
 } as const;
 
-/** DexScreener chain ids we search when resolving an EVM token address. */
+/**
+ * DexScreener chain ids searched when someone pastes a non-Solana address.
+ * Research only — the bot holds no wallets on these chains.
+ */
 export const EVM_LOOKUP_CHAINS = [
   'ethereum',
   'base',

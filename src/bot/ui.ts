@@ -1,11 +1,10 @@
 import { InlineKeyboard } from 'grammy';
 import { fmtAmount, fmtUsd, shortAddr, fmtDuration } from '../util.js';
 import { tokenId, shortWalletId } from './session.js';
-import { enabledChains, explorerTxUrl } from '../chains/evm.js';
 import type { Settings } from '../store/db.js';
 import type { Portfolio } from '../services/portfolio.js';
 import type { TokenInfo } from '../services/tokeninfo.js';
-import type { BatchSummary, WalletRecord, EvmChain } from '../types.js';
+import type { BatchSummary, WalletRecord } from '../types.js';
 
 /** Telegram HTML mode needs exactly these three escaped. */
 export function h(s: string): string {
@@ -66,12 +65,6 @@ export function renderPortfolio(p: Portfolio, group: string | null): string {
     }
     if (p.solana.length > 15) lines.push(`<i>…and ${p.solana.length - 15} more</i>`);
     lines.push('');
-  }
-
-  for (const t of p.totals.evmTotals) {
-    if (t.amount === 0) continue;
-    const chain = enabledChains().find((c) => c.key === t.chain);
-    lines.push(`<b>${h(chain?.name ?? t.chain)}</b> — ${fmtAmount(t.amount, 5)} ${t.symbol} · ${fmtUsd(t.usd)}`);
   }
 
   if (p.totals.tokenUsd > 0) {
@@ -254,19 +247,15 @@ export function renderWalletList(wallets: WalletRecord[], activeGroup: string | 
   if (activeGroup) lines.push(`<i>batch actions target group: ${h(activeGroup)}</i>`);
   lines.push('');
 
-  const sol = wallets.filter((w) => w.kind === 'solana');
-  const evm = wallets.filter((w) => w.kind === 'evm');
-
-  for (const [title, set] of [['Solana', sol], ['EVM', evm]] as const) {
-    if (set.length === 0) continue;
-    lines.push(`<b>${title}</b> (${set.length})`);
-    for (const w of set.slice(0, 25)) {
+  if (wallets.length > 0) {
+    lines.push(`<b>Solana</b> (${wallets.length})`);
+    for (const w of wallets.slice(0, 25)) {
       const flags = [w.isMain ? '★ main' : '', w.disabled ? '⏸ off' : '', ...w.groups]
         .filter(Boolean)
         .join(', ');
       lines.push(`· <b>${h(w.label)}</b> <code>${shortAddr(w.address, 5, 5)}</code>${flags ? ` — <i>${h(flags)}</i>` : ''}`);
     }
-    if (set.length > 25) lines.push(`<i>…and ${set.length - 25} more</i>`);
+    if (wallets.length > 25) lines.push(`<i>…and ${wallets.length - 25} more</i>`);
     lines.push('');
   }
 
@@ -277,9 +266,9 @@ export function renderWalletList(wallets: WalletRecord[], activeGroup: string | 
 
 export function walletsKeyboard(wallets: WalletRecord[]): InlineKeyboard {
   const kb = new InlineKeyboard()
-    .text('➕ New Solana', 'gen:solana').text('➕ New EVM', 'gen:evm')
+    .text('➕ New wallet', 'gen').text('🌱 Derive HD set', 'derive_menu')
     .row()
-    .text('🌱 Derive HD set', 'derive_menu').text('📥 Import key', 'import_key')
+    .text('📥 Import key', 'import_key')
     .row()
     .text('🏷 Manage', 'wallet_manage').text('🎯 Group filter', 'group_filter')
     .row();
@@ -315,7 +304,7 @@ export function walletDetailKeyboard(w: WalletRecord): InlineKeyboard {
 
 // ── batch results ─────────────────────────────────────────────────────────────
 
-export function renderBatchSummary(title: string, summary: BatchSummary, chain: 'solana' | EvmChain = 'solana'): string {
+export function renderBatchSummary(title: string, summary: BatchSummary): string {
   const lines: string[] = [`<b>${h(title)}</b>`, ''];
   const elapsed = fmtDuration(summary.finishedAt - summary.startedAt);
 
@@ -325,11 +314,7 @@ export function renderBatchSummary(title: string, summary: BatchSummary, chain: 
   const shown = summary.results.slice(0, 20);
   for (const r of shown) {
     const icon = r.ok ? '✅' : '❌';
-    const link = r.signature
-      ? ` <a href="${SOLSCAN_TX(r.signature)}">tx</a>`
-      : r.txHash && chain !== 'solana'
-        ? ` <a href="${explorerTxUrl(chain as EvmChain, r.txHash)}">tx</a>`
-        : '';
+    const link = r.signature ? ` <a href="${SOLSCAN_TX(r.signature)}">tx</a>` : '';
     const note = r.ok ? (r.detail ? ` — ${h(r.detail)}` : '') : ` — <i>${h(truncate(r.error ?? 'failed', 70))}</i>`;
     lines.push(`${icon} <b>${h(r.label)}</b>${note}${link}`);
   }
@@ -347,7 +332,7 @@ function truncate(s: string, n: number): string {
 
 // ── settings ──────────────────────────────────────────────────────────────────
 
-export function renderSettings(s: Settings, walletCounts: { solana: number; evm: number }): string {
+export function renderSettings(s: Settings, walletCount: number): string {
   return [
     '<b>⚙️ Settings</b>',
     '',
@@ -361,7 +346,7 @@ export function renderSettings(s: Settings, walletCounts: { solana: number; evm:
     `Quick buys: ${s.quickBuyPresets.join(', ')} SOL`,
     `Quick sells: ${s.quickSellPresets.join(', ')}%`,
     '',
-    `Wallets: ${walletCounts.solana} Solana · ${walletCounts.evm} EVM`,
+    `Wallets: ${walletCount}`,
   ].join('\n');
 }
 

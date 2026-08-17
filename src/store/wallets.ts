@@ -3,15 +3,13 @@ import bs58 from 'bs58';
 import * as bip39 from 'bip39';
 import { derivePath } from 'ed25519-hd-key';
 import { Keypair } from '@solana/web3.js';
-import { privateKeyToAccount, mnemonicToAccount } from 'viem/accounts';
-import type { PrivateKeyAccount } from 'viem';
 import { db, flush } from './db.js';
 import { encryptSecret, decryptSecret } from './vault.js';
 import type { WalletRecord } from '../types.js';
 
 /**
  * Wallet registry. Every mutation goes through here so that the "exactly one
- * main wallet per chain kind" invariant and the encryption boundary are held in
+ * main wallet" invariant and the encryption boundary are held in
  * one place.
  */
 
@@ -32,8 +30,8 @@ export function walletByAddress(address: string): WalletRecord | undefined {
   return db.wallets().find((w) => w.address.toLowerCase() === needle);
 }
 
-export function mainWallet(kind: 'solana' | 'evm'): WalletRecord | undefined {
-  return db.wallets().find((w) => w.kind === kind && w.isMain);
+export function mainWallet(): WalletRecord | undefined {
+  return db.wallets().find((w) => w.isMain);
 }
 
 export function groups(): string[] {
@@ -43,11 +41,10 @@ export function groups(): string[] {
 }
 
 /**
- * The wallets a batch action should touch: matching kind, not disabled, and in
+ * The wallets a batch action should touch: not disabled, and in
  * the active group if one is selected.
  */
 export function selectWallets(opts: {
-  kind?: 'solana' | 'evm';
   group?: string | null;
   includeDisabled?: boolean;
   excludeMain?: boolean;
@@ -55,7 +52,6 @@ export function selectWallets(opts: {
   const group = opts.group === undefined ? db.settings().activeGroup : opts.group;
 
   return db.wallets().filter((w) => {
-    if (opts.kind && w.kind !== opts.kind) return false;
     if (!opts.includeDisabled && w.disabled) return false;
     if (opts.excludeMain && w.isMain) return false;
     if (group && !w.groups.includes(group)) return false;
@@ -71,12 +67,6 @@ export function solanaKeypair(w: WalletRecord): Keypair {
   return Keypair.fromSecretKey(bs58.decode(secret));
 }
 
-export function evmAccount(w: WalletRecord): PrivateKeyAccount {
-  if (w.kind !== 'evm') throw new Error(`${w.label} is not an EVM wallet.`);
-  const pk = decryptSecret(w.secret) as `0x${string}`;
-  return privateKeyToAccount(pk);
-}
-
 /** Plaintext export. Callers must delete the Telegram message afterwards. */
 export function exportSecret(w: WalletRecord): string {
   return decryptSecret(w.secret);
@@ -84,10 +74,9 @@ export function exportSecret(w: WalletRecord): string {
 
 // ── creating ──────────────────────────────────────────────────────────────────
 
-function nextLabel(kind: 'solana' | 'evm'): string {
-  const prefix = kind === 'solana' ? 'SOL' : 'EVM';
-  const n = db.wallets().filter((w) => w.kind === kind).length + 1;
-  return `${prefix}-${String(n).padStart(2, '0')}`;
+function nextLabel(): string {
+  const n = db.wallets().length + 1;
+  return `SOL-${String(n).padStart(2, '0')}`;
 }
 
 function insert(rec: Omit<WalletRecord, 'id' | 'createdAt'>): WalletRecord {
@@ -98,8 +87,8 @@ function insert(rec: Omit<WalletRecord, 'id' | 'createdAt'>): WalletRecord {
 
   const full: WalletRecord = { ...rec, id: crypto.randomUUID(), createdAt: Date.now() };
 
-  // first wallet of a kind is automatically the main wallet
-  if (!wallets.some((w) => w.kind === rec.kind && w.isMain)) full.isMain = true;
+  // the first wallet is automatically the main wallet
+  if (!wallets.some((w) => w.isMain)) full.isMain = true;
 
   wallets.push(full);
   flush();
@@ -111,7 +100,7 @@ export function generateSolanaWallet(label?: string, groups: string[] = []): Wal
   return insert({
     kind: 'solana',
     address: kp.publicKey.toBase58(),
-    label: label || nextLabel('solana'),
+    label: label || nextLabel(),
     secret: encryptSecret(bs58.encode(kp.secretKey)),
     groups,
     isMain: false,
@@ -119,49 +108,25 @@ export function generateSolanaWallet(label?: string, groups: string[] = []): Wal
   });
 }
 
-export function generateEvmWallet(label?: string, groups: string[] = []): WalletRecord {
-  const pk = `0x${crypto.randomBytes(32).toString('hex')}` as `0x${string}`;
-  const acct = privateKeyToAccount(pk);
-  return insert({
-    kind: 'evm',
-    address: acct.address,
-    label: label || nextLabel('evm'),
-    secret: encryptSecret(pk),
-    groups,
-    isMain: false,
-    disabled: false,
-  });
-}
-
 /**
- * Import from a raw private key. Accepts the two formats wallets actually export:
- * base58 64-byte Solana secret keys (Phantom/Solflare) and 0x hex EVM keys.
+ * Import from a raw private key. Accepts both formats Solana wallets export:
+ * the base58 64-byte secret key Phantom and Solflare hand out, and the bare
+ * 32-byte seed some tools export instead.
  */
 export function importPrivateKey(raw: string, label?: string, groups: string[] = []): WalletRecord {
   const key = raw.trim();
 
-  if (/^0x[a-fA-F0-9]{64}$/.test(key)) {
-    const acct = privateKeyToAccount(key as `0x${string}`);
-    return insert({
-      kind: 'evm',
-      address: acct.address,
-      label: label || nextLabel('evm'),
-      secret: encryptSecret(key),
-      groups,
-      isMain: false,
-      disabled: false,
-    });
+  // an EVM key is a plausible paste, and silently failing to parse it as base58
+  // would be a confusing way to say "wrong chain"
+  if (/^(0x)?[a-fA-F0-9]{64}$/.test(key)) {
+    throw new Error('That looks like an EVM private key. This bot holds Solana wallets only.');
   }
 
-  // bare hex without 0x
-  if (/^[a-fA-F0-9]{64}$/.test(key)) return importPrivateKey(`0x${key}`, label, groups);
-
-  // base58 Solana secret key
   let decoded: Uint8Array;
   try {
     decoded = bs58.decode(key);
   } catch {
-    throw new Error('Unrecognised key format. Expected a base58 Solana key or a 0x-prefixed EVM key.');
+    throw new Error('Unrecognised key format. Expected a base58 Solana secret key.');
   }
 
   if (decoded.length === 64) {
@@ -169,7 +134,7 @@ export function importPrivateKey(raw: string, label?: string, groups: string[] =
     return insert({
       kind: 'solana',
       address: kp.publicKey.toBase58(),
-      label: label || nextLabel('solana'),
+      label: label || nextLabel(),
       secret: encryptSecret(key),
       groups,
       isMain: false,
@@ -183,7 +148,7 @@ export function importPrivateKey(raw: string, label?: string, groups: string[] =
     return insert({
       kind: 'solana',
       address: kp.publicKey.toBase58(),
-      label: label || nextLabel('solana'),
+      label: label || nextLabel(),
       secret: encryptSecret(bs58.encode(kp.secretKey)),
       groups,
       isMain: false,
@@ -210,53 +175,35 @@ export function setMnemonic(phrase: string): void {
   db.setMnemonic(encryptSecret(clean));
 }
 
-/** Derive `count` fresh wallets from the stored mnemonic, continuing the index. */
-export function deriveWallets(
-  kind: 'solana' | 'evm',
-  count: number,
-  groups: string[] = [],
-): WalletRecord[] {
+/**
+ * Derive `count` fresh wallets from the stored mnemonic, continuing the index.
+ *
+ * The path is Phantom's default, so the same phrase restores the same addresses
+ * in Phantom or Solflare — the backup is not tied to this bot.
+ */
+export function deriveWallets(count: number, groups: string[] = []): WalletRecord[] {
   const mnemonic = getOrCreateMnemonic();
-  const used = db.wallets().filter((w) => w.kind === kind && w.derivationIndex !== undefined);
+  const used = db.wallets().filter((w) => w.derivationIndex !== undefined);
   let index = used.length === 0 ? 0 : Math.max(...used.map((w) => w.derivationIndex!)) + 1;
 
   const created: WalletRecord[] = [];
+  const seed = bip39.mnemonicToSeedSync(mnemonic).toString('hex');
 
-  if (kind === 'solana') {
-    const seed = bip39.mnemonicToSeedSync(mnemonic).toString('hex');
-    for (let n = 0; n < count; n++, index++) {
-      const { key } = derivePath(SOLANA_PATH(index), seed);
-      const kp = Keypair.fromSeed(key);
-      created.push(
-        insert({
-          kind: 'solana',
-          address: kp.publicKey.toBase58(),
-          label: `SOL-HD-${String(index).padStart(2, '0')}`,
-          secret: encryptSecret(bs58.encode(kp.secretKey)),
-          groups,
-          isMain: false,
-          disabled: false,
-          derivationIndex: index,
-        }),
-      );
-    }
-  } else {
-    for (let n = 0; n < count; n++, index++) {
-      const acct = mnemonicToAccount(mnemonic, { addressIndex: index });
-      const pk = `0x${Buffer.from(acct.getHdKey().privateKey!).toString('hex')}` as `0x${string}`;
-      created.push(
-        insert({
-          kind: 'evm',
-          address: acct.address,
-          label: `EVM-HD-${String(index).padStart(2, '0')}`,
-          secret: encryptSecret(pk),
-          groups,
-          isMain: false,
-          disabled: false,
-          derivationIndex: index,
-        }),
-      );
-    }
+  for (let n = 0; n < count; n++, index++) {
+    const { key } = derivePath(SOLANA_PATH(index), seed);
+    const kp = Keypair.fromSeed(key);
+    created.push(
+      insert({
+        kind: 'solana',
+        address: kp.publicKey.toBase58(),
+        label: `SOL-HD-${String(index).padStart(2, '0')}`,
+        secret: encryptSecret(bs58.encode(kp.secretKey)),
+        groups,
+        isMain: false,
+        disabled: false,
+        derivationIndex: index,
+      }),
+    );
   }
 
   return created;
@@ -274,7 +221,7 @@ export function renameWallet(id: string, label: string): WalletRecord {
 export function setMain(id: string): WalletRecord {
   const w = mustFind(id);
   for (const other of db.wallets()) {
-    if (other.kind === w.kind) other.isMain = other.id === w.id;
+    other.isMain = other.id === w.id;
   }
   flush();
   return w;
@@ -307,7 +254,7 @@ export function removeWallet(id: string): WalletRecord {
   db.setWallets(db.wallets().filter((x) => x.id !== id));
   // if we just deleted the main wallet, promote the oldest remaining one
   if (w.isMain) {
-    const next = db.wallets().find((x) => x.kind === w.kind);
+    const next = db.wallets()[0];
     if (next) setMain(next.id);
   }
   return w;

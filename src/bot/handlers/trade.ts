@@ -11,7 +11,6 @@ import {
   batchSweepSol,
   batchSweepToken,
   batchSellAllPositions,
-  batchSweepEvmNative,
 } from '../../trade/engine.js';
 import {
   planFunding,
@@ -21,7 +20,6 @@ import {
   requiredForBuy,
   type FundMode,
 } from '../../trade/fund.js';
-import { enabledChains } from '../../chains/evm.js';
 import { errMessage, fmtAmount, shortAddr } from '../../util.js';
 import { log } from '../../logger.js';
 import { stageConfirmation, setPending, tokenId, mintFromId } from '../session.js';
@@ -36,7 +34,7 @@ import {
   h,
 } from '../ui.js';
 import { render } from './core.js';
-import type { TradeRequest, EvmChain } from '../../types.js';
+import type { TradeRequest } from '../../types.js';
 
 /**
  * Telegram rate limits message edits hard. Batches of 50 wallets would otherwise
@@ -82,7 +80,7 @@ export async function showTokenCard(ctx: Context, mint: string, replace = false)
     let holdsPosition = false;
     if (info.chain === 'solana') {
       try {
-        const wallets = selectWallets({ kind: 'solana' });
+        const wallets = selectWallets();
         const held = await getMintBalances(wallets.map((w) => w.address), mint);
         holdsPosition = held.size > 0;
       } catch {
@@ -93,7 +91,7 @@ export async function showTokenCard(ctx: Context, mint: string, replace = false)
     let text = renderTokenCard(info);
 
     if (info.chain !== 'solana') {
-      text += '\n\n<i>ℹ️ EVM token — batch trading is Solana-only for now. Balances and sweeps work.</i>';
+      text += '\n\n<i>ℹ️ Research only — this bot holds and trades Solana wallets. It cannot buy this.</i>';
     }
 
     const keyboard =
@@ -146,7 +144,7 @@ export async function showHolders(ctx: Context, mint: string): Promise<void> {
 
 export async function promptBuy(ctx: Context, mint: string, solPerWallet: number): Promise<void> {
   const settings = db.settings();
-  const wallets = selectWallets({ kind: 'solana' });
+  const wallets = selectWallets();
 
   if (wallets.length === 0) {
     await ctx.answerCallbackQuery({ text: 'No Solana wallets selected.', show_alert: true });
@@ -240,7 +238,7 @@ export async function promptBuy(ctx: Context, mint: string, solPerWallet: number
 
 async function executeBuy(ctx: Context, mint: string, solPerWallet: number): Promise<void> {
   const settings = db.settings();
-  const wallets = selectWallets({ kind: 'solana' });
+  const wallets = selectWallets();
 
   const request: TradeRequest = {
     action: 'buy',
@@ -289,7 +287,7 @@ async function executeBuy(ctx: Context, mint: string, solPerWallet: number): Pro
 
 export async function promptSell(ctx: Context, mint: string, percent: number): Promise<void> {
   const settings = db.settings();
-  const wallets = selectWallets({ kind: 'solana' });
+  const wallets = selectWallets();
 
   if (wallets.length === 0) {
     await ctx.answerCallbackQuery({ text: 'No Solana wallets selected.', show_alert: true });
@@ -320,7 +318,7 @@ export async function promptSell(ctx: Context, mint: string, percent: number): P
 
 async function executeSell(ctx: Context, mint: string, percent: number): Promise<void> {
   const settings = db.settings();
-  const wallets = selectWallets({ kind: 'solana' });
+  const wallets = selectWallets();
 
   const request: TradeRequest = {
     action: 'sell',
@@ -368,7 +366,7 @@ async function executeSell(ctx: Context, mint: string, percent: number): Promise
 // ── nuclear option: sell every position everywhere ────────────────────────────
 
 export async function promptSellEverything(ctx: Context): Promise<void> {
-  const wallets = selectWallets({ kind: 'solana' });
+  const wallets = selectWallets();
 
   const run = async (ctx: Context) => {
     await render(ctx, '<b>🔥 Selling every position…</b>\n\n<i>Discovering token accounts…</i>');
@@ -436,19 +434,13 @@ export async function promptSellEverything(ctx: Context): Promise<void> {
 // ── consolidation ─────────────────────────────────────────────────────────────
 
 export async function showConsolidateMenu(ctx: Context): Promise<void> {
-  const mainSol = mainWallet('solana');
-  const mainEvm = mainWallet('evm');
+  const mainSol = mainWallet();
 
   const lines = ['<b>💸 Move funds</b>', ''];
   lines.push(
     mainSol
       ? `Solana main: <b>${h(mainSol.label)}</b> <code>${shortAddr(mainSol.address, 6, 6)}</code>`
       : '<i>No Solana main wallet set.</i>',
-  );
-  lines.push(
-    mainEvm
-      ? `EVM main: <b>${h(mainEvm.label)}</b> <code>${shortAddr(mainEvm.address, 6, 6)}</code>`
-      : '<i>No EVM main wallet set.</i>',
   );
   lines.push('');
   lines.push(`<i>Sweeps leave ${db.settings().sweepReserveSol} SOL in each wallet for future fees.</i>`);
@@ -458,9 +450,6 @@ export async function showConsolidateMenu(ctx: Context): Promise<void> {
   if (mainSol) kb.text('◎ Sweep all SOL → main', 'sweep_sol_confirm').row();
   if (mainSol) kb.text('🪙 Sweep a token → main', 'sweep_token_prompt').row();
 
-  for (const chain of enabledChains()) {
-    if (mainEvm) kb.text(`⬡ Sweep ${chain.name} → main`, `sweep_evm:${chain.key}`).row();
-  }
 
   kb.text('← Menu', 'home');
   await render(ctx, lines.join('\n'), kb);
@@ -469,13 +458,13 @@ export async function showConsolidateMenu(ctx: Context): Promise<void> {
 // ── funding: main wallet → every trading wallet ───────────────────────────────
 
 export async function showFundMenu(ctx: Context): Promise<void> {
-  const main = mainWallet('solana');
+  const main = mainWallet();
   if (!main) {
     await ctx.answerCallbackQuery({ text: 'Set a main Solana wallet first.', show_alert: true });
     return;
   }
 
-  const targets = selectWallets({ kind: 'solana', excludeMain: true });
+  const targets = selectWallets({ excludeMain: true });
 
   let balanceLine = '';
   try {
@@ -519,13 +508,13 @@ export async function promptFundAmount(ctx: Context, mode: FundMode): Promise<vo
 }
 
 export async function promptFund(ctx: Context, mode: FundMode, sol: number): Promise<void> {
-  const main = mainWallet('solana');
+  const main = mainWallet();
   if (!main) {
     await ctx.reply('Set a main Solana wallet first.');
     return;
   }
 
-  const targets = selectWallets({ kind: 'solana', excludeMain: true });
+  const targets = selectWallets({ excludeMain: true });
   if (targets.length === 0) {
     await ctx.reply('No wallets to fund. Generate or derive some first.');
     return;
@@ -628,14 +617,14 @@ export async function promptFund(ctx: Context, mode: FundMode, sol: number): Pro
 }
 
 export async function promptSweepSol(ctx: Context): Promise<void> {
-  const main = mainWallet('solana');
+  const main = mainWallet();
   if (!main) {
     await ctx.answerCallbackQuery({ text: 'Set a main Solana wallet first.', show_alert: true });
     return;
   }
 
   const settings = db.settings();
-  const wallets = selectWallets({ kind: 'solana', excludeMain: true });
+  const wallets = selectWallets({ excludeMain: true });
 
   if (wallets.length === 0) {
     await ctx.answerCallbackQuery({ text: 'No wallets to sweep from.', show_alert: true });
@@ -683,7 +672,7 @@ export async function promptSweepSol(ctx: Context): Promise<void> {
 }
 
 export async function promptSweepToken(ctx: Context): Promise<void> {
-  setPending(ctx.from!.id, { kind: 'send_to_address', chainKind: 'solana' });
+  setPending(ctx.from!.id, { kind: 'send_to_address' });
   await render(
     ctx,
     [
@@ -698,13 +687,13 @@ export async function promptSweepToken(ctx: Context): Promise<void> {
 }
 
 export async function executeSweepToken(ctx: Context, mint: string): Promise<void> {
-  const main = mainWallet('solana');
+  const main = mainWallet();
   if (!main) {
     await ctx.reply('Set a main Solana wallet first.');
     return;
   }
 
-  const wallets = selectWallets({ kind: 'solana', excludeMain: true });
+  const wallets = selectWallets({ excludeMain: true });
   const msg = await ctx.reply(`<b>🪙 Sweeping token across ${wallets.length} wallets…</b>`, {
     parse_mode: 'HTML',
   });
@@ -722,56 +711,11 @@ export async function executeSweepToken(ctx: Context, mint: string): Promise<voi
   }
 }
 
-export async function promptSweepEvm(ctx: Context, chain: EvmChain): Promise<void> {
-  const main = mainWallet('evm');
-  if (!main) {
-    await ctx.answerCallbackQuery({ text: 'Set a main EVM wallet first.', show_alert: true });
-    return;
-  }
-
-  const wallets = selectWallets({ kind: 'evm', excludeMain: true });
-  const info = enabledChains().find((c) => c.key === chain);
-
-  const run = async (ctx: Context) => {
-    await render(ctx, `<b>⬡ Sweeping ${info?.name ?? chain}…</b>`);
-    try {
-      const summary = await batchSweepEvmNative(
-        chain,
-        wallets,
-        main.address,
-        throttledProgress(ctx, `Sweeping ${info?.name ?? chain}`),
-      );
-      await render(
-        ctx,
-        renderBatchSummary(`⬡ Swept ${info?.name ?? chain} → ${main.label}`, summary, chain),
-        new InlineKeyboard().text('← Menu', 'home'),
-      );
-    } catch (err) {
-      await render(ctx, `❌ ${h(errMessage(err))}`, backButton());
-    }
-  };
-
-  const id = stageConfirmation(ctx.from!.id, `sweep ${chain}`, run);
-
-  await render(
-    ctx,
-    [
-      `<b>⬡ Sweep ${h(info?.name ?? chain)} to main wallet</b>`,
-      '',
-      `From: <b>${wallets.length}</b> wallets`,
-      `To: <b>${h(main.label)}</b> <code>${shortAddr(main.address, 6, 6)}</code>`,
-      '',
-      '<i>Sends the full native balance minus gas. Wallets that cannot cover their own gas are skipped.</i>',
-    ].join('\n'),
-    confirmKeyboard(id, 'consolidate_menu'),
-  );
-}
-
 // ── quick trade menu ──────────────────────────────────────────────────────────
 
 export async function showTradeMenu(ctx: Context): Promise<void> {
   const settings = db.settings();
-  const wallets = selectWallets({ kind: 'solana' });
+  const wallets = selectWallets();
 
   setPending(ctx.from!.id, { kind: 'manual_token_lookup' });
 

@@ -69,9 +69,19 @@ function load(): DbShape {
   }
 
   const parsed = JSON.parse(fs.readFileSync(dbPath(), 'utf8')) as Partial<DbShape>;
+
+  // This bot was multi-chain once. A leftover EVM record would be handed to
+  // Solana signing code that cannot use it, so drop those rather than let them
+  // fail confusingly halfway through a batch.
+  const stored = parsed.wallets ?? [];
+  const wallets = stored.filter((w) => w.kind === 'solana');
+  if (wallets.length !== stored.length) {
+    console.warn(`Ignoring ${stored.length - wallets.length} non-Solana wallet record(s) from an older version.`);
+  }
+
   cache = {
     version: 1,
-    wallets: parsed.wallets ?? [],
+    wallets,
     // merge so new settings keys added in later versions get sane defaults
     settings: { ...defaultSettings(), ...(parsed.settings ?? {}) },
     mnemonic: parsed.mnemonic,

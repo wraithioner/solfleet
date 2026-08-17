@@ -12,8 +12,7 @@
 
 ## 1. What this is
 
-A Telegram bot that operates **many crypto wallets simultaneously** — Solana and
-EVM — from a phone.
+A Telegram bot that operates **many Solana wallets simultaneously** from a phone.
 
 The problem it solves: someone running 10–50 wallets currently juggles browser
 extensions, spreadsheets of addresses, and manual repetition. Checking a total
@@ -34,8 +33,12 @@ back to a main wallet.
 - Multi-user / SaaS. One owner, hardcoded by Telegram user ID.
 - Custody of anyone else's keys.
 - A web dashboard. Telegram is the entire interface.
-- EVM batch trading. EVM gets balances, transfers and sweeps only. Batch trading
-  is Solana/pump.fun.
+- **Any chain but Solana.** No EVM wallets, no EVM trading, no EVM sweeps. An
+  address from another chain returns a read-only research card, clearly labelled
+  with the chain it trades on, and nothing more. ERC-20 alone would drag in a
+  per-wallet `approve` transaction before every swap — double the transactions
+  and double the gas — for a bot whose entire value is doing one thing across
+  fifty wallets cheaply.
 
 ---
 
@@ -44,14 +47,11 @@ back to a main wallet.
 ### 2.1 Portfolio
 
 - SOL and SPL token balances for every wallet, USD-valued, with a grand total.
-- Native balances across Ethereum, Base, Arbitrum, BNB Chain, Polygon, Optimism.
-  Only chains with a configured RPC are enabled.
-- A designated **main wallet** per chain kind, displayed separately at the top.
-  Exactly one per kind — this is an invariant enforced in the store.
+- A designated **main wallet**, displayed separately at the top. Exactly one —
+  this is an invariant enforced in the store.
 - Aggregated open positions across all wallets, sorted by USD value.
-- Batching is mandatory: one `getMultipleAccounts` per 100 Solana wallets, one
-  Multicall3 round trip per EVM chain. Never one RPC call per wallet for native
-  balances.
+- Batching is mandatory: one `getMultipleAccounts` per 100 wallets. Never one
+  RPC call per wallet for native balances.
 
 ### 2.2 Token research — the headline feature
 
@@ -167,11 +167,12 @@ the exact drudgery this tool exists to remove.
 ### 2.7 Wallet management
 
 - Generate, import (raw key), or derive HD sets from one seed phrase.
-- Use standard derivation paths so wallets import cleanly into Phantom/MetaMask:
-  - Solana `m/44'/501'/{i}'/0'`
-  - EVM `m/44'/60'/0'/0/{i}`
-- Accept both real-world export formats on import: base58 Solana secret keys
-  (64-byte, and 32-byte seed) and `0x`-prefixed EVM hex.
+- Use `m/44'/501'/{i}'/0'` — Phantom's default — so the phrase restores the same
+  wallets in Phantom or Solflare. A seed phrase is not chain-specific; the path
+  is what makes it Solana.
+- Accept both real-world export formats on import: base58 Solana secret keys,
+  64-byte and 32-byte seed. Reject an EVM key with a message naming the reason,
+  rather than failing to parse it as base58.
 - Label wallets, tag them into groups, target batch operations at one group.
 - Disable individual wallets to exclude them from batches without deleting them.
 - Export addresses as a file. Export individual private keys as self-destructing
@@ -221,7 +222,6 @@ src/
 
   chains/
     solana.ts          balances, transfers, sweeps, confirmation polling
-    evm.ts             multicall balances, transfers, gas-aware sweeps
 
   store/
     vault.ts           scrypt + AES-256-GCM keystore, lock/unlock/rotate
@@ -438,10 +438,7 @@ For the sequential simulation, update `vSol += in; vTok -= out` after each walle
 
 ### 7.7 Other
 
-- Multicall3 is at `0xcA11bde05977b3631167028862bE2a173976CA11` on every
-  supported EVM chain and exposes `getEthBalance(address)` — use it to batch
-  native balance reads, with a per-address fallback.
-- CoinGecko `simple/price` for EVM native coin USD prices. Cache ~60s.
+- CoinGecko is no longer used; Jupiter price v3 covers everything priced here.
 
 ---
 
@@ -452,12 +449,6 @@ BOT_TOKEN=                  # @BotFather
 OWNER_IDS=                  # @userinfobot, comma-separated
 SOLANA_RPC_URL=             # private endpoint — see §9
 SOLANA_SEND_RPC_URL=        # optional low-latency sender
-ETHEREUM_RPC_URL=           # blank disables the chain
-BASE_RPC_URL=
-ARBITRUM_RPC_URL=
-BSC_RPC_URL=
-POLYGON_RPC_URL=
-OPTIMISM_RPC_URL=
 VAULT_PASSPHRASE=           # leave empty; set only for unattended restart
 VAULT_AUTOLOCK_MINUTES=30
 DEFAULT_SLIPPAGE_PERCENT=15

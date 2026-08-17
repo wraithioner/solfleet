@@ -5,7 +5,6 @@ import {
   allWallets,
   walletById,
   generateSolanaWallet,
-  generateEvmWallet,
   importPrivateKey,
   deriveWallets,
   getOrCreateMnemonic,
@@ -57,7 +56,6 @@ export async function showWalletDetail(ctx: Context, walletId: string): Promise<
     `<b>${h(w.label)}</b>`,
     `<code>${h(w.address)}</code>`,
     '',
-    `Chain: ${w.kind === 'solana' ? 'Solana' : 'EVM'}`,
     `Main: ${w.isMain ? '★ yes' : 'no'}`,
     `Status: ${w.disabled ? '⏸ excluded from batches' : '▶️ active'}`,
     `Groups: ${w.groups.length > 0 ? h(w.groups.join(', ')) : '<i>none</i>'}`,
@@ -79,9 +77,9 @@ export async function showWalletDetail(ctx: Context, walletId: string): Promise<
 
 // ── creation ──────────────────────────────────────────────────────────────────
 
-export async function generateWallet(ctx: Context, kind: 'solana' | 'evm'): Promise<void> {
+export async function generateWallet(ctx: Context): Promise<void> {
   try {
-    const w = kind === 'solana' ? generateSolanaWallet() : generateEvmWallet();
+    const w = generateSolanaWallet();
     await ctx.answerCallbackQuery({ text: `Created ${w.label}` });
     await showWallets(ctx);
   } catch (err) {
@@ -96,9 +94,7 @@ export async function promptImportKey(ctx: Context): Promise<void> {
     [
       '<b>📥 Import a private key</b>',
       '',
-      'Send one key per message. Both formats work:',
-      '· Solana — base58, the string Phantom exports',
-      '· EVM — 0x followed by 64 hex characters',
+      'Send one key per message, base58 — the string Phantom and Solflare export.',
       '',
       '<i>Your message is deleted the moment I read it. The key is encrypted before it touches disk.</i>',
     ].join('\n'),
@@ -120,11 +116,9 @@ export async function handleImportKey(ctx: Context, text: string): Promise<void>
 
 export async function promptDerive(ctx: Context): Promise<void> {
   const kb = new InlineKeyboard()
-    .text('Solana ×5', 'derive:solana:5').text('Solana ×10', 'derive:solana:10')
+    .text('×5', 'derive:5').text('×10', 'derive:10')
     .row()
-    .text('Solana ×25', 'derive:solana:25').text('Solana ×50', 'derive:solana:50')
-    .row()
-    .text('EVM ×5', 'derive:evm:5').text('EVM ×10', 'derive:evm:10')
+    .text('×25', 'derive:25').text('×50', 'derive:50')
     .row()
     .text('🔑 Show seed phrase', 'show_mnemonic').text('📥 Import seed', 'import_mnemonic')
     .row()
@@ -137,17 +131,17 @@ export async function promptDerive(ctx: Context): Promise<void> {
       '',
       'All derived wallets come from one seed phrase, so a single backup restores every wallet.',
       '',
-      'Solana uses <code>m/44\'/501\'/i\'/0\'</code>, EVM uses <code>m/44\'/60\'/0\'/0/i</code> — the same paths Phantom and MetaMask use, so the wallets import cleanly elsewhere.',
+      'Derivation uses <code>m/44\'/501\'/i\'/0\'</code> — Phantom\'s default path, so the same phrase restores these wallets in Phantom or Solflare.',
     ].join('\n'),
     kb,
   );
 }
 
-export async function executeDerive(ctx: Context, kind: 'solana' | 'evm', count: number): Promise<void> {
-  await render(ctx, `<b>🌱 Deriving ${count} ${kind} wallets…</b>`);
+export async function executeDerive(ctx: Context, count: number): Promise<void> {
+  await render(ctx, `<b>🌱 Deriving ${count} wallets…</b>`);
 
   try {
-    const created = deriveWallets(kind, count);
+    const created = deriveWallets(count);
     const lines = [`<b>✅ Derived ${created.length} wallets</b>`, ''];
     for (const w of created.slice(0, 20)) {
       lines.push(`· <b>${h(w.label)}</b> <code>${shortAddr(w.address, 6, 6)}</code>`);

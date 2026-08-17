@@ -2,7 +2,6 @@ import { endpoints } from '../config.js';
 import { fetchJson, chunk } from '../util.js';
 import { WSOL_MINT } from '../chains/solana.js';
 import { log } from '../logger.js';
-import type { EvmChain } from '../types.js';
 
 /**
  * USD pricing. Every lookup is cached briefly — a portfolio refresh across
@@ -110,46 +109,6 @@ export async function getDexscreenerPrice(mint: string): Promise<number | undefi
   } catch {
     return undefined;
   }
-}
-
-// ── EVM native coins ──────────────────────────────────────────────────────────
-
-const COINGECKO_IDS: Record<EvmChain, string> = {
-  ethereum: 'ethereum',
-  base: 'ethereum',
-  arbitrum: 'ethereum',
-  optimism: 'ethereum',
-  bsc: 'binancecoin',
-  polygon: 'matic-network',
-};
-
-export async function getNativePrices(chains: EvmChain[]): Promise<Map<EvmChain, number>> {
-  const out = new Map<EvmChain, number>();
-  if (chains.length === 0) return out;
-
-  const wanted = [...new Set(chains.map((c) => COINGECKO_IDS[c]))];
-  const missing = wanted.filter((id) => cached(`cg:${id}`) === undefined);
-
-  if (missing.length > 0) {
-    try {
-      const data = await fetchJson<Record<string, { usd: number }>>(
-        `https://api.coingecko.com/api/v3/simple/price?ids=${missing.join(',')}&vs_currencies=usd`,
-        { timeoutMs: 12_000 },
-      );
-      for (const [id, entry] of Object.entries(data)) {
-        if (typeof entry?.usd === 'number') store(`cg:${id}`, entry.usd);
-      }
-    } catch (err) {
-      log.warn('Native price lookup failed', err);
-    }
-  }
-
-  for (const c of chains) {
-    const price = cached(`cg:${COINGECKO_IDS[c]}`);
-    if (price !== undefined) out.set(c, price);
-  }
-
-  return out;
 }
 
 export function clearPriceCache(): void {

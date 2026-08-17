@@ -76,12 +76,12 @@ export async function showHome(ctx: Context): Promise<void> {
 
   const wallets = allWallets();
   const settings = db.settings();
-  const targeted = selectWallets({ kind: 'solana' });
+  const targeted = selectWallets();
 
   const text = [
     '<b>⚡ Wallet Command Center</b>',
     '',
-    `Wallets: <b>${wallets.filter((w) => w.kind === 'solana').length}</b> Solana · <b>${wallets.filter((w) => w.kind === 'evm').length}</b> EVM`,
+    `Wallets: <b>${wallets.length}</b>`,
     `Batch target: <b>${targeted.length}</b> wallets${settings.activeGroup ? ` in <i>${h(settings.activeGroup)}</i>` : ''}`,
     `Mode: <b>${settings.executionMode}</b> · Slippage <b>${settings.slippagePercent}%</b>`,
     '',
@@ -109,7 +109,7 @@ export async function showPositions(ctx: Context): Promise<void> {
   await render(ctx, '<b>🪙 Positions</b>\n\n<i>Scanning token accounts…</i>');
 
   try {
-    const portfolio = await buildPortfolio({ group: settings.activeGroup, includeTokens: true, includeEvm: false });
+    const portfolio = await buildPortfolio({ group: settings.activeGroup, includeTokens: true });
     const positions = listPositions(portfolio);
 
     if (positions.length === 0) {
@@ -154,15 +154,13 @@ export const RESET_PHRASE = 'RESET EVERYTHING';
  */
 export async function showFactoryReset(ctx: Context): Promise<void> {
   const wallets = allWallets();
-  const solWallets = wallets.filter((w) => w.kind === 'solana');
-  const evmWallets = wallets.filter((w) => w.kind === 'evm');
 
   const lines = [
     '<b>🧨 Factory reset</b>',
     '',
     'This deletes <b>everything</b>: the vault, every private key, the seed phrase, every wallet label and group, and the trade history.',
     '',
-    `<b>${solWallets.length}</b> Solana · <b>${evmWallets.length}</b> EVM wallets stored`,
+    `<b>${wallets.length}</b> wallet${wallets.length === 1 ? '' : 's'} stored`,
   ];
 
   if (wallets.length === 0) {
@@ -175,7 +173,7 @@ export async function showFactoryReset(ctx: Context): Promise<void> {
   // the number that should stop someone who is about to make a mistake
   let funded = 0;
   try {
-    const balances = await getSolBalances(solWallets.map((w) => w.address));
+    const balances = await getSolBalances(wallets.map((w) => w.address));
     let total = 0n;
     for (const lamports of balances.values()) {
       total += lamports;
@@ -195,10 +193,6 @@ export async function showFactoryReset(ctx: Context): Promise<void> {
     lines.push('<i>⚠️ Could not read balances — assume the wallets still hold funds.</i>');
   }
 
-  if (evmWallets.length > 0) {
-    lines.push('');
-    lines.push(`<i>EVM balances are not checked here. ${evmWallets.length} EVM wallet${evmWallets.length === 1 ? '' : 's'} will also be destroyed.</i>`);
-  }
 
   lines.push('');
   lines.push('There is no undo and no backup. To go ahead, send this exactly:');
@@ -243,10 +237,7 @@ export async function showSettings(ctx: Context): Promise<void> {
   const wallets = allWallets();
   await render(
     ctx,
-    renderSettings(settings, {
-      solana: wallets.filter((w) => w.kind === 'solana').length,
-      evm: wallets.filter((w) => w.kind === 'evm').length,
-    }),
+    renderSettings(settings, wallets.length),
     settingsKeyboard(settings),
   );
 }

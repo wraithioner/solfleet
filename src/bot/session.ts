@@ -16,10 +16,10 @@ export type PendingInput =
   | { kind: 'import_mnemonic' }
   | { kind: 'rename_wallet'; walletId: string }
   | { kind: 'group_wallet'; walletId: string }
-  | { kind: 'derive_count'; chainKind: 'solana' | 'evm' }
+  | { kind: 'derive_count' }
   | { kind: 'custom_buy'; mint: string }
   | { kind: 'custom_sell'; mint: string }
-  | { kind: 'send_to_address'; chainKind: 'solana' | 'evm'; token?: string }
+  | { kind: 'send_to_address'; token?: string }
   | { kind: 'fund_amount'; mode: 'each' | 'topup' }
   | { kind: 'factory_reset' }
   | { kind: 'set_slippage' }

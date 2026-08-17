@@ -33,7 +33,6 @@ import {
 } from './handlers/core.js';
 import * as W from './handlers/wallets.js';
 import * as T from './handlers/trade.js';
-import type { EvmChain } from '../types.js';
 
 export function createBot(): Bot {
   const bot = new Bot(config.botToken);
@@ -264,18 +263,16 @@ async function routeCallback(ctx: Context, action: string, args: string[]): Prom
       return T.promptSweepSol(ctx);
     case 'sweep_token_prompt':
       return T.promptSweepToken(ctx);
-    case 'sweep_evm':
-      return T.promptSweepEvm(ctx, (args[0] ?? 'base') as EvmChain);
 
     // wallets
     case 'gen':
-      return W.generateWallet(ctx, (args[0] ?? 'solana') as 'solana' | 'evm');
+      return W.generateWallet(ctx);
     case 'import_key':
       return W.promptImportKey(ctx);
     case 'derive_menu':
       return W.promptDerive(ctx);
     case 'derive':
-      return W.executeDerive(ctx, (args[0] ?? 'solana') as 'solana' | 'evm', Number(args[1] ?? 5));
+      return W.executeDerive(ctx, Number(args[0] ?? 5));
     case 'show_mnemonic':
       return W.showMnemonic(ctx);
     case 'import_mnemonic':

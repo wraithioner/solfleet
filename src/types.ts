@@ -1,11 +1,10 @@
+/**
+ * Chains a *token lookup* can report. The bot holds wallets and trades on
+ * Solana only; the rest exist because pasting a contract address from another
+ * chain should still return an honest, clearly-labelled research card rather
+ * than "unknown token".
+ */
 export type Chain = 'solana' | 'ethereum' | 'base' | 'arbitrum' | 'bsc' | 'polygon' | 'optimism';
-
-export const EVM_CHAINS = ['ethereum', 'base', 'arbitrum', 'bsc', 'polygon', 'optimism'] as const;
-export type EvmChain = (typeof EVM_CHAINS)[number];
-
-export function isEvmChain(c: Chain): c is EvmChain {
-  return (EVM_CHAINS as readonly string[]).includes(c);
-}
 
 /**
  * A wallet record as stored on disk. `secret` is the ciphertext blob produced by
@@ -14,7 +13,7 @@ export function isEvmChain(c: Chain): c is EvmChain {
  */
 export interface WalletRecord {
   id: string;
-  kind: 'solana' | 'evm';
+  kind: 'solana';
   address: string;
   label: string;
   /** Encrypted private key / keypair bytes. */

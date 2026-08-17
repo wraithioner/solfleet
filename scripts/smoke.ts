@@ -62,60 +62,51 @@ assert.equal(sol.kind, 'solana');
 assert.equal(sol.isMain, true, 'first wallet of a kind becomes main');
 ok(`generated Solana wallet ${sol.address.slice(0, 8)}… (auto-main)`);
 
-const evm = wallets.generateEvmWallet('test-evm');
-assert.match(evm.address, /^0x[a-fA-F0-9]{40}$/);
-assert.equal(evm.isMain, true);
-ok(`generated EVM wallet ${evm.address.slice(0, 10)}…`);
-
 // exported key must reimport to the identical address
 const exported = wallets.exportSecret(sol);
 const kp = wallets.solanaKeypair(sol);
 assert.equal(kp.publicKey.toBase58(), sol.address);
 ok('Solana keypair reconstructs to the same address');
 
-const acct = wallets.evmAccount(evm);
-assert.equal(acct.address.toLowerCase(), evm.address.toLowerCase());
-ok('EVM account reconstructs to the same address');
-
 assert.throws(() => wallets.importPrivateKey(exported), /already in the list/);
 ok('duplicate import is rejected');
 
-const derived = wallets.deriveWallets('solana', 3, ['batch-a']);
+const derived = wallets.deriveWallets(3, ['batch-a']);
 assert.equal(derived.length, 3);
 assert.deepEqual(derived.map((w) => w.derivationIndex), [0, 1, 2]);
 assert.equal(new Set(derived.map((w) => w.address)).size, 3);
 ok('derived 3 distinct HD Solana wallets at indices 0,1,2');
-
-const derivedEvm = wallets.deriveWallets('evm', 2);
-assert.equal(new Set(derivedEvm.map((w) => w.address)).size, 2);
-ok('derived 2 distinct HD EVM wallets');
 
 // derivation must be deterministic from the seed
 const phrase = wallets.getOrCreateMnemonic();
 assert.equal(phrase.split(' ').length, 12);
 ok('mnemonic is a valid 12-word phrase');
 
-const grouped = wallets.selectWallets({ kind: 'solana', group: 'batch-a' });
+const grouped = wallets.selectWallets({ group: 'batch-a' });
 assert.equal(grouped.length, 3);
 ok('group filter selects only the tagged wallets');
 
-const all = wallets.selectWallets({ kind: 'solana', group: null });
+const all = wallets.selectWallets({ group: null });
 assert.equal(all.length, 4);
-ok('null group selects every Solana wallet');
+ok('null group selects every wallet');
 
 wallets.toggleDisabled(derived[0]!.id);
-assert.equal(wallets.selectWallets({ kind: 'solana', group: null }).length, 3);
+assert.equal(wallets.selectWallets({ group: null }).length, 3);
 ok('disabled wallets are excluded from batches');
 
 wallets.setMain(derived[1]!.id);
-assert.equal(wallets.mainWallet('solana')!.id, derived[1]!.id);
-assert.equal(wallets.allWallets().filter((w) => w.kind === 'solana' && w.isMain).length, 1);
-ok('exactly one main wallet per chain kind');
+assert.equal(wallets.mainWallet()!.id, derived[1]!.id);
+assert.equal(wallets.allWallets().filter((w) => w.isMain).length, 1);
+ok('exactly one main wallet');
+
+// an EVM key is a plausible paste and must fail with a clear reason
+assert.throws(() => wallets.importPrivateKey(`0x${'a'.repeat(64)}`), /Solana wallets only/);
+ok('an EVM private key is rejected with a chain-specific message');
 
 console.log('\n[3] Passphrase rotation');
 const beforeAddrs = wallets.allWallets().map((w) => w.address);
 await changePassphrase('correct horse battery staple', 'a much better passphrase', wallets.resealAll);
-const afterKp = wallets.solanaKeypair(wallets.allWallets().find((w) => w.kind === 'solana')!);
+const afterKp = wallets.solanaKeypair(wallets.allWallets()[0]!);
 assert.deepEqual(wallets.allWallets().map((w) => w.address), beforeAddrs);
 ok('all keys re-encrypted, addresses unchanged');
 
@@ -215,9 +206,10 @@ ok('mint extracted from a pump.fun link');
 assert.equal(extractTokenAddress(`https://dexscreener.com/solana/${mint}`)?.address, mint);
 ok('mint extracted from a dexscreener link');
 
+// still recognised, because pasting one should return a research card
 const evmToken = '0xdAC17F958D2ee523a2206206994597C13D831ec7';
 assert.equal(extractTokenAddress(evmToken)?.kind, 'evm');
-ok('EVM address detected');
+ok('EVM address still recognised for research lookups');
 
 assert.equal(extractTokenAddress('hello world'), null);
 assert.equal(extractTokenAddress('0x123'), null);

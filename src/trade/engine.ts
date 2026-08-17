@@ -3,7 +3,7 @@ import type { VersionedTransaction, Keypair } from '@solana/web3.js';
 import { config, type ExecutionMode } from '../config.js';
 import { chunk, pMap, errMessage, retry } from '../util.js';
 import { log } from '../logger.js';
-import { solanaKeypair, evmAccount } from '../store/wallets.js';
+import { solanaKeypair } from '../store/wallets.js';
 import { db } from '../store/db.js';
 import {
   sendAndConfirm,
@@ -15,19 +15,12 @@ import {
   signatureLanded,
   WSOL_MINT,
 } from '../chains/solana.js';
-import { sweepNative, sendErc20, getErc20Balances } from '../chains/evm.js';
 import { buildTrade, buildTradeBundle, signTx, toTradeArgs, type TradeArgs } from './pumpportal.js';
 import { sendBundle, waitForBundle } from './jito.js';
 import { detectPool } from './curve.js';
 import { swapToSol, swapFromSol } from './jupiter.js';
 import { fundingBalances, partitionByBalance, requiredForBuy } from './fund.js';
-import type {
-  WalletRecord,
-  TradeRequest,
-  ExecutionResult,
-  BatchSummary,
-  EvmChain,
-} from '../types.js';
+import type { WalletRecord, TradeRequest, ExecutionResult, BatchSummary } from '../types.js';
 
 export type ProgressFn = (done: number, total: number, note?: string) => void | Promise<void>;
 
@@ -62,7 +55,7 @@ export async function batchPumpTrade(
   onProgress?: ProgressFn,
 ): Promise<BatchSummary> {
   const startedAt = Date.now();
-  const solWallets = wallets.filter((w) => w.kind === 'solana' && !w.disabled);
+  const solWallets = wallets.filter((w) => !w.disabled);
 
   if (solWallets.length === 0) {
     return summarise([], startedAt);
@@ -382,7 +375,7 @@ export async function batchSweepSol(
   const settings = db.settings();
 
   const senders = wallets.filter(
-    (w) => w.kind === 'solana' && !w.disabled && w.address !== destination,
+    (w) => !w.disabled && w.address !== destination,
   );
 
   let done = 0;
@@ -430,7 +423,7 @@ export async function batchSweepToken(
 ): Promise<BatchSummary> {
   const startedAt = Date.now();
   const settings = db.settings();
-  const senders = wallets.filter((w) => w.kind === 'solana' && !w.disabled && w.address !== destination);
+  const senders = wallets.filter((w) => !w.disabled && w.address !== destination);
   let done = 0;
 
   const results = await pMap(senders, config.trading.concurrency, async (w) => {
@@ -488,7 +481,7 @@ export async function batchSellAllPositions(
 
   // discover every distinct mint held across the selected wallets
   const mintSet = new Set<string>();
-  for (const w of wallets.filter((x) => x.kind === 'solana' && !x.disabled)) {
+  for (const w of wallets.filter((x) => !x.disabled)) {
     try {
       for (const h of await getSplBalances(w.address)) mintSet.add(h.mint);
     } catch (err) {
@@ -505,7 +498,7 @@ export async function batchSellAllPositions(
   for (const [i, mint] of mints.entries()) {
     await onProgress?.(i, mints.length, `selling ${mint.slice(0, 6)}…`);
 
-    const holders = wallets.filter((w) => w.kind === 'solana' && !w.disabled);
+    const holders = wallets.filter((w) => !w.disabled);
     summaries[mint] = await batchPumpTrade(holders, {
       action: 'sell',
       mint,
@@ -519,97 +512,4 @@ export async function batchSellAllPositions(
 
   await onProgress?.(mints.length, mints.length);
   return { mints, summaries };
-}
-
-// ── EVM consolidation ─────────────────────────────────────────────────────────
-
-export async function batchSweepEvmNative(
-  chain: EvmChain,
-  wallets: WalletRecord[],
-  destination: string,
-  onProgress?: ProgressFn,
-): Promise<BatchSummary> {
-  const startedAt = Date.now();
-  const senders = wallets.filter(
-    (w) => w.kind === 'evm' && !w.disabled && w.address.toLowerCase() !== destination.toLowerCase(),
-  );
-  let done = 0;
-
-  const results = await pMap(senders, config.trading.concurrency, async (w) => {
-    try {
-      const swept = await sweepNative(chain, evmAccount(w), destination);
-
-      if (!swept) {
-        return {
-          walletId: w.id,
-          label: w.label,
-          address: w.address,
-          ok: true,
-          detail: 'below gas cost',
-        } satisfies ExecutionResult;
-      }
-
-      return {
-        walletId: w.id,
-        label: w.label,
-        address: w.address,
-        ok: true,
-        txHash: swept.hash,
-        detail: `${swept.amount.toFixed(6)}`,
-      } satisfies ExecutionResult;
-    } catch (err) {
-      return fail(w, err);
-    } finally {
-      done++;
-      await onProgress?.(done, senders.length);
-    }
-  });
-
-  return summarise(results, startedAt);
-}
-
-export async function batchSweepEvmToken(
-  chain: EvmChain,
-  wallets: WalletRecord[],
-  token: string,
-  destination: string,
-  onProgress?: ProgressFn,
-): Promise<BatchSummary> {
-  const startedAt = Date.now();
-  const senders = wallets.filter(
-    (w) => w.kind === 'evm' && !w.disabled && w.address.toLowerCase() !== destination.toLowerCase(),
-  );
-  let done = 0;
-
-  const results = await pMap(senders, config.trading.concurrency, async (w) => {
-    try {
-      const [balance] = await getErc20Balances(chain, w.address, [token]);
-      if (!balance || balance.rawAmount === 0n) {
-        return {
-          walletId: w.id,
-          label: w.label,
-          address: w.address,
-          ok: true,
-          detail: 'no balance',
-        } satisfies ExecutionResult;
-      }
-
-      const hash = await sendErc20(chain, evmAccount(w), token, destination, balance.rawAmount);
-      return {
-        walletId: w.id,
-        label: w.label,
-        address: w.address,
-        ok: true,
-        txHash: hash,
-        detail: `${balance.amount} ${balance.symbol}`,
-      } satisfies ExecutionResult;
-    } catch (err) {
-      return fail(w, err);
-    } finally {
-      done++;
-      await onProgress?.(done, senders.length);
-    }
-  });
-
-  return summarise(results, startedAt);
 }
