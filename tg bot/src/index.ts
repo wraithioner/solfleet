@@ -23,6 +23,8 @@ async function main(): Promise<void> {
     log.warn('set SOLANA_RPC_URL to a private endpoint (Helius, QuickNode, Triton) before trading.');
   }
 
+  warnIfStorageIsEphemeral();
+
   if (await autoUnlockIfConfigured()) {
     log.info('Vault unlocked from VAULT_PASSPHRASE.');
     log.warn('The passphrase is in .env — anyone who can read that file can move your funds.');
@@ -65,6 +67,50 @@ async function main(): Promise<void> {
       log.info('─────────────────────────────────────────────');
     },
   });
+}
+
+/**
+ * Shout if the wallet files are sitting on disposable storage.
+ *
+ * A container filesystem is wiped on every redeploy. If `data/` lives there,
+ * the vault and the wallet index go with it — and since the encrypted keys are
+ * the only copy, every wallet becomes unspendable the next time the operator
+ * pushes a commit. That is an unrecoverable, silent loss of funds, so it is
+ * worth being noisy about long before it happens.
+ */
+function warnIfStorageIsEphemeral(): void {
+  // Railway exports these; other container hosts are close enough in spirit
+  const onContainerHost = Boolean(
+    process.env.RAILWAY_ENVIRONMENT ?? process.env.RAILWAY_PROJECT_ID ?? process.env.RENDER ?? process.env.FLY_APP_NAME,
+  );
+  if (!onContainerHost) return;
+
+  const volume = process.env.RAILWAY_VOLUME_MOUNT_PATH;
+  const onVolume = Boolean(volume && config.dataDir.startsWith(volume));
+  if (onVolume) {
+    log.info(`Wallet storage is on the persistent volume at ${volume}. Good.`);
+    return;
+  }
+
+  log.warn('══════════════════════════════════════════════════════════════');
+  log.warn('  WALLET STORAGE IS NOT ON A PERSISTENT VOLUME');
+  log.warn('');
+  log.warn(`  DATA_DIR is ${config.dataDir}, which lives on the container's`);
+  log.warn('  disposable filesystem. It is erased on every redeploy and');
+  log.warn('  restart, taking vault.json and wallets.json with it.');
+  log.warn('');
+  log.warn('  The encrypted keys are the ONLY copy. Losing them makes every');
+  log.warn('  wallet permanently unspendable — funds included.');
+  log.warn('');
+  log.warn('  Fix before creating wallets or sending any funds:');
+  log.warn('    1. Add a Volume to this service, mount path /data');
+  log.warn('    2. Set DATA_DIR=/data in the service variables');
+  log.warn('    3. Redeploy');
+  log.warn('══════════════════════════════════════════════════════════════');
+
+  if (allWallets().length > 0) {
+    log.error(`${allWallets().length} wallets are already stored here. Export their keys NOW, before the next deploy.`);
+  }
 }
 
 main().catch((err) => {

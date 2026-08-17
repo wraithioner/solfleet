@@ -97,6 +97,50 @@ encrypted under it before touching disk.
 
 ---
 
+## Deploying to Railway
+
+The bot is a worker, not a web service — it long-polls Telegram and never
+listens on a port. Railway runs it fine, but three settings are not optional.
+
+**1. Root directory.** The project lives in the `tg bot` subdirectory, so in
+Settings → Source, set **Root Directory** to `tg bot` (the space is part of the
+name). Without it Railway finds no `package.json` and the build fails.
+
+**2. A volume — do this before you create any wallets.** Container storage is
+erased on every redeploy. The encrypted vault is the *only* copy of your private
+keys, so losing it makes every wallet permanently unspendable.
+
+- Add a **Volume** to the service, mount path `/data`
+- Set `DATA_DIR=/data` in Variables
+
+The bot checks this at boot and prints a loud warning if the wallet files are
+sitting on disposable storage, but it cannot recover keys already lost.
+
+**3. One replica.** Telegram allows a single polling connection per bot token;
+two replicas fight over it and the bot flaps with 409 errors. `railway.json`
+pins `numReplicas: 1` — leave it there, and leave app sleeping **off**, since a
+sleeping bot stops receiving messages.
+
+**Variables to set**
+
+| Variable | Value |
+| --- | --- |
+| `BOT_TOKEN` | from [@BotFather](https://t.me/BotFather) |
+| `OWNER_IDS` | your numeric ID from [@userinfobot](https://t.me/userinfobot) |
+| `SOLANA_RPC_URL` | your Helius / QuickNode endpoint |
+| `DATA_DIR` | `/data` — must match the volume mount path |
+| `VAULT_PASSPHRASE` | leave unset; see below |
+
+**On `VAULT_PASSPHRASE`.** Leave it empty and the vault locks on every restart,
+so you send `/unlock <passphrase>` after each redeploy — the key then exists only
+in memory. Set it, and the bot unlocks itself unattended, but anyone who can read
+your Railway variables owns every wallet. Start without it.
+
+Once deployed, open your bot in Telegram and send `/start`. The first message you
+send after that becomes your vault passphrase.
+
+---
+
 ## ⚠️ Use a private Solana RPC
 
 The public endpoint (`api.mainnet-beta.solana.com`) rate-limits aggressively.
