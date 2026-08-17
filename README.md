@@ -14,6 +14,10 @@ at all. Everyone else gets silence, not an error.
 
 **Portfolio**
 - SOL + SPL token balances for every wallet, with USD valuation and a grand total
+- **Profit and loss per position**, in SOL: what went in, what came back, what is
+  still held. Buys record what the batch spent; sell proceeds are *measured* from
+  the wallets' balances before and after, so the figure is what actually arrived,
+  fees already deducted — not a quote taken before the fill
 - A designated **main wallet**, shown separately at the top
 - Open positions aggregated across all wallets, largest first
 
@@ -56,6 +60,8 @@ at all. Everyone else gets silence, not an error.
 - Generate, import, or derive HD sets from one seed phrase (Phantom's standard
   path, so the wallets import cleanly elsewhere)
 - Label wallets, tag them into groups, and point batch operations at one group
+- Buy and sell buttons are editable in Settings, so the amounts on screen are
+  the sizes you actually trade
 - Disable individual wallets to exclude them from batches
 - Export addresses as a file; export individual keys as self-destructing messages
 
@@ -252,14 +258,15 @@ npm run check
 Runs three layers:
 
 - `typecheck` — full TypeScript strict-mode pass
-- `smoke` — 61 offline assertions: vault crypto (round-trip, unique IVs, tamper
+- `smoke` — 65 offline assertions: vault crypto (round-trip, unique IVs, tamper
   rejection, lock/unlock, passphrase rotation re-sealing every key), wallet
   derivation, group and main-wallet invariants, bonding curve maths and batch
   simulation, funding arithmetic (shortfall-only top-ups, transaction packing,
   refusing a plan the main wallet can't afford, skipping wallets that cannot
-  cover a buy), token account parsing, factory reset (files removed from disk,
-  fresh setup possible afterwards), address parsing, concurrency helpers,
-  log redaction
+  cover a buy), token account parsing, P&L arithmetic (banked profit, a position
+  worth zero, and no divide-by-zero without a cost basis), factory reset (files
+  removed from disk, fresh setup possible afterwards), address parsing,
+  concurrency helpers, log redaction
 - `netcheck` — 18 live read-only checks against Solana RPC, DexScreener, Jupiter,
   PumpPortal and the pump.fun program
 
@@ -312,6 +319,7 @@ src/
     metadata.ts        Metaplex metadata for un-indexed tokens
     portfolio.ts       cross-wallet, cross-chain aggregation
     prices.ts          cached USD pricing
+    pnl.ts             cost basis and profit/loss, denominated in SOL
   bot/                 Telegram layer: routing, screens, session state
 ```
 

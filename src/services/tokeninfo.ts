@@ -55,6 +55,8 @@ export interface TokenInfo {
   curveMcapSol?: number;
 
   totalSupply?: number;
+  /** Needed to turn a raw balance into a human amount. */
+  decimals?: number;
   holders?: HolderInfo[];
   /** True when the holder query failed — distinct from "no holders". */
   holdersUnavailable?: boolean;
@@ -235,10 +237,10 @@ async function loadSolanaHolders(mint: string): Promise<Partial<TokenInfo>> {
 
     const decimals = supplyRes.value.decimals;
     const totalSupply = Number(supplyRes.value.amount) / 10 ** decimals;
-    if (totalSupply === 0) return { totalSupply: 0, holders: [] };
+    if (totalSupply === 0) return { totalSupply: 0, decimals, holders: [] };
 
     const accounts = largest.value.slice(0, 20);
-    if (accounts.length === 0) return { totalSupply, holders: [] };
+    if (accounts.length === 0) return { totalSupply, decimals, holders: [] };
 
     // getTokenLargestAccounts returns token accounts, not owners — resolve them
     const parsed = await rpc().getMultipleParsedAccounts(accounts.map((a) => a.address));
@@ -282,6 +284,7 @@ async function loadSolanaHolders(mint: string): Promise<Partial<TokenInfo>> {
 
     return {
       totalSupply,
+      decimals,
       holders,
       top10Pct,
       ownedPct: (ownedAmount / totalSupply) * 100,

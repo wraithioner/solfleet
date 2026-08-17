@@ -334,6 +334,34 @@ async function routeCallback(ctx: Context, action: string, args: string[]): Prom
     case 'set_reserve':
       setPending(userId, { kind: 'set_reserve' });
       return render(ctx, '<b>Send the SOL to leave in each wallet when sweeping.</b>\n\n<i>e.g. 0.002</i>', backButton('settings'));
+
+    case 'set_buy_presets':
+      setPending(userId, { kind: 'set_buy_presets' });
+      return render(
+        ctx,
+        [
+          '<b>🟢 Send your buy amounts, in SOL.</b>',
+          '',
+          `Current: <b>${db.settings().quickBuyPresets.join(', ')}</b>`,
+          '',
+          '<i>Up to 5, separated by spaces or commas — e.g. 0.02 0.1 0.25 0.5 1</i>',
+        ].join('\n'),
+        backButton('settings'),
+      );
+
+    case 'set_sell_presets':
+      setPending(userId, { kind: 'set_sell_presets' });
+      return render(
+        ctx,
+        [
+          '<b>🔴 Send your sell percentages.</b>',
+          '',
+          `Current: <b>${db.settings().quickSellPresets.join(', ')}</b>`,
+          '',
+          '<i>Up to 4, separated by spaces or commas — e.g. 20 50 80 100</i>',
+        ].join('\n'),
+        backButton('settings'),
+      );
     case 'change_passphrase':
       setPending(userId, { kind: 'change_passphrase', stage: 'current' });
       return render(ctx, '<b>🔑 Send your current passphrase.</b>', backButton('settings'));
@@ -522,9 +550,52 @@ async function handlePending(
         return `Sweep reserve set to ${v} SOL`;
       });
 
+    case 'set_buy_presets': {
+      const values = parseNumberList(text, 5);
+      if (!values || values.some((v) => v <= 0 || v > config.safety.maxBuySolPerWallet)) {
+        await ctx.reply(
+          `Send up to 5 amounts between 0 and ${config.safety.maxBuySolPerWallet} SOL, e.g. 0.02 0.1 0.5`,
+        );
+        return;
+      }
+      db.updateSettings({ quickBuyPresets: values });
+      await ctx.reply(`✅ Buy buttons are now: ${values.join(', ')} SOL`, {
+        reply_markup: new InlineKeyboard().text('⚙️ Settings', 'settings'),
+      });
+      return;
+    }
+
+    case 'set_sell_presets': {
+      const values = parseNumberList(text, 4);
+      if (!values || values.some((v) => v <= 0 || v > 100)) {
+        await ctx.reply('Send up to 4 percentages between 1 and 100, e.g. 20 50 80 100');
+        return;
+      }
+      db.updateSettings({ quickSellPresets: values });
+      await ctx.reply(`✅ Sell buttons are now: ${values.join(', ')}%`, {
+        reply_markup: new InlineKeyboard().text('⚙️ Settings', 'settings'),
+      });
+      return;
+    }
+
     default:
       await ctx.reply('Nothing was waiting on that input.');
   }
+}
+
+/**
+ * Parse "0.02 0.1, 0.5" into numbers. Returns undefined if anything in the list
+ * is not a number, so a typo replaces nothing rather than silently dropping the
+ * value it could not read.
+ */
+function parseNumberList(text: string, max: number): number[] | undefined {
+  const parts = text.split(/[\s,]+/).filter(Boolean);
+  if (parts.length === 0 || parts.length > max) return undefined;
+
+  const values = parts.map(Number);
+  if (values.some((v) => !Number.isFinite(v))) return undefined;
+
+  return values;
 }
 
 async function applyNumericSetting(

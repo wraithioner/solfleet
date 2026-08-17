@@ -26,6 +26,8 @@ export type PendingInput =
   | { kind: 'set_priority_fee' }
   | { kind: 'set_jito_tip' }
   | { kind: 'set_reserve' }
+  | { kind: 'set_buy_presets' }
+  | { kind: 'set_sell_presets' }
   | { kind: 'set_group_filter' }
   | { kind: 'manual_token_lookup' };
 

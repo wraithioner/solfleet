@@ -4,6 +4,8 @@ import { config } from '../../config.js';
 import { db } from '../../store/db.js';
 import { selectWallets, mainWallet } from '../../store/wallets.js';
 import { getTokenInfo } from '../../services/tokeninfo.js';
+import { getSolPrice } from '../../services/prices.js';
+import { positionPnl, formatPnl } from '../../services/pnl.js';
 import { getMintBalances, getSolBalance, LAMPORTS } from '../../chains/solana.js';
 import { simulateSequentialBuys, fetchBondingCurve } from '../../trade/curve.js';
 import {
@@ -78,17 +80,36 @@ export async function showTokenCard(ctx: Context, mint: string, replace = false)
     // every wallet, where the old per-wallet scan covered the first ten and
     // cost ten sequential round trips to do it.
     let holdsPosition = false;
+    let heldRaw = 0n;
     if (info.chain === 'solana') {
       try {
         const wallets = selectWallets();
         const held = await getMintBalances(wallets.map((w) => w.address), mint);
         holdsPosition = held.size > 0;
+        for (const amount of held.values()) heldRaw += amount;
       } catch {
         /* a failed balance read should not hide the card */
       }
     }
 
+    const heldTokens = Number(heldRaw) / 10 ** (info.decimals ?? 6);
+    const solPriceUsd = await getSolPrice().catch(() => 0);
+
     let text = renderTokenCard(info);
+
+    // what this position has cost and returned, if it was bought through here
+    const record = db.position(mint);
+    if (record && record.investedSol > 0) {
+      const heldSol =
+        info.priceUsd !== undefined && solPriceUsd > 0
+          ? (heldTokens * info.priceUsd) / solPriceUsd
+          : 0;
+      const pnl = positionPnl(record, heldSol);
+      text +=
+        `\n\n<b>📒 Your position</b>\n` +
+        `In ${pnl.investedSol.toFixed(3)} · back ${pnl.realisedSol.toFixed(3)} · held ${heldSol.toFixed(3)} SOL\n` +
+        `${formatPnl(pnl)}`;
+    }
 
     if (info.chain !== 'solana') {
       text += '\n\n<i>ℹ️ Research only — this bot holds and trades Solana wallets. It cannot buy this.</i>';
@@ -269,6 +290,10 @@ async function executeBuy(ctx: Context, mint: string, solPerWallet: number): Pro
       failed: summary.failed,
     });
 
+    // cost basis: only the wallets that actually filled spent anything
+    const fills = summary.results.filter((r) => r.ok && r.signature).length;
+    db.recordBuy(mint, solPerWallet * fills, fills);
+
     await render(
       ctx,
       renderBatchSummary(`🟢 Bought ${solPerWallet} SOL × ${wallets.length}`, summary),
@@ -332,6 +357,12 @@ async function executeSell(ctx: Context, mint: string, percent: number): Promise
 
   await render(ctx, `<b>🔴 Selling ${percent}% across ${wallets.length} wallets…</b>`);
 
+  // Proceeds are measured, not quoted: the SOL these wallets hold before and
+  // after the batch is what actually arrived, fees already deducted. A quote
+  // taken beforehand would flatter every fill.
+  const addresses = wallets.map((w) => w.address);
+  const solBefore = await fundingBalances(addresses).catch(() => undefined);
+
   try {
     const summary = await batchPumpTrade(
       wallets,
@@ -339,6 +370,16 @@ async function executeSell(ctx: Context, mint: string, percent: number): Promise
       settings.executionMode,
       throttledProgress(ctx, `Selling ${percent}% per wallet`),
     );
+
+    if (solBefore) {
+      const solAfter = await fundingBalances(addresses).catch(() => undefined);
+      if (solAfter) {
+        let delta = 0n;
+        for (const [address, after] of solAfter) delta += after - (solBefore.get(address) ?? 0n);
+        const fills = summary.results.filter((r) => r.ok && r.signature).length;
+        if (delta > 0n) db.recordSell(mint, Number(delta) / LAMPORTS, fills);
+      }
+    }
 
     db.appendTradeLog({
       at: Date.now(),

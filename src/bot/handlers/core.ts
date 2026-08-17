@@ -3,6 +3,7 @@ import { db } from '../../store/db.js';
 import { allWallets, selectWallets } from '../../store/wallets.js';
 import { isUnlocked, vaultExists, destroyVault } from '../../store/vault.js';
 import { buildPortfolio, listPositions } from '../../services/portfolio.js';
+import { positionPnl, formatPnl } from '../../services/pnl.js';
 import { getSolBalances, LAMPORTS } from '../../chains/solana.js';
 import { fmtAmount, fmtUsd, errMessage } from '../../util.js';
 import { log } from '../../logger.js';
@@ -120,11 +121,26 @@ export async function showPositions(ctx: Context): Promise<void> {
     const lines = ['<b>🪙 Open positions</b>', ''];
     const kb = new InlineKeyboard();
 
+    const solPrice = portfolio.totals.solPriceUsd;
+
     for (const p of positions.slice(0, 12)) {
       lines.push(
         `<b>${h(p.symbol)}</b> — ${fmtAmount(p.totalAmount, 2)} across ${p.walletCount} wallet${p.walletCount === 1 ? '' : 's'}` +
           (p.totalUsd > 0 ? ` · ${fmtUsd(p.totalUsd)}` : ''),
       );
+
+      // what it cost versus what it is worth, for positions bought through here
+      const record = db.position(p.mint);
+      if (record && record.investedSol > 0) {
+        const valueSol = solPrice > 0 ? p.totalUsd / solPrice : 0;
+        const pnl = positionPnl(record, valueSol);
+        lines.push(
+          `   in ${pnl.investedSol.toFixed(3)} · back ${pnl.realisedSol.toFixed(3)} · ` +
+            `held ${valueSol.toFixed(3)} SOL`,
+        );
+        lines.push(`   ${formatPnl(pnl)}`);
+      }
+
       lines.push(`<code>${h(p.mint)}</code>`);
       lines.push('');
       kb.text(`${p.symbol} · ${fmtUsd(p.totalUsd)}`, `tokeninfo:${tokenId(p.mint)}`).row();

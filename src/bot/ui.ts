@@ -358,6 +358,8 @@ export function settingsKeyboard(s: Settings): InlineKeyboard {
     .row()
     .text('Sweep reserve', 'set_reserve').text('Group filter', 'group_filter')
     .row()
+    .text('🟢 Buy presets', 'set_buy_presets').text('🔴 Sell presets', 'set_sell_presets')
+    .row()
     .text('🔑 Change passphrase', 'change_passphrase')
     .row()
     .text('🧨 Factory reset', 'factory_reset')

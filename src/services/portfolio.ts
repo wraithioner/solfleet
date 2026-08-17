@@ -18,6 +18,8 @@ export interface PortfolioTotals {
   solUsd: number;
   tokenUsd: number;
   grandTotalUsd: number;
+  /** Needed to value a token position in SOL rather than dollars. */
+  solPriceUsd: number;
 }
 
 export interface Portfolio {
@@ -150,6 +152,7 @@ async function computeTotals(
     solUsd,
     tokenUsd,
     grandTotalUsd: solUsd + tokenUsd,
+    solPriceUsd: solPrice,
   };
 }
 

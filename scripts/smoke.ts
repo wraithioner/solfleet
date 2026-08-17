@@ -391,7 +391,37 @@ assert.equal(parseTokenAccountAmount(Buffer.alloc(165)), 0n);
 assert.equal(parseTokenAccountAmount(Buffer.alloc(8)), 0n, 'a truncated account reads as empty, not a crash');
 ok('empty and truncated accounts read as zero');
 
-console.log('\n[9] Token card rendering');
+console.log('\n[9] Position P&L');
+const { positionPnl, formatPnl } = await import('../src/services/pnl.js');
+const base = { mint: 'M', investedSol: 0, realisedSol: 0, buyFills: 0, sellFills: 0, firstBuyAt: 0, lastTradeAt: 0 };
+
+// bought 5 SOL, sold nothing, now worth 8
+const up = positionPnl({ ...base, investedSol: 5 }, 8);
+assert.equal(up.netSol, 3);
+assert.equal(up.netPct, 60);
+assert.equal(up.inProfitOnRealised, false, 'unrealised gains are not "in profit" yet');
+ok(`5 SOL in, worth 8 → ${formatPnl(up)}`);
+
+// bought 5, sold 6, still holding 1 — profit is banked
+const banked = positionPnl({ ...base, investedSol: 5, realisedSol: 6 }, 1);
+assert.equal(banked.netSol, 2);
+assert.equal(banked.inProfitOnRealised, true, 'sells alone have returned more than it cost');
+ok(`5 in, 6 back, 1 held → ${formatPnl(banked)} and the cost is already recovered`);
+
+// a position that went to zero must show the full loss, not a divide-by-zero
+const rug = positionPnl({ ...base, investedSol: 4 }, 0);
+assert.equal(rug.netSol, -4);
+assert.equal(rug.netPct, -100);
+ok(`a worthless position reads ${formatPnl(rug)}`);
+
+// a token that was never bought through the bot has no cost basis to divide by
+const airdrop = positionPnl({ ...base }, 2);
+assert.equal(airdrop.netSol, 2);
+assert.equal(airdrop.netPct, 0, 'no invested SOL means no percentage, not Infinity');
+assert.ok(Number.isFinite(airdrop.netPct));
+ok('a position with no cost basis reports no percentage rather than Infinity');
+
+console.log('\n[10] Token card rendering');
 const { renderTokenCard } = await import('../src/bot/ui.js');
 
 // a token on a chain this bot has no RPC for must still say where it trades
@@ -417,7 +447,7 @@ const unavailable = renderTokenCard({
 assert.ok(/Unavailable/i.test(unavailable), 'unknown holders say so explicitly');
 ok('unavailable holder data renders as "unknown", never as silence');
 
-console.log('\n[10] Factory reset');
+console.log('\n[11] Factory reset');
 const { destroyVault, vaultExists } = await import('../src/store/vault.js');
 const { db } = await import('../src/store/db.js');
 
@@ -453,7 +483,7 @@ await assert.rejects(() => unlockVault('a much better passphrase'), /Wrong passp
 await unlockVault('a completely fresh start');
 ok('the old passphrase is dead; the new one works');
 
-console.log('\n[11] Secret redaction in logs');
+console.log('\n[12] Secret redaction in logs');
 const { redact } = await import('../src/logger.js');
 assert.ok(!redact(`key is ${exported}`).includes(exported), 'base58 secret key redacted');
 assert.ok(!redact(`pk 0x${'a'.repeat(64)}`).includes('a'.repeat(64)), 'hex private key redacted');

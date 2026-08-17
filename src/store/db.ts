@@ -26,6 +26,26 @@ export interface Settings {
   sweepReserveSol: number;
 }
 
+/**
+ * What a position cost and what it has returned, accumulated across every batch.
+ *
+ * Kept per mint rather than per wallet: the operator runs fifty wallets as one
+ * position, so "what did this token cost me" is the question worth answering.
+ */
+export interface PositionRecord {
+  mint: string;
+  symbol?: string;
+  /** SOL committed to buys. Exact — it is what the batch was told to spend. */
+  investedSol: number;
+  /** SOL returned by sells, measured from balance deltas, so net of fees. */
+  realisedSol: number;
+  /** Wallet-fills, not batches. */
+  buyFills: number;
+  sellFills: number;
+  firstBuyAt: number;
+  lastTradeAt: number;
+}
+
 export interface TradeLogEntry {
   at: number;
   action: string;
@@ -43,6 +63,7 @@ interface DbShape {
   /** Encrypted mnemonic, if the operator generated an HD wallet set. */
   mnemonic?: string;
   tradeLog: TradeLogEntry[];
+  positions: Record<string, PositionRecord>;
 }
 
 const defaultSettings = (): Settings => ({
@@ -64,7 +85,7 @@ function load(): DbShape {
   if (cache) return cache;
 
   if (!fs.existsSync(dbPath())) {
-    cache = { version: 1, wallets: [], settings: defaultSettings(), tradeLog: [] };
+    cache = { version: 1, wallets: [], settings: defaultSettings(), tradeLog: [], positions: {} };
     return cache;
   }
 
@@ -86,6 +107,7 @@ function load(): DbShape {
     settings: { ...defaultSettings(), ...(parsed.settings ?? {}) },
     mnemonic: parsed.mnemonic,
     tradeLog: parsed.tradeLog ?? [],
+    positions: parsed.positions ?? {},
   };
   return cache;
 }
@@ -137,6 +159,62 @@ export const db = {
     return load().tradeLog.slice(0, limit);
   },
 
+  positions(): PositionRecord[] {
+    return Object.values(load().positions);
+  },
+
+  position(mint: string): PositionRecord | undefined {
+    return load().positions[mint];
+  },
+
+  /** Add a completed buy to the position's cost basis. */
+  recordBuy(mint: string, solSpent: number, fills: number, symbol?: string): void {
+    if (solSpent <= 0 || fills <= 0) return;
+    const d = load();
+    const now = Date.now();
+    const pos = d.positions[mint] ?? {
+      mint,
+      symbol,
+      investedSol: 0,
+      realisedSol: 0,
+      buyFills: 0,
+      sellFills: 0,
+      firstBuyAt: now,
+      lastTradeAt: now,
+    };
+
+    pos.investedSol += solSpent;
+    pos.buyFills += fills;
+    pos.lastTradeAt = now;
+    if (symbol && !pos.symbol) pos.symbol = symbol;
+
+    d.positions[mint] = pos;
+    flush();
+  },
+
+  /** Add sell proceeds. Positions with no recorded buy are still tracked. */
+  recordSell(mint: string, solReceived: number, fills: number): void {
+    if (solReceived <= 0 || fills <= 0) return;
+    const d = load();
+    const now = Date.now();
+    const pos = d.positions[mint] ?? {
+      mint,
+      investedSol: 0,
+      realisedSol: 0,
+      buyFills: 0,
+      sellFills: 0,
+      firstBuyAt: now,
+      lastTradeAt: now,
+    };
+
+    pos.realisedSol += solReceived;
+    pos.sellFills += fills;
+    pos.lastTradeAt = now;
+
+    d.positions[mint] = pos;
+    flush();
+  },
+
   /** Escape hatch used by the passphrase-rotation flow. */
   raw(): DbShape {
     return load();
@@ -150,6 +228,6 @@ export const db = {
    */
   wipe(): void {
     fs.rmSync(dbPath(), { force: true });
-    cache = { version: 1, wallets: [], settings: defaultSettings(), tradeLog: [] };
+    cache = { version: 1, wallets: [], settings: defaultSettings(), tradeLog: [], positions: {} };
   },
 };
