@@ -26,6 +26,10 @@ at all. Everyone else gets silence, not an error.
 - Market cap, FDV, liquidity, 24h volume, buy/sell counts
 - **Top holder distribution** with the bonding curve and your own wallets labelled
 - pump.fun curve progress bar and graduation status
+- **Mint and freeze authority**, stated either way on every card. An active
+  freeze authority means the deployer can freeze your token account and stop you
+  selling — no chart shows that coming. An active mint authority means supply can
+  be created and sold into the pool. Both read straight off the mint account
 - Automatic risk warnings: holder concentration, thin liquidity, brand-new pairs,
   volume that looks like wash trading
 - Pasting a non-Solana address still returns a research card, labelled with the
@@ -258,7 +262,7 @@ npm run check
 Runs three layers:
 
 - `typecheck` — full TypeScript strict-mode pass
-- `smoke` — 65 offline assertions: vault crypto (round-trip, unique IVs, tamper
+- `smoke` — 69 offline assertions: vault crypto (round-trip, unique IVs, tamper
   rejection, lock/unlock, passphrase rotation re-sealing every key), wallet
   derivation, group and main-wallet invariants, bonding curve maths and batch
   simulation, funding arithmetic (shortfall-only top-ups, transaction packing,
@@ -267,7 +271,7 @@ Runs three layers:
   worth zero, and no divide-by-zero without a cost basis), factory reset (files
   removed from disk, fresh setup possible afterwards), address parsing,
   concurrency helpers, log redaction
-- `netcheck` — 18 live read-only checks against Solana RPC, DexScreener, Jupiter,
+- `netcheck` — 19 live read-only checks against Solana RPC, DexScreener, Jupiter,
   PumpPortal and the pump.fun program
 
 `netcheck` never signs or broadcasts anything. It builds unsigned transactions
@@ -320,6 +324,7 @@ src/
     portfolio.ts       cross-wallet, cross-chain aggregation
     prices.ts          cached USD pricing
     pnl.ts             cost basis and profit/loss, denominated in SOL
+    mintauth.ts        mint + freeze authority, the two Solana rug vectors
   bot/                 Telegram layer: routing, screens, session state
 ```
 

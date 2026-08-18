@@ -126,6 +126,17 @@ export function renderTokenCard(info: TokenInfo): string {
     lines.push(`🔁 Txns 24h: ${info.buys24h} buys / ${info.sells24h} sells`);
   }
 
+  // Authorities, stated either way. Silence here would read as "safe", which is
+  // exactly the mistake this line exists to prevent.
+  if (info.chain === 'solana') {
+    const mint =
+      info.mintAuthority === undefined ? '❓ unknown' : info.mintAuthority ? '⚠️ ACTIVE' : '✅ revoked';
+    const freeze =
+      info.freezeAuthority === undefined ? '❓ unknown' : info.freezeAuthority ? '🚨 ACTIVE' : '✅ revoked';
+    lines.push('');
+    lines.push(`🔒 Mint auth: ${mint}   ·   Freeze auth: ${freeze}`);
+  }
+
   // pump.fun progress bar
   if (info.isPumpFun) {
     lines.push('');

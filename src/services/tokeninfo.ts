@@ -6,6 +6,7 @@ import { log } from '../logger.js';
 import { fetchBondingCurve, curveMarketCapSol, curveProgress, bondingCurvePda } from '../trade/curve.js';
 import { getSolPrice } from './prices.js';
 import { getTokenMetadata } from './metadata.js';
+import { getMintAuthorities } from './mintauth.js';
 import { allWallets } from '../store/wallets.js';
 import type { Chain } from '../types.js';
 
@@ -57,6 +58,10 @@ export interface TokenInfo {
   totalSupply?: number;
   /** Needed to turn a raw balance into a human amount. */
   decimals?: number;
+  /** Set = someone can mint more supply. null = revoked. undefined = unread. */
+  mintAuthority?: string | null;
+  /** Set = someone can freeze your account so you cannot sell. */
+  freezeAuthority?: string | null;
   holders?: HolderInfo[];
   /** True when the holder query failed — distinct from "no holders". */
   holdersUnavailable?: boolean;
@@ -331,17 +336,24 @@ export async function getTokenInfo(address: string, kind: 'solana' | 'evm'): Pro
   };
 
   if (kind === 'solana') {
-    const [market, holders, curve, meta] = await Promise.all([
+    const [market, holders, curve, meta, authorities] = await Promise.all([
       loadMarketData(address, 'solana'),
       loadSolanaHolders(address),
       loadCurveData(address),
       getTokenMetadata(address).catch(() => null),
+      getMintAuthorities(address),
     ]);
 
     // DexScreener wins on market cap once a pool exists; before that the curve
     // is the only source, so only let it fill an empty field
     const merged: TokenInfo = { ...base, ...curve, ...holders, ...market, chain: 'solana' };
     if (market.marketCap === undefined && curve.marketCap !== undefined) merged.marketCap = curve.marketCap;
+
+    if (authorities) {
+      merged.mintAuthority = authorities.mintAuthority;
+      merged.freezeAuthority = authorities.freezeAuthority;
+      merged.decimals ??= authorities.decimals;
+    }
 
     // on-chain metadata is the fallback, never the override — an indexed name
     // and logo are more reliable than whatever IPFS returns
@@ -364,6 +376,24 @@ export async function getTokenInfo(address: string, kind: 'solana' | 'evm'): Pro
 
 /** Heuristics worth seeing before committing several wallets to a position. */
 function addWarnings(info: TokenInfo): void {
+  // A freeze authority is the one that traps you in the position: the account
+  // can be frozen mid-trade and no chart shows it coming.
+  if (info.freezeAuthority) {
+    info.warnings.push(
+      'FREEZE AUTHORITY IS ACTIVE — the deployer can freeze your token account and stop you selling.',
+    );
+  }
+
+  if (info.mintAuthority) {
+    info.warnings.push(
+      'Mint authority is active — more supply can be created and sold into the pool at any time.',
+    );
+  }
+
+  if (info.chain === 'solana' && info.freezeAuthority === undefined) {
+    info.warnings.push('Could not read the mint authorities — freeze and mint risk are unknown, not absent.');
+  }
+
   if (info.holdersUnavailable) {
     info.warnings.push('Holder distribution unavailable — the RPC rejected the query (rate limit?). Concentration is unknown, not zero.');
   }

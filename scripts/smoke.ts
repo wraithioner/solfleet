@@ -391,7 +391,48 @@ assert.equal(parseTokenAccountAmount(Buffer.alloc(165)), 0n);
 assert.equal(parseTokenAccountAmount(Buffer.alloc(8)), 0n, 'a truncated account reads as empty, not a crash');
 ok('empty and truncated accounts read as zero');
 
-console.log('\n[9] Position P&L');
+console.log('\n[9] Mint authorities');
+const { parseMintAccount } = await import('../src/services/mintauth.js');
+
+function mintAccount(opts: { mintAuth?: boolean; freezeAuth?: boolean; decimals?: number }): Buffer {
+  const b = Buffer.alloc(82);
+  b.writeUInt32LE(opts.mintAuth ? 1 : 0, 0);
+  if (opts.mintAuth) Buffer.alloc(32, 7).copy(b, 4);       // some authority pubkey
+  b.writeBigUInt64LE(1_000_000n, 36);
+  b.writeUInt8(opts.decimals ?? 6, 44);
+  b.writeUInt8(1, 45);
+  b.writeUInt32LE(opts.freezeAuth ? 1 : 0, 46);
+  if (opts.freezeAuth) Buffer.alloc(32, 9).copy(b, 50);
+  return b;
+}
+
+const safe = parseMintAccount(mintAccount({}))!;
+assert.equal(safe.mintAuthority, null);
+assert.equal(safe.freezeAuthority, null);
+assert.equal(safe.decimals, 6);
+ok('a fully revoked mint reads as revoked on both authorities');
+
+const risky = parseMintAccount(mintAccount({ mintAuth: true, freezeAuth: true, decimals: 9 }))!;
+assert.ok(risky.mintAuthority, 'an active mint authority is surfaced');
+assert.ok(risky.freezeAuthority, 'an active freeze authority is surfaced');
+assert.equal(risky.decimals, 9);
+ok('active authorities are surfaced with their addresses');
+
+// The trap: when an authority is revoked the 32 bytes after the option flag are
+// stale padding. Reading them without checking the flag reports a safe token as
+// controlled — or worse, the reverse.
+const stale = mintAccount({ mintAuth: true, freezeAuth: true });
+stale.writeUInt32LE(0, 0);   // revoke mint, leave the old pubkey bytes in place
+stale.writeUInt32LE(0, 46);  // revoke freeze, likewise
+const cleared = parseMintAccount(stale)!;
+assert.equal(cleared.mintAuthority, null, 'a cleared option means revoked, whatever the bytes say');
+assert.equal(cleared.freezeAuthority, null);
+ok('a revoked authority is not misread from leftover pubkey bytes');
+
+assert.equal(parseMintAccount(Buffer.alloc(40)), null, 'a truncated account returns null, not a guess');
+ok('a truncated mint account returns null rather than a false reading');
+
+console.log('\n[10] Position P&L');
 const { positionPnl, formatPnl } = await import('../src/services/pnl.js');
 const base = { mint: 'M', investedSol: 0, realisedSol: 0, buyFills: 0, sellFills: 0, firstBuyAt: 0, lastTradeAt: 0 };
 
@@ -421,7 +462,7 @@ assert.equal(airdrop.netPct, 0, 'no invested SOL means no percentage, not Infini
 assert.ok(Number.isFinite(airdrop.netPct));
 ok('a position with no cost basis reports no percentage rather than Infinity');
 
-console.log('\n[10] Token card rendering');
+console.log('\n[11] Token card rendering');
 const { renderTokenCard } = await import('../src/bot/ui.js');
 
 // a token on a chain this bot has no RPC for must still say where it trades
@@ -447,7 +488,7 @@ const unavailable = renderTokenCard({
 assert.ok(/Unavailable/i.test(unavailable), 'unknown holders say so explicitly');
 ok('unavailable holder data renders as "unknown", never as silence');
 
-console.log('\n[11] Factory reset');
+console.log('\n[12] Factory reset');
 const { destroyVault, vaultExists } = await import('../src/store/vault.js');
 const { db } = await import('../src/store/db.js');
 
@@ -483,7 +524,7 @@ await assert.rejects(() => unlockVault('a much better passphrase'), /Wrong passp
 await unlockVault('a completely fresh start');
 ok('the old passphrase is dead; the new one works');
 
-console.log('\n[12] Secret redaction in logs');
+console.log('\n[13] Secret redaction in logs');
 const { redact } = await import('../src/logger.js');
 assert.ok(!redact(`key is ${exported}`).includes(exported), 'base58 secret key redacted');
 assert.ok(!redact(`pk 0x${'a'.repeat(64)}`).includes('a'.repeat(64)), 'hex private key redacted');

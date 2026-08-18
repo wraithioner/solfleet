@@ -66,6 +66,22 @@ await check('getMintBalances (batched token account read)', async () => {
   return '3 wallets checked in one round trip, none holding';
 });
 
+/**
+ * Ground truth that does not drift: USDC is a centralised stablecoin whose
+ * issuer really can mint and freeze, and BONK is a memecoin that revoked both.
+ * If this check ever flips, the account offsets are being read wrong.
+ */
+await check('mint + freeze authority parsing', async () => {
+  const { getMintAuthorities } = await import('../src/services/mintauth.js');
+  const usdc = await getMintAuthorities(USDC);
+  const bonk = await getMintAuthorities(BONK);
+  if (!usdc || !bonk) throw new Error('could not read a mint account');
+  if (!usdc.mintAuthority || !usdc.freezeAuthority) throw new Error('USDC should have both authorities active');
+  if (bonk.mintAuthority || bonk.freezeAuthority) throw new Error('BONK should have both revoked');
+  if (bonk.decimals !== 5) throw new Error(`BONK decimals read as ${bonk.decimals}, expected 5`);
+  return 'USDC active / BONK revoked, decimals correct';
+});
+
 console.log('\n── Token info pipeline ──');
 
 const { getTokenInfo, extractTokenAddress } = await import('../src/services/tokeninfo.js');
