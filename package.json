@@ -13,7 +13,8 @@
     "typecheck": "tsc --noEmit",
     "smoke": "tsx scripts/smoke.ts",
     "netcheck": "tsx scripts/netcheck.ts",
-    "check": "npm run typecheck && npm run smoke && npm run netcheck"
+    "check": "npm run typecheck && npm run smoke && npm run netcheck",
+    "batchsim": "tsx scripts/batchsim.ts"
   },
   "dependencies": {
     "@solana/spl-token": "^0.4.9",

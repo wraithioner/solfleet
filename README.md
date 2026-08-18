@@ -476,6 +476,16 @@ Runs three layers:
   parsing, concurrency helpers, log redaction
 - `netcheck` — 19 live read-only checks against Solana RPC, DexScreener, Jupiter,
   PumpPortal and the pump.fun program
+- `batchsim` — the dry run for the path that spends money. Builds and signs a
+  real trade for N wallets and simulates each against mainnet instead of
+  sending it: routing, instruction layout, account resolution, signing,
+  transaction size against the 1232-byte packet limit, and per-wallet timing.
+  Empty wallets all fail as "account missing", which proves the transaction is
+  well-formed and nothing more — so it also builds the same trade for a wallet
+  that has recently traded the token and simulates that, which answers whether
+  it would actually execute. `sigVerify: false` means no signature is needed and
+  nothing is broadcast; it reads a public balance and asks the chain a
+  hypothetical
 
 `netcheck` never signs or broadcasts anything. It builds unsigned transactions
 for a throwaway public key purely to confirm the request shape still matches, and
