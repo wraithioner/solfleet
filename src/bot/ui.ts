@@ -524,6 +524,10 @@ export function renderSettings(s: Settings, walletCount: number): string {
     `   🟢 Buy        ${s.quickBuyPresets.join('  ')} ◎`,
     `   🔴 Sell       ${s.quickSellPresets.join('  ')} %`,
     '',
+    '<b>Copy trade safety</b>',
+    `   Top 10 max    <b>${s.copySafety.maxTop10Pct}%</b>`,
+    `   Dev max       <b>${s.copySafety.maxDevPct}%</b>`,
+    '',
     `👛 <b>${walletCount}</b> wallet${walletCount === 1 ? '' : 's'}   ·   🎯 ${s.activeGroup ? h(s.activeGroup) : 'all'}`,
   ].join('\n');
 }
@@ -539,6 +543,10 @@ export function settingsKeyboard(s: Settings, legacyCount = 0): InlineKeyboard {
     .text('Sweep reserve', 'set_reserve').text('Group filter', 'group_filter')
     .row()
     .text('🟢 Buy presets', 'set_buy_presets').text('🔴 Sell presets', 'set_sell_presets')
+    .row()
+    // the limits that decide a copy buy live on the copy-trade screen, but this
+    // is where people go looking for a number they want to change
+    .text('🛡 Copy trade safety', 'copy_safety').primary()
     .row()
 
   // only on the installs that actually carry them, so nobody else sees the row

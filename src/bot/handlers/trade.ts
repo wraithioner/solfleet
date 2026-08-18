@@ -1401,7 +1401,8 @@ export async function showCopySafety(ctx: Context): Promise<void> {
         'safety_liq',
       )
       .row()
-      .text('← Copy trading', 'copy_trade'),
+      // reachable from both screens, so it offers both ways back
+      .text('← Copy trading', 'copy_trade').text('⚙️ Settings', 'settings'),
   );
 }
 
