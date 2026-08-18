@@ -644,7 +644,74 @@ await assert.rejects(() => unlockVault('a much better passphrase'), /Wrong passp
 await unlockVault('a completely fresh start');
 ok('the old passphrase is dead; the new one works');
 
-console.log('\n[17] Secret redaction in logs');
+console.log('\n[17] Legacy wallets from the multi-chain version');
+
+/*
+ * This bot used to hold EVM wallets. A vault written back then still carries
+ * those records, and the keys in them may still control funds. The rule is
+ * simple: this version never signs with one, and never deletes one behind the
+ * operator's back.
+ */
+const legacyRecord = {
+  id: 'legacy-1',
+  kind: 'evm',
+  address: '0x1111111111111111111111111111111111111111',
+  label: 'OLD-EVM-01',
+  secret: encryptSecret('0x' + 'ab'.repeat(32)),
+  groups: [],
+  isMain: false,
+  disabled: false,
+  createdAt: 1,
+};
+
+// write it the way the old version would have, then read the file fresh
+const onDisk = JSON.parse(fs.readFileSync(`${DATA}/wallets.json`, 'utf8'));
+onDisk.wallets.push(legacyRecord);
+fs.writeFileSync(`${DATA}/wallets.json`, JSON.stringify(onDisk, null, 2));
+db.reload();
+
+assert.equal(db.legacyWallets().length, 1, 'the legacy record survives a load from disk');
+assert.equal(wallets.allWallets().some((w) => w.id === 'legacy-1'), false);
+ok('legacy records load but are hidden from every Solana code path');
+
+// the regression that mattered: filtering inside load() meant the next flush
+// wrote the file back without them, destroying the keys
+db.updateSettings({ slippagePercent: 7 });
+db.reload();
+assert.equal(db.legacyWallets().length, 1, 'an unrelated settings write must not drop it');
+ok('a settings change does not eat the legacy keys');
+
+// nor does any wallet mutation, which goes through setWallets()
+const doomed = wallets.generateSolanaWallet('to-be-removed');
+wallets.removeWallet(doomed.id);
+db.reload();
+assert.equal(db.legacyWallets().length, 1, 'removing a Solana wallet must not drop it');
+ok('wallet edits preserve them too');
+
+// creating a wallet has to actually persist — wallets() hands back a filtered copy
+const persisted = wallets.generateSolanaWallet('persisted');
+db.reload();
+assert.ok(
+  wallets.allWallets().some((w) => w.address === persisted.address),
+  'a new wallet is on disk, not just in a discarded array',
+);
+ok('new wallets survive the read-time filter');
+
+// and the operator can get the key back out
+const exportedLegacy = wallets.exportLegacyKeys();
+assert.equal(exportedLegacy.length, 1);
+assert.equal(exportedLegacy[0]!.chain, 'evm');
+assert.equal(exportedLegacy[0]!.secret, '0x' + 'ab'.repeat(32), 'the plaintext key comes back intact');
+ok('legacy keys export in plaintext for recovery');
+
+// deleting is explicit and complete
+assert.equal(wallets.forgetLegacyWallets(), 1);
+db.reload();
+assert.equal(db.legacyWallets().length, 0, 'and they are gone once asked for');
+assert.ok(wallets.allWallets().length > 0, 'the Solana wallets are untouched');
+ok('deletion is opt-in and leaves the real wallets alone');
+
+console.log('\n[18] Secret redaction in logs');
 const { redact } = await import('../src/logger.js');
 assert.ok(!redact(`key is ${exported}`).includes(exported), 'base58 secret key redacted');
 assert.ok(!redact(`pk 0x${'a'.repeat(64)}`).includes('a'.repeat(64)), 'hex private key redacted');

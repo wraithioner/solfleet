@@ -166,11 +166,10 @@ export async function showHolders(ctx: Context, mint: string): Promise<void> {
 // ── buying ────────────────────────────────────────────────────────────────────
 
 export async function promptBuy(ctx: Context, mint: string, solPerWallet: number): Promise<void> {
-  await render(ctx, `<b>🟢 Buy ${solPerWallet} SOL per wallet</b>\n\n<i>Checking balances and simulating the fill…</i>`);
-
   const settings = db.settings();
   const wallets = selectWallets();
 
+  // rejections come first, while the tap can still be answered with an alert
   if (wallets.length === 0) {
     await ctx.answerCallbackQuery({ text: 'No Solana wallets selected.', show_alert: true });
     return;
@@ -183,6 +182,9 @@ export async function promptBuy(ctx: Context, mint: string, solPerWallet: number
     });
     return;
   }
+
+  // balances are read below, and that is slow enough to need something on screen
+  await render(ctx, `<b>🟢 Buy ${solPerWallet} SOL per wallet</b>\n\n<i>Checking balances…</i>`);
 
   const total = solPerWallet * wallets.length;
   const lines = [
@@ -541,13 +543,13 @@ export async function showConsolidateMenu(ctx: Context): Promise<void> {
 // ── funding: main wallet → every trading wallet ───────────────────────────────
 
 export async function showFundMenu(ctx: Context): Promise<void> {
-  await render(ctx, '<b>⬇️ Fund wallets from main</b>\n\n<i>Reading balances…</i>');
-
   const main = mainWallet();
   if (!main) {
     await ctx.answerCallbackQuery({ text: 'Set a main Solana wallet first.', show_alert: true });
     return;
   }
+
+  await render(ctx, '<b>⬇️ Fund wallets from main</b>\n\n<i>Reading balances…</i>');
 
   const targets = selectWallets({ excludeMain: true });
 

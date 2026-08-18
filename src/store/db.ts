@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { config } from '../config.js';
 import { writeAtomic } from './vault.js';
-import type { WalletRecord } from '../types.js';
+import type { WalletRecord, LegacyWalletRecord } from '../types.js';
 import type { ExecutionMode } from '../config.js';
 
 /**
@@ -223,8 +223,21 @@ export const db = {
   },
 
   /** Records from the multi-chain era: kept on disk, excluded from trading. */
-  legacyWallets(): WalletRecord[] {
-    return load().wallets.filter((w) => w.kind !== 'solana');
+  legacyWallets(): LegacyWalletRecord[] {
+    const all = load().wallets as unknown as LegacyWalletRecord[];
+    return all.filter((w) => w.kind !== 'solana');
+  },
+
+  /**
+   * Delete the multi-chain records for good. Only reachable from the screen
+   * that hands the keys over first.
+   */
+  dropLegacyWallets(): number {
+    const doc = load();
+    const before = doc.wallets.length;
+    doc.wallets = doc.wallets.filter((w) => w.kind === 'solana');
+    flush();
+    return before - doc.wallets.length;
   },
 
   /**
@@ -240,7 +253,8 @@ export const db = {
 
   setWallets(next: WalletRecord[]): void {
     // preserve anything this version does not manage, rather than truncating it
-    load().wallets = [...next, ...db.legacyWallets()];
+    const legacy = db.legacyWallets() as unknown as WalletRecord[];
+    load().wallets = [...next, ...legacy];
     flush();
   },
 
@@ -434,5 +448,16 @@ export const db = {
   wipe(): void {
     fs.rmSync(dbPath(), { force: true });
     cache = { version: 1, wallets: [], settings: defaultSettings(), tradeLog: [], positions: {}, rules: [], copyTargets: [], dcaPlans: [] };
+  },
+
+  /**
+   * Drop the in-memory copy so the next read comes off disk.
+   *
+   * Nothing in the running bot needs this — it holds the only handle on the
+   * file. It exists so the load path itself can be exercised: the migration
+   * logic in `load()` is where a bad decision silently destroys keys.
+   */
+  reload(): void {
+    cache = null;
   },
 };

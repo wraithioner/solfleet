@@ -239,6 +239,17 @@ It works **while the vault is locked**, on purpose: forgetting the passphrase is
 the most likely reason to need it, and the keys are already unreachable at that
 point. Anything those wallets still hold is gone for good.
 
+### Wallets from the multi-chain version
+
+This bot handled EVM chains before it became Solana-only, and a `wallets.json`
+written back then still carries those records. They are **kept, not deleted** —
+the addresses may still hold funds. Nothing here can sign with one, so they are
+hidden from every screen except **Settings → 📦 Export legacy keys**, which only
+appears when there are any. From there you can download the private keys as a
+file, import them wherever they belong, and then delete them for good.
+
+A factory reset takes them too, and says so before it does.
+
 ---
 
 ## Safety rails
@@ -315,15 +326,16 @@ npm run check
 Runs three layers:
 
 - `typecheck` — full TypeScript strict-mode pass
-- `smoke` — 73 offline assertions: vault crypto (round-trip, unique IVs, tamper
+- `smoke` — 95 offline assertions: vault crypto (round-trip, unique IVs, tamper
   rejection, lock/unlock, passphrase rotation re-sealing every key), wallet
   derivation, group and main-wallet invariants, bonding curve maths and batch
   simulation, funding arithmetic (shortfall-only top-ups, transaction packing,
   refusing a plan the main wallet can't afford, skipping wallets that cannot
   cover a buy), token account parsing, P&L arithmetic (banked profit, a position
   worth zero, and no divide-by-zero without a cost basis), factory reset (files
-  removed from disk, fresh setup possible afterwards), address parsing,
-  concurrency helpers, log redaction
+  removed from disk, fresh setup possible afterwards), legacy wallet records
+  (hidden from trading, preserved across unrelated writes, exportable, deleted
+  only on request), address parsing, concurrency helpers, log redaction
 - `netcheck` — 19 live read-only checks against Solana RPC, DexScreener, Jupiter,
   PumpPortal and the pump.fun program
 

@@ -5,7 +5,7 @@ import { derivePath } from 'ed25519-hd-key';
 import { Keypair } from '@solana/web3.js';
 import { db, flush } from './db.js';
 import { encryptSecret, decryptSecret } from './vault.js';
-import type { WalletRecord } from '../types.js';
+import type { WalletRecord, LegacyWalletRecord } from '../types.js';
 
 /**
  * Wallet registry. Every mutation goes through here so that the "exactly one
@@ -70,6 +70,46 @@ export function solanaKeypair(w: WalletRecord): Keypair {
 /** Plaintext export. Callers must delete the Telegram message afterwards. */
 export function exportSecret(w: WalletRecord): string {
   return decryptSecret(w.secret);
+}
+
+// ── legacy records ────────────────────────────────────────────────────────────
+
+/**
+ * Wallets left behind by the multi-chain version. They cannot trade here, but
+ * their keys are still in the vault and the addresses may still hold funds, so
+ * there has to be a way to get them out before they are deleted.
+ */
+export function legacyWallets(): LegacyWalletRecord[] {
+  return db.legacyWallets();
+}
+
+export interface LegacyKeyExport {
+  label: string;
+  address: string;
+  chain: string;
+  /** Plaintext. Never log this, never let it reach a file that stays around. */
+  secret: string;
+}
+
+/**
+ * Decrypt every legacy key at once. One failure does not sink the rest — a
+ * record the current vault cannot open still tells the operator it exists.
+ */
+export function exportLegacyKeys(): LegacyKeyExport[] {
+  return legacyWallets().map((w) => {
+    let secret: string;
+    try {
+      secret = decryptSecret(w.secret);
+    } catch {
+      secret = 'COULD NOT DECRYPT — this key was sealed under a different passphrase';
+    }
+    return { label: w.label, address: w.address, chain: w.kind, secret };
+  });
+}
+
+/** Delete them. Irreversible, so the UI hands the keys over first. */
+export function forgetLegacyWallets(): number {
+  return db.dropLegacyWallets();
 }
 
 // ── creating ──────────────────────────────────────────────────────────────────

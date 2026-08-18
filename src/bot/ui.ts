@@ -375,8 +375,8 @@ export function renderSettings(s: Settings, walletCount: number): string {
   ].join('\n');
 }
 
-export function settingsKeyboard(s: Settings): InlineKeyboard {
-  return new InlineKeyboard()
+export function settingsKeyboard(s: Settings, legacyCount = 0): InlineKeyboard {
+  const kb = new InlineKeyboard()
     .text('Slippage', 'set_slippage').text('Priority fee', 'set_priority_fee')
     .row()
     .text(`Fee mode: ${s.priorityFeeMode}`, 'toggle_fee_mode').text('Fee ceiling', 'set_fee_ceiling')
@@ -388,10 +388,12 @@ export function settingsKeyboard(s: Settings): InlineKeyboard {
     .text('🟢 Buy presets', 'set_buy_presets').text('🔴 Sell presets', 'set_sell_presets')
     .row()
     .text('🔑 Change passphrase', 'change_passphrase')
-    .row()
-    .text('🧨 Factory reset', 'factory_reset')
-    .row()
-    .text('← Menu', 'home');
+    .row();
+
+  // only on the installs that actually carry them, so nobody else sees the row
+  if (legacyCount > 0) kb.text(`📦 Export legacy keys (${legacyCount})`, 'legacy_keys').row();
+
+  return kb.text('🧨 Factory reset', 'factory_reset').row().text('← Menu', 'home');
 }
 
 // ── confirmation ──────────────────────────────────────────────────────────────

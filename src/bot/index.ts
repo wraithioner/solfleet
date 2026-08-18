@@ -30,6 +30,9 @@ import {
   showSettings,
   showFactoryReset,
   executeFactoryReset,
+  showLegacyKeys,
+  downloadLegacyKeys,
+  promptForgetLegacy,
 } from './handlers/core.js';
 import * as W from './handlers/wallets.js';
 import * as T from './handlers/trade.js';
@@ -202,6 +205,13 @@ function registerCommands(bot: Bot): void {
 
 // ── callback queries ──────────────────────────────────────────────────────────
 
+/**
+ * How long a handler gets to answer a tap itself before the spinner is
+ * released for it. Long enough for a guard clause that rejects the tap
+ * outright, short enough that a slow screen still feels responsive.
+ */
+const ACK_AFTER_MS = 700;
+
 function registerCallbacks(bot: Bot): void {
   bot.on('callback_query:data', async (ctx) => {
     const data = ctx.callbackQuery.data;
@@ -216,23 +226,55 @@ function registerCallbacks(bot: Bot): void {
     }
 
     /*
-     * Acknowledge the tap before doing any work.
+     * Telegram spins the tapped button until the callback query is answered,
+     * and a query can only be answered once. That single answer is doing two
+     * jobs here: it stops the spinner, and it is how a handler shows a toast
+     * or an alert ("no wallets selected", "token reference expired").
      *
-     * Telegram spins the button until the callback query is answered and gives
-     * up if that takes too long. Answering afterwards meant that any screen
-     * doing a slow RPC read — which is most of them on a rate-limited endpoint
-     * — looked to the operator like a button that did nothing at all. Handlers
-     * that want to show an alert answer again; a duplicate answer is harmless.
+     * Handlers that reject a tap do so immediately, so they get the answer and
+     * their alert. Handlers that go on to read the chain can take seconds on a
+     * rate-limited endpoint, and waiting for those made the button look dead —
+     * so if nothing has answered shortly after the tap, acknowledge it here to
+     * release the spinner. A handler that answers after that has missed its
+     * slot, and its text is delivered as a message rather than dropped.
      */
-    await ctx.answerCallbackQuery().catch(() => {});
+    let answered = false;
+    let ack: NodeJS.Timeout | undefined;
+    const answerApi = ctx.answerCallbackQuery.bind(ctx);
+
+    ctx.answerCallbackQuery = (async (arg?: unknown) => {
+      const opts = typeof arg === 'string' ? { text: arg } : (arg as { text?: string } | undefined);
+
+      if (!answered) {
+        answered = true;
+        clearTimeout(ack);
+        return answerApi(opts as Parameters<typeof answerApi>[0]);
+      }
+
+      const text = opts?.text?.trim();
+      if (text) await ctx.reply(text).catch(() => {});
+      return true;
+    }) as typeof ctx.answerCallbackQuery;
+
+    ack = setTimeout(() => {
+      if (answered) return;
+      answered = true;
+      answerApi().catch(() => {});
+    }, ACK_AFTER_MS);
+    ack.unref?.();
 
     try {
       await routeCallback(ctx, action ?? '', args);
     } catch (err) {
       log.error(`Callback "${data}" failed`, err);
-      await ctx
-        .reply(`❌ ${errMessage(err).slice(0, 300)}`)
-        .catch(() => {});
+      // the alert slot may already be gone, so report failures as a message
+      await ctx.reply(`❌ ${errMessage(err).slice(0, 300)}`).catch(() => {});
+    } finally {
+      clearTimeout(ack);
+      if (!answered) {
+        answered = true;
+        await answerApi().catch(() => {});
+      }
     }
   });
 }
@@ -488,6 +530,15 @@ async function routeCallback(ctx: Context, action: string, args: string[]): Prom
     case 'change_passphrase':
       setPending(userId, { kind: 'change_passphrase', stage: 'current' });
       return render(ctx, '<b>🔑 Send your current passphrase.</b>', backButton('settings'));
+
+    case 'legacy_keys':
+      return showLegacyKeys(ctx);
+
+    case 'legacy_download':
+      return downloadLegacyKeys(ctx);
+
+    case 'legacy_forget':
+      return promptForgetLegacy(ctx);
 
     case 'factory_reset':
       return showFactoryReset(ctx);

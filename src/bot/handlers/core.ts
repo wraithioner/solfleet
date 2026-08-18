@@ -1,13 +1,19 @@
 import type { Context } from 'grammy';
 import { db } from '../../store/db.js';
-import { allWallets, selectWallets } from '../../store/wallets.js';
+import {
+  allWallets,
+  selectWallets,
+  legacyWallets,
+  exportLegacyKeys,
+  forgetLegacyWallets,
+} from '../../store/wallets.js';
 import { isUnlocked, vaultExists, destroyVault } from '../../store/vault.js';
 import { buildPortfolio, listPositions } from '../../services/portfolio.js';
 import { positionPnl, formatPnl } from '../../services/pnl.js';
 import { getSolBalances, LAMPORTS } from '../../chains/solana.js';
 import { fmtAmount, fmtUsd, errMessage } from '../../util.js';
 import { log } from '../../logger.js';
-import { tokenId, setPending, clearSession } from '../session.js';
+import { tokenId, setPending, clearSession, stageConfirmation } from '../session.js';
 import {
   mainMenu,
   renderPortfolio,
@@ -15,9 +21,10 @@ import {
   renderSettings,
   settingsKeyboard,
   backButton,
+  confirmKeyboard,
   h,
 } from '../ui.js';
-import { InlineKeyboard } from 'grammy';
+import { InlineKeyboard, InputFile } from 'grammy';
 
 /**
  * Edit the message a callback came from, transparently handling the fact that
@@ -174,6 +181,7 @@ export async function showFactoryReset(ctx: Context): Promise<void> {
   await render(ctx, '<b>🧨 Factory reset</b>\n\n<i>Checking what this would destroy…</i>');
 
   const wallets = allWallets();
+  const legacy = legacyWallets();
 
   const lines = [
     '<b>🧨 Factory reset</b>',
@@ -183,7 +191,13 @@ export async function showFactoryReset(ctx: Context): Promise<void> {
     `<b>${wallets.length}</b> wallet${wallets.length === 1 ? '' : 's'} stored`,
   ];
 
-  if (wallets.length === 0) {
+  // a wipe takes these too, and they are invisible everywhere else
+  if (legacy.length > 0) {
+    lines.push(`<b>${legacy.length}</b> legacy wallet${legacy.length === 1 ? '' : 's'} from the multi-chain version`);
+    lines.push('<i>Settings → Export legacy keys, before you do this.</i>');
+  }
+
+  if (wallets.length === 0 && legacy.length === 0) {
     lines.push('');
     lines.push('<i>Nothing is stored yet — a reset would be a no-op.</i>');
     await render(ctx, lines.join('\n'), backButton('settings'));
@@ -191,28 +205,29 @@ export async function showFactoryReset(ctx: Context): Promise<void> {
   }
 
   // the number that should stop someone who is about to make a mistake
-  let funded = 0;
-  try {
-    const balances = await getSolBalances(wallets.map((w) => w.address));
-    let total = 0n;
-    for (const lamports of balances.values()) {
-      total += lamports;
-      if (lamports > 0n) funded++;
-    }
+  if (wallets.length > 0) {
+    try {
+      const balances = await getSolBalances(wallets.map((w) => w.address));
+      let total = 0n;
+      let funded = 0;
+      for (const lamports of balances.values()) {
+        total += lamports;
+        if (lamports > 0n) funded++;
+      }
 
-    const sol = Number(total) / LAMPORTS;
-    lines.push('');
-    if (total > 0n) {
-      lines.push(`⚠️ <b>These wallets currently hold ${fmtAmount(sol, 6)} SOL</b> across ${funded} wallet${funded === 1 ? '' : 's'}.`);
-      lines.push('<b>That balance becomes permanently unspendable.</b> Sweep it to a wallet you control first, or export the keys.');
-    } else {
-      lines.push('<i>No SOL balance found in these wallets.</i>');
+      const sol = Number(total) / LAMPORTS;
+      lines.push('');
+      if (total > 0n) {
+        lines.push(`⚠️ <b>These wallets currently hold ${fmtAmount(sol, 6)} SOL</b> across ${funded} wallet${funded === 1 ? '' : 's'}.`);
+        lines.push('<b>That balance becomes permanently unspendable.</b> Sweep it to a wallet you control first, or export the keys.');
+      } else {
+        lines.push('<i>No SOL balance found in these wallets.</i>');
+      }
+    } catch {
+      lines.push('');
+      lines.push('<i>⚠️ Could not read balances — assume the wallets still hold funds.</i>');
     }
-  } catch {
-    lines.push('');
-    lines.push('<i>⚠️ Could not read balances — assume the wallets still hold funds.</i>');
   }
-
 
   lines.push('');
   lines.push('There is no undo and no backup. To go ahead, send this exactly:');
@@ -258,6 +273,125 @@ export async function showSettings(ctx: Context): Promise<void> {
   await render(
     ctx,
     renderSettings(settings, wallets.length),
-    settingsKeyboard(settings),
+    settingsKeyboard(settings, legacyWallets().length),
   );
+}
+
+// ── legacy wallets from the multi-chain version ───────────────────────────────
+
+/**
+ * The recovery path for wallets this version cannot trade.
+ *
+ * These records predate the move to Solana-only. They are dead weight here, but
+ * the addresses may still hold funds on whatever chain they came from, so they
+ * are kept sealed in the vault until the operator has the keys in hand.
+ */
+export async function showLegacyKeys(ctx: Context): Promise<void> {
+  const legacy = legacyWallets();
+
+  if (legacy.length === 0) {
+    await render(
+      ctx,
+      '<b>📦 Legacy keys</b>\n\n<i>Nothing left — this vault holds Solana wallets only.</i>',
+      backButton('settings'),
+    );
+    return;
+  }
+
+  const lines = [
+    '<b>📦 Legacy keys</b>',
+    '',
+    `<b>${legacy.length}</b> wallet${legacy.length === 1 ? '' : 's'} from before this bot went Solana-only.`,
+    'They cannot trade here, but the addresses may still hold funds.',
+    '',
+  ];
+
+  for (const w of legacy.slice(0, 20)) {
+    lines.push(`<b>${h(w.label)}</b> · ${h(w.kind)}`);
+    lines.push(`<code>${h(w.address)}</code>`);
+  }
+  if (legacy.length > 20) lines.push(`<i>…and ${legacy.length - 20} more</i>`);
+
+  lines.push('');
+  lines.push('Download the keys, import them into a wallet that speaks that chain, then delete them here.');
+
+  const kb = new InlineKeyboard()
+    .text('🔑 Download keys', 'legacy_download')
+    .row()
+    .text('🗑 Delete them', 'legacy_forget')
+    .row()
+    .text('← Settings', 'settings');
+
+  await render(ctx, lines.join('\n'), kb);
+}
+
+/**
+ * Send the keys as a file rather than a message.
+ *
+ * A message that long gets split by Telegram, and a split message cannot be
+ * deleted as one unit — a file is a single object that goes away on schedule.
+ */
+export async function downloadLegacyKeys(ctx: Context): Promise<void> {
+  try {
+    const rows = exportLegacyKeys();
+    if (rows.length === 0) {
+      await ctx.answerCallbackQuery({ text: 'Nothing to export.', show_alert: true });
+      return;
+    }
+
+    const body = rows.map((r) => `${r.label}\t${r.chain}\t${r.address}\t${r.secret}`).join('\n');
+    const file = Buffer.from(`label\tchain\taddress\tprivate_key\n${body}\n`, 'utf8');
+
+    const sent = await ctx.replyWithDocument(new InputFile(file, 'legacy-keys.tsv'), {
+      caption:
+        `🔑 ${rows.length} private key${rows.length === 1 ? '' : 's'} in plaintext. ` +
+        'Save it somewhere offline now — this message self-destructs in 3 minutes.',
+    });
+
+    // longer than the 60s a single key gets: this one has to be saved, not read
+    scheduleDelete(ctx, sent.chat.id, sent.message_id, 180_000);
+    log.warn(`Exported ${rows.length} legacy private key(s).`);
+  } catch (err) {
+    await ctx.reply(`❌ ${h(errMessage(err))}`, { parse_mode: 'HTML' });
+  }
+}
+
+/** Two taps and a warning, because the keys are gone afterwards. */
+export async function promptForgetLegacy(ctx: Context): Promise<void> {
+  const legacy = legacyWallets();
+  if (legacy.length === 0) {
+    await ctx.answerCallbackQuery({ text: 'Nothing to delete.', show_alert: true });
+    return;
+  }
+
+  const id = stageConfirmation(ctx.from!.id, `delete ${legacy.length} legacy wallets`, async (confirmCtx) => {
+    const removed = forgetLegacyWallets();
+    log.warn(`Deleted ${removed} legacy wallet record(s).`);
+    await render(
+      confirmCtx,
+      `🗑 Deleted <b>${removed}</b> legacy wallet record${removed === 1 ? '' : 's'}.`,
+      backButton('settings'),
+    );
+  });
+
+  await render(
+    ctx,
+    [
+      `<b>🗑 Delete ${legacy.length} legacy wallet${legacy.length === 1 ? '' : 's'}?</b>`,
+      '',
+      'This erases the encrypted keys from the vault. If those addresses still hold anything, it is unrecoverable.',
+      '',
+      '<b>Download the keys first.</b>',
+    ].join('\n'),
+    confirmKeyboard(id, 'legacy_keys'),
+  );
+}
+
+function scheduleDelete(ctx: Context, chatId: number, messageId: number, delayMs: number): void {
+  const timer = setTimeout(() => {
+    ctx.api.deleteMessage(chatId, messageId).catch(() => {
+      /* already gone, or too old to delete */
+    });
+  }, delayMs);
+  timer.unref?.();
 }

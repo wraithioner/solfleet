@@ -29,6 +29,13 @@ export interface WalletRecord {
   createdAt: number;
 }
 
+/**
+ * A wallet written by the multi-chain version of this bot, before it became
+ * Solana-only. Nothing in here can sign — the record exists so the operator can
+ * get the key out, since it may still hold funds on the chain it came from.
+ */
+export type LegacyWalletRecord = Omit<WalletRecord, 'kind'> & { kind: string };
+
 export interface TokenBalance {
   mint: string;
   symbol: string;
