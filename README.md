@@ -96,10 +96,26 @@ at all. Everyone else gets silence, not an error.
   you into that token and nothing clears it
 - Following a wallet records where it is and starts from there. Their existing
   positions are never retroactively bought
-- **The honest limitation:** the bot polls every 20 seconds, so your copy lands
-  seconds behind theirs, and on a memecoin those seconds are often the move.
-  This follows a trader; it does not race one, and nothing on an interval timer
-  could
+- **Followed wallets are watched over the RPC websocket, not polled.** Each of
+  their transactions is pushed as it confirms — measured at about three seconds
+  behind the chain against a Helius endpoint, against ten on average and twenty
+  at worst when this was an interval timer. It also costs no requests at all:
+  the poll was spending roughly 389,000 calls a month per followed wallet to
+  learn nothing most of the time, which a free-tier key does not have
+- **The poll still runs, as reconciliation rather than as the mechanism.** A
+  socket can drop, and a dropped socket nobody notices is a copy trader that
+  silently stopped copying — so the sweep continues, finds almost everything
+  already claimed, and catches whatever fell through a reconnect. Every path
+  claims a signature before it spends, so one transaction is copied once
+- **A wallet that floods is dropped rather than throttled.** Subscribing to a
+  program or an exchange wallet pushes hundreds of transactions a second, and a
+  read per transaction buries the endpoint in rate-limit errors within one —
+  measured, on the pump.fun program. Anything transacting faster than a person
+  trades is unfollowed with an explanation, since its entries were never
+  copyable anyway
+- **The honest limitation:** three seconds is still three seconds. This follows
+  a trader; it does not race one. Sub-50ms needs a Geyser/gRPC stream at
+  $99–499/month, which is a different kind of bot
 
 **Speed**
 - Every RPC request is cut off at 12 seconds and a timeout is never retried, so
@@ -442,7 +458,7 @@ npm run check
 Runs three layers:
 
 - `typecheck` — full TypeScript strict-mode pass
-- `smoke` — 153 offline assertions: vault crypto (round-trip, unique IVs, tamper
+- `smoke` — 155 offline assertions: vault crypto (round-trip, unique IVs, tamper
   rejection, dropping a passphrase without losing a key, a key file that is
   wrong or missing being refused loudly, and a vault that opens itself at boot),
   wallet

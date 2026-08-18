@@ -6,7 +6,7 @@ import { batchPumpTrade, measureTokensGained } from '../trade/engine.js';
 import { getMintBalances } from '../chains/solana.js';
 import { pricesInSol } from './price.js';
 import { errMessage } from '../util.js';
-import { pollCopyTargets } from './copytrade.js';
+import { pollCopyTargets, syncSubscriptions, stopSubscriptions } from './copytrade.js';
 import { log } from '../logger.js';
 
 /**
@@ -89,6 +89,9 @@ export function startWatcher(notify: Notifier): void {
 export function stopWatcher(): void {
   if (timer) clearInterval(timer);
   timer = null;
+  // the socket holds the process open, and a shutdown that hangs is a redeploy
+  // that takes the old container's SIGTERM timeout to finish
+  void stopSubscriptions();
 }
 
 async function tick(notify: Notifier): Promise<void> {
@@ -99,7 +102,11 @@ async function tick(notify: Notifier): Promise<void> {
     const rules = db.activeRules();
     const copyTargets = db.activeCopyTargets();
     const dca = db.dueDcaPlans();
-    if (rules.length === 0 && copyTargets.length === 0 && dca.length === 0) return;
+    if (rules.length === 0 && copyTargets.length === 0 && dca.length === 0) {
+      // unfollowing the last wallet must actually stop the socket watching it
+      await syncSubscriptions(notify);
+      return;
+    }
 
     if (!isUnlocked()) {
       if (!warnedLocked) {
@@ -118,8 +125,15 @@ async function tick(notify: Notifier): Promise<void> {
     }
     warnedLocked = false;
 
-    // mirroring runs before the rules: a copied exit should not be delayed by
-    // a price sweep that has nothing to do with it
+    /*
+     * Keep the live subscriptions matching the followed list, then sweep.
+     *
+     * The socket is the mechanism and this poll is the safety net: it finds
+     * almost everything already claimed and exists to catch what fell through
+     * a reconnect. Mirroring runs before the rules so a copied exit is not
+     * delayed behind a price sweep that has nothing to do with it.
+     */
+    await syncSubscriptions(notify);
     if (copyTargets.length > 0) await pollCopyTargets(notify);
     await runDueDca(notify);
 

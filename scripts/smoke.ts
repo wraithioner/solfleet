@@ -1154,6 +1154,28 @@ assert.equal(fmt.fmtChange(0.04), '⚪️ 0.0%', 'a move that displays as zero i
 assert.equal(fmt.fmtChange(-0.02), '⚪️ 0.0%', 'nor red');
 ok('a change rounding to zero shows neither colour');
 
+// ── one transaction, one copy ─────────────────────────────────────────────────
+/*
+ * The socket pushes a transaction the moment it confirms; the reconciling poll
+ * sweeps the same window seconds later. Both paths reach the same signature, so
+ * whichever arrives first has to claim it — the failure this guards is buying
+ * the same token twice off one of their trades.
+ */
+const { claimSignature, resetProcessed } = await import('../src/services/copytrade.js');
+resetProcessed();
+
+assert.equal(claimSignature('sig-A'), true, 'first sight is claimed');
+assert.equal(claimSignature('sig-A'), false, 'the second path finds it taken');
+assert.equal(claimSignature('sig-B'), true, 'a different transaction is unaffected');
+ok('a signature is acted on once, whichever path saw it first');
+
+// the set is bounded, and must drop the oldest rather than the newest
+resetProcessed();
+for (let i = 0; i < 700; i++) claimSignature(`sig-${i}`);
+assert.equal(claimSignature('sig-699'), false, 'the most recent are still remembered');
+assert.equal(claimSignature('sig-0'), true, 'the oldest have been forgotten, as intended');
+ok('the seen-set is bounded and forgets oldest first');
+
 console.log('\n[19] Copy-trade safety gate');
 const { assessToken, DEFAULT_SAFETY } = await import('../src/services/safety.js');
 

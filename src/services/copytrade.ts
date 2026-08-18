@@ -230,6 +230,76 @@ export async function pollCopyTargets(notify: Notifier): Promise<void> {
   }
 }
 
+/*
+ * Signatures already acted on.
+ *
+ * The same transaction can arrive twice: once pushed down the socket and again
+ * when the reconciling poll sweeps up. Copying it twice would buy twice, so
+ * every path claims a signature here before it spends anything. Bounded,
+ * because the only ones worth remembering are the recent ones — anything older
+ * is behind `lastSignature` and will not be offered again.
+ */
+const processed = new Set<string>();
+const PROCESSED_MAX = 600;
+
+/** Test seam: forget what has been seen, as a fresh process would. */
+export function resetProcessed(): void {
+  processed.clear();
+}
+
+/** How many of their transactions have been read this run. */
+export function processedCount(): number {
+  return processed.size;
+}
+
+export function claimSignature(signature: string): boolean {
+  if (processed.has(signature)) return false;
+  processed.add(signature);
+  if (processed.size > PROCESSED_MAX) {
+    // Sets iterate in insertion order, so this drops the oldest
+    for (const old of processed) {
+      processed.delete(old);
+      if (processed.size <= PROCESSED_MAX) break;
+    }
+  }
+  return true;
+}
+
+/** Read one of their transactions and mirror whatever it did. */
+async function handleSignature(target: CopyTarget, signature: string, notify: Notifier): Promise<void> {
+  if (!claimSignature(signature)) return;
+
+  const [tx] = await retry(
+    () => rpc().getParsedTransactions([signature], { maxSupportedTransactionVersion: 0 }),
+    { attempts: 2 },
+  );
+  if (!tx?.meta || tx.meta.err) return;
+
+  const moves = detectTokenMoves(
+    (tx.meta.preTokenBalances ?? []) as ParsedBalance[],
+    (tx.meta.postTokenBalances ?? []) as ParsedBalance[],
+    target.address,
+  );
+  if (moves.length === 0) return;
+
+  // what the whole transaction cost them, used to size a proportional copy
+  const theirSol = solSpent(
+    tx.transaction.message.accountKeys as ParsedAccount[],
+    tx.meta.preBalances ?? [],
+    tx.meta.postBalances ?? [],
+    target.address,
+  );
+
+  // re-read: the stored target may have been edited since this was queued
+  const current = db.copyTargets().find((t) => t.id === target.id);
+  if (!current || !current.enabled) return;
+
+  for (const move of moves) {
+    if (move.delta > 0) await mirrorBuy(current, move, theirSol, notify);
+    else if (current.exitMode !== 'off') await mirrorSell(current, move, notify);
+  }
+}
+
 async function pollTarget(target: CopyTarget, notify: Notifier): Promise<void> {
   const signatures = await retry(
     () => rpc().getSignaturesForAddress(new PublicKey(target.address), { limit: 10 }),
@@ -246,6 +316,8 @@ async function pollTarget(target: CopyTarget, notify: Notifier): Promise<void> {
    */
   if (!target.lastSignature) {
     db.updateCopyTarget(target.id, { lastSignature: newest });
+    // everything already on screen is history, not a signal to act on
+    for (const s of signatures) claimSignature(s.signature);
     return;
   }
 
@@ -260,32 +332,141 @@ async function pollTarget(target: CopyTarget, notify: Notifier): Promise<void> {
 
   db.updateCopyTarget(target.id, { lastSignature: newest });
 
-  const parsed = await retry(
-    () => rpc().getParsedTransactions(fresh, { maxSupportedTransactionVersion: 0 }),
-    { attempts: 2 },
-  );
+  for (const signature of fresh) await handleSignature(target, signature, notify);
+}
 
-  for (const tx of parsed) {
-    if (!tx?.meta) continue;
-    const moves = detectTokenMoves(
-      (tx.meta.preTokenBalances ?? []) as ParsedBalance[],
-      (tx.meta.postTokenBalances ?? []) as ParsedBalance[],
-      target.address,
-    );
+// ── live subscriptions ────────────────────────────────────────────────────────
 
-    // what the whole transaction cost them, used to size a proportional copy
-    const theirSol = solSpent(
-      tx.transaction.message.accountKeys as ParsedAccount[],
-      tx.meta.preBalances ?? [],
-      tx.meta.postBalances ?? [],
-      target.address,
-    );
+/**
+ * Watch followed wallets over the RPC websocket instead of waiting for a poll.
+ *
+ * Polling every twenty seconds meant a copied entry landed, on average, ten
+ * seconds after theirs and at worst twenty — an eternity on a token that moves
+ * in one. The socket pushes each transaction as it confirms, measured at about
+ * three seconds behind the chain against a Helius endpoint, and it costs no
+ * requests at all: the poll was spending roughly 389,000 calls a month per
+ * followed wallet to learn nothing most of the time.
+ *
+ * The poll stays as reconciliation rather than as the mechanism. A socket can
+ * drop, and a dropped socket that nobody notices is a copy trader that silently
+ * stopped copying — so the sweep still runs, finds almost everything already
+ * claimed, and catches whatever fell through a reconnect.
+ */
+let subscriptions = new Map<string, number>();
 
-    for (const move of moves) {
-      if (move.delta > 0) await mirrorBuy(target, move, theirSol, notify);
-      else if (target.exitMode !== 'off') await mirrorSell(target, move, notify);
+/*
+ * A queue between the socket and the RPC, because the socket does not care how
+ * fast you can read.
+ *
+ * Every pushed signature costs a getParsedTransactions call. Subscribing to a
+ * genuinely busy address — a program, an exchange wallet, anything that is not
+ * one person trading — pushes hundreds a second, and firing a request at each
+ * one buries the endpoint in 429s within a second. Measured: subscribing to the
+ * pump.fun program produced an unbroken wall of rate-limit errors and read
+ * nothing at all.
+ *
+ * One at a time, with a bounded backlog. A wallet that can overflow this is not
+ * a trader whose entries can be copied, so it is dropped rather than throttled,
+ * and the operator is told which one and why.
+ */
+interface Queued {
+  target: CopyTarget;
+  signature: string;
+  notify: Notifier;
+}
+
+const queue: Queued[] = [];
+const QUEUE_MAX = 25;
+const FLOOD_LIMIT = 60;
+const floodCounts = new Map<string, number>();
+let draining = false;
+
+function enqueue(item: Queued): void {
+  if (queue.length >= QUEUE_MAX) {
+    const dropped = (floodCounts.get(item.target.address) ?? 0) + 1;
+    floodCounts.set(item.target.address, dropped);
+
+    if (dropped === FLOOD_LIMIT) {
+      log.warn(`${item.target.label} is too busy to follow — dropping its subscription.`);
+      void unsubscribe(item.target.address);
+      void item
+        .notify(
+          `⚠️ <b>Stopped following ${item.target.label}</b>\n\n` +
+            '<i>That address transacts far faster than a person trades — it looks like a program or an ' +
+            'exchange wallet, not a trader. Following it would read nothing useful and rate-limit ' +
+            'everything else. Unfollow it and pick a wallet that trades.</i>',
+        )
+        .catch(() => {});
+    }
+    return;
+  }
+
+  queue.push(item);
+  void drain();
+}
+
+async function drain(): Promise<void> {
+  if (draining) return;
+  draining = true;
+  try {
+    while (queue.length > 0) {
+      const item = queue.shift()!;
+      await handleSignature(item.target, item.signature, item.notify).catch((err) =>
+        log.warn(`Live copy of ${item.target.label} failed: ${errMessage(err)}`),
+      );
+    }
+  } finally {
+    draining = false;
+  }
+}
+
+async function unsubscribe(address: string): Promise<void> {
+  const id = subscriptions.get(address);
+  if (id === undefined) return;
+  subscriptions.delete(address);
+  await rpc().removeOnLogsListener(id).catch(() => {});
+}
+
+export async function syncSubscriptions(notify: Notifier): Promise<void> {
+  const targets = db.activeCopyTargets();
+  const wanted = new Map(targets.map((t) => [t.address, t]));
+
+  for (const [address] of subscriptions) {
+    if (wanted.has(address)) continue;
+    await unsubscribe(address);
+    log.info(`Stopped watching ${address.slice(0, 8)}…`);
+  }
+
+  for (const [address, target] of wanted) {
+    if (subscriptions.has(address)) continue;
+    try {
+      const id = await rpc().onLogs(
+        new PublicKey(address),
+        (logs) => {
+          if (logs.err) return; // a failed transaction moved nothing
+          enqueue({ target, signature: logs.signature, notify });
+        },
+        'confirmed',
+      );
+      subscriptions.set(address, id);
+      log.info(`Watching ${target.label} live over the websocket.`);
+    } catch (err) {
+      log.warn(`Could not subscribe to ${target.label}, falling back to polling: ${errMessage(err)}`);
     }
   }
+}
+
+/** Drop every subscription. Called on shutdown. */
+export async function stopSubscriptions(): Promise<void> {
+  for (const address of [...subscriptions.keys()]) await unsubscribe(address);
+  subscriptions = new Map();
+  queue.length = 0;
+  floodCounts.clear();
+}
+
+/** How many wallets are being watched live, for the screen that says so. */
+export function liveSubscriptionCount(): number {
+  return subscriptions.size;
 }
 
 /** How many copied buys this target has already made into one token. */
