@@ -1366,8 +1366,8 @@ export function nextStep(steps: number[], current: number | undefined): number |
 
 // ── the limits a copied buy has to clear ──────────────────────────────────────
 
-const TOP10_STEPS = [40, 50, 60, 70, 100];
-const DEV_STEPS = [5, 10, 20, 40, 100];
+const TOP10_STEPS = [10, 20, 30, 40, 60, 100];
+const DEV_STEPS = [0, 1, 2, 5, 10, 100];
 const LIQ_STEPS = [0, 1_000, 3_000, 10_000, 25_000];
 
 export async function showCopySafety(ctx: Context): Promise<void> {

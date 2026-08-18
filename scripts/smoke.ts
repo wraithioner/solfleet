@@ -1102,7 +1102,7 @@ const { assessToken, DEFAULT_SAFETY } = await import('../src/services/safety.js'
 const clean = {
   address: 'M', chain: 'solana' as const, warnings: [],
   freezeAuthority: null, mintAuthority: null,
-  top10Pct: 22, creatorHoldsPct: 1.5, liquidityUsd: 50_000,
+  top10Pct: 14, creatorHoldsPct: 0.4, liquidityUsd: 50_000,
 };
 assert.equal(assessToken(clean).safe, true);
 ok('a clean token passes');
@@ -1147,10 +1147,20 @@ assert.equal(assessToken(graduatedThin).safe, false);
 ok('liquidity is judged once there is a pool, and not before');
 
 // the limits are limits, not suggestions
-assert.equal(assessToken({ ...clean, top10Pct: 60 }).safe, true, '60 is not over 60');
-assert.equal(assessToken({ ...clean, top10Pct: 60.1 }).safe, false);
+assert.equal(assessToken({ ...clean, top10Pct: 20 }).safe, true, '20 is not over 20');
+assert.equal(assessToken({ ...clean, top10Pct: 20.1 }).safe, false);
 assert.equal(assessToken({ ...clean, top10Pct: 61.4 }, { ...DEFAULT_SAFETY, maxTop10Pct: 100 }).safe, true);
+assert.equal(assessToken({ ...clean, creatorHoldsPct: 1 }).safe, true, '1% dev is allowed');
+assert.equal(assessToken({ ...clean, creatorHoldsPct: 1.1 }).safe, false, 'anything above it is not');
 ok('the thresholds are exact and configurable');
+
+// stored limits from an older build are defaults nobody chose, so a stricter
+// shipped set replaces them rather than leaving a loose limit in place
+const { SAFETY_VERSION } = await import('../src/services/safety.js');
+assert.equal(db.settings().copySafety.maxTop10Pct, 20);
+assert.equal(db.settings().copySafety.maxDevPct, 1);
+assert.equal(db.settings().safetyVersion, SAFETY_VERSION);
+ok('the shipped defaults are top 10 at 20% and launch wallet at 1%');
 
 const { cycleStep } = await import('../src/bot/handlers/trade.js');
 assert.equal(cycleStep([40, 50, 60], 60), 40, 'cycling wraps rather than dead-ending');

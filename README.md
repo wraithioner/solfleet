@@ -64,9 +64,13 @@ at all. Everyone else gets silence, not an error.
 - **Every copied buy is screened first.** Copy trading is the only buy in this
   bot with no human in the loop — every other one is a deliberate tap on a
   screen already listing the warnings. Before money moves, a copied token is
-  refused if the top 10 hold over 60% of supply, the launch wallet holds over
-  20%, the mint or freeze authority is still live, or the pool is under $3,000.
+  refused if the top 10 hold over 20% of supply, the launch wallet holds over
+  1%, the mint or freeze authority is still live, or the pool is under $3,000.
   All four are adjustable under **Copy trading → 🛡 Safety**
+- **These defaults are strict on purpose, and strict has a cost.** Sampled
+  against 14 tokens people were actively trading: 2 passed. Every rejection but
+  one was concentration — top 10 at 21%, 25%, 29%, 42%, 51%, 78%. Raising the
+  top-10 limit to 40% is the single tap that changes this most
 - **A live freeze authority is the Solana honeypot.** There is no sell tax or
   blacklist function here as there is on an EVM chain — a deployer who wants to
   trap holders freezes their token accounts, and a frozen account cannot
@@ -396,7 +400,7 @@ npm run check
 Runs three layers:
 
 - `typecheck` — full TypeScript strict-mode pass
-- `smoke` — 143 offline assertions: vault crypto (round-trip, unique IVs, tamper
+- `smoke` — 144 offline assertions: vault crypto (round-trip, unique IVs, tamper
   rejection, dropping a passphrase without losing a key, a key file that is
   wrong or missing being refused loudly, and a vault that opens itself at boot),
   wallet

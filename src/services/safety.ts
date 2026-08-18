@@ -25,11 +25,21 @@ export interface SafetyLimits {
 }
 
 export const DEFAULT_SAFETY: SafetyLimits = {
-  maxTop10Pct: 60,
-  maxDevPct: 20,
+  maxTop10Pct: 20,
+  maxDevPct: 1,
   requireRevokedAuthorities: true,
   minLiquidityUsd: 3_000,
 };
+
+/**
+ * Bumped when the shipped defaults get stricter.
+ *
+ * Settings are stored, so a stored copy keeps whatever was current when it was
+ * written — including limits that were only ever the defaults nobody chose. A
+ * version marker lets a genuinely stricter set replace those without
+ * overwriting a limit the operator picked deliberately afterwards.
+ */
+export const SAFETY_VERSION = 2;
 
 export interface SafetyVerdict {
   safe: boolean;

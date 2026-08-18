@@ -4,7 +4,7 @@ import { config } from '../config.js';
 import { writeAtomic } from './vault.js';
 import type { WalletRecord, LegacyWalletRecord } from '../types.js';
 import type { ExecutionMode } from '../config.js';
-import { DEFAULT_SAFETY, type SafetyLimits } from '../services/safety.js';
+import { DEFAULT_SAFETY, SAFETY_VERSION, type SafetyLimits } from '../services/safety.js';
 
 /**
  * Flat-file store. The dataset here is a few hundred wallet rows at most, so a
@@ -39,6 +39,8 @@ export interface Settings {
    * that already lists these warnings; a copied one happens unattended.
    */
   copySafety: SafetyLimits;
+  /** Which generation of shipped safety defaults this document has seen. */
+  safetyVersion?: number;
 }
 
 /**
@@ -237,6 +239,7 @@ const defaultSettings = (): Settings => ({
   priorityFeeMode: 'auto',
   priorityFeeCeilingSol: 0.005,
   copySafety: { ...DEFAULT_SAFETY },
+  safetyVersion: SAFETY_VERSION,
 });
 
 const dbPath = () => path.join(config.dataDir, 'wallets.json');
@@ -261,6 +264,39 @@ function migrateCopyTarget(t: CopyTarget): CopyTarget {
     entryCounts: t.entryCounts ?? {},
     takeProfitSellPct: t.takeProfitSellPct ?? 50,
   };
+}
+
+/**
+ * Merge a stored settings document onto the current defaults.
+ *
+ * The merge is shallow, so the nested limits are filled in separately — a
+ * half-populated limit set would read as "no limit" for whatever was missing,
+ * which is the wrong way for this particular blank to fail.
+ *
+ * When the shipped limits get stricter they replace what an older document
+ * carries. Those were defaults, not decisions; a limit the operator has since
+ * chosen is preserved by the version marker moving with it.
+ */
+function migrateSettings(stored: Partial<Settings> | undefined): Settings {
+  const base = defaultSettings();
+  const merged: Settings = {
+    ...base,
+    ...(stored ?? {}),
+    copySafety: { ...DEFAULT_SAFETY, ...(stored?.copySafety ?? {}) },
+    safetyVersion: SAFETY_VERSION,
+  };
+
+  if ((stored?.safetyVersion ?? 0) < SAFETY_VERSION) {
+    merged.copySafety = { ...DEFAULT_SAFETY };
+    if (stored?.copySafety) {
+      console.warn(
+        `Copy-trade limits tightened to the current defaults: top 10 ≤ ${DEFAULT_SAFETY.maxTop10Pct}%, ` +
+          `launch wallet ≤ ${DEFAULT_SAFETY.maxDevPct}%.`,
+      );
+    }
+  }
+
+  return merged;
 }
 
 function load(): DbShape {
@@ -294,11 +330,7 @@ function load(): DbShape {
     // shallow merge, so the nested limits need filling in for a document
     // written before they existed — a half-populated limit set would read as
     // "no limit" for whatever was missing
-    settings: {
-      ...defaultSettings(),
-      ...(parsed.settings ?? {}),
-      copySafety: { ...DEFAULT_SAFETY, ...(parsed.settings?.copySafety ?? {}) },
-    },
+    settings: migrateSettings(parsed.settings),
     mnemonic: parsed.mnemonic,
     tradeLog: parsed.tradeLog ?? [],
     positions: parsed.positions ?? {},
