@@ -139,6 +139,25 @@ Send `/start` in Telegram. The first message you send becomes your vault
 passphrase; your message is deleted the instant it's read. Every private key is
 encrypted under it before touching disk.
 
+### The RPC endpoint is not optional
+
+Without `SOLANA_RPC_URL` the bot falls back to `api.mainnet-beta.solana.com`,
+and that endpoint does not work for this. It answers `getHealth` in ~40ms and
+then **never replies at all** to `getMultipleAccounts` — the call behind every
+balance, portfolio and position screen. Measured from a Railway container:
+
+```
+getHealth            41ms   ok
+getMultipleAccounts  hangs  (aborted at 15s, three times running)
+```
+
+So the bot guards against it rather than trusting it: RPC requests are cut off
+at 12 seconds, a timeout is never retried, and the home screen says so in plain
+text while no private endpoint is set. You get an error you can read instead of
+a screen that never arrives — but you still get no data. Set the variable to a
+[Helius](https://helius.dev), QuickNode or Triton endpoint; the free tiers are
+enough to run this.
+
 ---
 
 ## Deploying to Railway
@@ -326,7 +345,7 @@ npm run check
 Runs three layers:
 
 - `typecheck` — full TypeScript strict-mode pass
-- `smoke` — 95 offline assertions: vault crypto (round-trip, unique IVs, tamper
+- `smoke` — 97 offline assertions: vault crypto (round-trip, unique IVs, tamper
   rejection, lock/unlock, passphrase rotation re-sealing every key), wallet
   derivation, group and main-wallet invariants, bonding curve maths and batch
   simulation, funding arithmetic (shortfall-only top-ups, transaction packing,

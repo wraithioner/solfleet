@@ -26,6 +26,9 @@ function bool(name: string, fallback: boolean): boolean {
 
 export type ExecutionMode = 'bundle' | 'parallel';
 
+/** Solana's own endpoint: fine for a health check, unusable for real reads. */
+const PUBLIC_RPC = 'https://api.mainnet-beta.solana.com';
+
 export const config = {
   botToken: req('BOT_TOKEN'),
 
@@ -35,8 +38,16 @@ export const config = {
     .filter((n) => Number.isInteger(n) && n > 0),
 
   solana: {
-    rpcUrl: opt('SOLANA_RPC_URL', 'https://api.mainnet-beta.solana.com'),
-    sendRpcUrl: opt('SOLANA_SEND_RPC_URL') || opt('SOLANA_RPC_URL', 'https://api.mainnet-beta.solana.com'),
+    rpcUrl: opt('SOLANA_RPC_URL', PUBLIC_RPC),
+    sendRpcUrl: opt('SOLANA_SEND_RPC_URL') || opt('SOLANA_RPC_URL', PUBLIC_RPC),
+    /**
+     * True when no private endpoint was configured.
+     *
+     * The public endpoint answers `getHealth` in milliseconds and then stalls
+     * indefinitely on the account reads every balance screen depends on, so
+     * this is worth saying in the interface and not only in the boot log.
+     */
+    isPublicRpc: !opt('SOLANA_RPC_URL'),
   },
 
 

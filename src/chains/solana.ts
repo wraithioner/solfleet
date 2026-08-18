@@ -30,17 +30,53 @@ export const BASE_FEE_LAMPORTS = 5000;
 let connection: Connection | null = null;
 let sendConnection: Connection | null = null;
 
+/**
+ * Ceiling on a single RPC round trip.
+ *
+ * web3.js sets no timeout of its own, so an endpoint that accepts the
+ * connection and then never replies hangs the caller forever — and because
+ * every balance screen awaits one of these, the bot simply stops answering.
+ * Rate-limited public endpoints do exactly that under load. Failing at twelve
+ * seconds turns a dead screen into a retry and then an error the operator can
+ * actually read.
+ */
+const RPC_TIMEOUT_MS = 12_000;
+
+async function timeoutFetch(input: Parameters<typeof fetch>[0], init?: RequestInit): Promise<Response> {
+  const deadline = AbortSignal.timeout(RPC_TIMEOUT_MS);
+  // web3.js cancels some requests itself; honour both reasons to give up
+  const signal = init?.signal ? AbortSignal.any([init.signal, deadline]) : deadline;
+
+  try {
+    return await fetch(input, { ...init, signal });
+  } catch (err) {
+    if (!deadline.aborted) throw err;
+
+    // "The operation was aborted due to timeout" says nothing about what to do
+    const timeout = new Error(
+      `Solana RPC did not answer within ${RPC_TIMEOUT_MS / 1000}s.` +
+        (config.solana.isPublicRpc
+          ? ' The public endpoint stalls on account reads — set SOLANA_RPC_URL to a private one.'
+          : ''),
+    );
+    timeout.name = 'TimeoutError';
+    throw timeout;
+  }
+}
+
+function connect(url: string): Connection {
+  return new Connection(url, { commitment: 'confirmed', fetch: timeoutFetch });
+}
+
 export function rpc(): Connection {
-  if (!connection) connection = new Connection(config.solana.rpcUrl, { commitment: 'confirmed' });
+  if (!connection) connection = connect(config.solana.rpcUrl);
   return connection;
 }
 
 export function sendRpc(): Connection {
   if (!sendConnection) {
     sendConnection =
-      config.solana.sendRpcUrl === config.solana.rpcUrl
-        ? rpc()
-        : new Connection(config.solana.sendRpcUrl, { commitment: 'confirmed' });
+      config.solana.sendRpcUrl === config.solana.rpcUrl ? rpc() : connect(config.solana.sendRpcUrl);
   }
   return sendConnection;
 }

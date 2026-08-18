@@ -46,6 +46,9 @@ export async function retry<T>(
     } catch (err) {
       lastErr = err;
       if (i === attempts - 1) break;
+      // An endpoint that stalled once stalls again: retrying a timeout only
+      // multiplies the wait the operator sits through before seeing the error.
+      if (isTimeout(err)) break;
       // exponential backoff with jitter, so a batch of wallets does not
       // retry in lockstep and re-hammer the RPC at the same instant
       const delay = base * 2 ** i + Math.random() * base;
@@ -53,6 +56,13 @@ export async function retry<T>(
     }
   }
   throw lastErr;
+}
+
+/** A request that ran out of time, however the runtime chose to phrase it. */
+export function isTimeout(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  if (err.name === 'TimeoutError' || err.name === 'AbortError') return true;
+  return /timed? ?out|aborted due to timeout/i.test(err.message);
 }
 
 export function errMessage(err: unknown): string {

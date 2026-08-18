@@ -1,5 +1,6 @@
 import type { Context } from 'grammy';
 import { db } from '../../store/db.js';
+import { config } from '../../config.js';
 import {
   allWallets,
   selectWallets,
@@ -93,6 +94,10 @@ export async function showHome(ctx: Context): Promise<void> {
     `Batch target: <b>${targeted.length}</b> wallets${settings.activeGroup ? ` in <i>${h(settings.activeGroup)}</i>` : ''}`,
     `Mode: <b>${settings.executionMode}</b> · Slippage <b>${settings.slippagePercent}%</b>`,
     '',
+    // the boot log says this too, but nobody reads a boot log
+    ...(config.solana.isPublicRpc
+      ? ['⚠️ <b>Public RPC.</b> Balance screens will stall or time out.', 'Set <code>SOLANA_RPC_URL</code> to a Helius or QuickNode endpoint.', '']
+      : []),
     '<i>Paste any token address to see its stats and trade it.</i>',
   ].join('\n');
 

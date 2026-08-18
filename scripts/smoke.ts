@@ -247,6 +247,30 @@ assert.equal(result, 'recovered');
 assert.equal(attempts, 3);
 ok('retry backs off and eventually succeeds');
 
+// A stalled endpoint stalls again, and each retry is another full timeout the
+// operator waits through before being told anything. One is enough.
+let timeoutTries = 0;
+await assert.rejects(
+  () =>
+    util.retry(
+      async () => {
+        timeoutTries++;
+        const e = new Error('Solana RPC did not answer within 12s.');
+        e.name = 'TimeoutError';
+        throw e;
+      },
+      { attempts: 4, baseDelayMs: 5 },
+    ),
+  /did not answer/,
+);
+assert.equal(timeoutTries, 1, 'a timeout is fatal, not retried');
+ok('retry gives up immediately on a timeout');
+
+assert.equal(util.isTimeout(Object.assign(new Error('x'), { name: 'AbortError' })), true);
+assert.equal(util.isTimeout(new Error('The operation was aborted due to timeout')), true);
+assert.equal(util.isTimeout(new Error('HTTP 429 rate limited')), false, 'a rate limit is worth retrying');
+ok('timeouts are told apart from ordinary failures');
+
 console.log('\n[7] Funding plan');
 const { planFunding } = await import('../src/trade/fund.js');
 const LAMPORTS_PER_SOL = 1_000_000_000;
