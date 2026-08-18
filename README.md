@@ -355,7 +355,7 @@ npm run check
 Runs three layers:
 
 - `typecheck` — full TypeScript strict-mode pass
-- `smoke` — 104 offline assertions: vault crypto (round-trip, unique IVs, tamper
+- `smoke` — 113 offline assertions: vault crypto (round-trip, unique IVs, tamper
   rejection, lock/unlock, passphrase rotation re-sealing every key), wallet
   derivation, group and main-wallet invariants, bonding curve maths and batch
   simulation, funding arithmetic (shortfall-only top-ups, transaction packing,
@@ -364,7 +364,11 @@ Runs three layers:
   worth zero, and no divide-by-zero without a cost basis), factory reset (files
   removed from disk, fresh setup possible afterwards), legacy wallet records
   (hidden from trading, preserved across unrelated writes, exportable, deleted
-  only on request), address parsing, concurrency helpers, log redaction
+  only on request), copy-trade sizing and the screens that configure it (driven
+  through a stub context, so a screen that throws while building its text is
+  caught here rather than in Telegram), a check that every button the keyboards
+  emit reaches a route — a dead button looks exactly like a slow one — address
+  parsing, concurrency helpers, log redaction
 - `netcheck` — 19 live read-only checks against Solana RPC, DexScreener, Jupiter,
   PumpPortal and the pump.fun program
 

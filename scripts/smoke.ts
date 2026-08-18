@@ -803,7 +803,129 @@ assert.equal(whale!.exitMode, 'proportional', 'copySells: true becomes proportio
 assert.equal(quiet!.exitMode, 'off', 'copySells: false becomes exits off');
 ok('targets saved before the options existed keep trading exactly as they did');
 
-console.log('\n[18] Secret redaction in logs');
+console.log('\n[18] Copy trading screens');
+
+/*
+ * The sizing arithmetic is covered above as pure functions. This drives the
+ * actual handlers through a stub context, because a screen that throws while
+ * building its text is indistinguishable, from Telegram, from a dead button.
+ */
+function stubCtx() {
+  const rendered: string[] = [];
+  const alerts: string[] = [];
+  const ctx = {
+    from: { id: 1 },
+    callbackQuery: { message: { message_id: 1, chat: { id: 1 } }, data: '' },
+    async editMessageText(text: string) { rendered.push(text); return true; },
+    async editMessageCaption(opts: { caption: string }) { rendered.push(opts.caption); return true; },
+    async reply(text: string) { rendered.push(text); return { chat: { id: 1 }, message_id: 2 }; },
+    async answerCallbackQuery(opts?: { text?: string }) { alerts.push(opts?.text ?? ''); return true; },
+  };
+  return { ctx: ctx as never, rendered, alerts, last: () => rendered[rendered.length - 1] ?? '' };
+}
+
+const T = await import('../src/bot/handlers/trade.js');
+
+// start from a clean slate: [17] left two migrated targets behind
+for (const t of db.copyTargets()) db.removeCopyTarget(t.id);
+
+const add = stubCtx();
+await T.handleCopySize(add.ctx, 'FollowedWhaleAddress', '5%');
+const target = db.copyTargets()[0]!;
+assert.equal(target.sizeMode, 'percent');
+assert.equal(target.sizePercent, 5);
+assert.equal(target.entryMode, 'first', 'the safe default is their opening buy only');
+assert.equal(target.exitMode, 'proportional');
+ok('following a wallet at "5%" stores percent sizing with conservative defaults');
+
+// a bad size must not create a half-configured target
+const bad = stubCtx();
+await T.handleCopySize(bad.ctx, 'AnotherAddress', 'a lot');
+assert.equal(db.copyTargets().length, 1, 'garbage input creates nothing');
+assert.match(bad.last(), /SOL amount/, 'and says what it wanted instead');
+ok('an unparseable size is refused rather than guessed at');
+
+// the wallet's own screen must render every setting it offers to change
+const screen = stubCtx();
+await T.showCopyTarget(screen.ctx, target.id);
+assert.match(screen.last(), /5% of their size/);
+assert.match(screen.last(), /first buy only/);
+assert.match(screen.last(), /mirrors the share they sell/);
+ok('the wallet screen renders size, entries and exits');
+
+// entries cycle: first → 3 → 5 → 10 → first
+const seen: string[] = [];
+for (let i = 0; i < 5; i++) {
+  const c = stubCtx();
+  await T.cycleCopyEntries(c.ctx, target.id);
+  const t = db.copyTargets()[0]!;
+  seen.push(t.entryMode === 'first' ? 'first' : `every:${t.maxEntries}`);
+}
+assert.deepEqual(seen, ['every:3', 'every:5', 'every:10', 'first', 'every:3']);
+ok('entries cycle through the DCA caps and back to first-buy-only');
+
+// exits cycle: proportional → all → off → proportional
+const exits: string[] = [];
+for (let i = 0; i < 4; i++) {
+  const c = stubCtx();
+  await T.cycleCopyExits(c.ctx, target.id);
+  exits.push(db.copyTargets()[0]!.exitMode);
+}
+assert.deepEqual(exits, ['all', 'off', 'proportional', 'all']);
+ok('exits cycle through mirror, full exit and off');
+
+// resizing swaps the mode rather than leaving both half-set
+const resize = stubCtx();
+await T.handleCopyResize(resize.ctx, target.id, '0.08');
+assert.equal(db.copyTargets()[0]!.sizeMode, 'fixed');
+assert.equal(db.copyTargets()[0]!.buySol, 0.08);
+ok('resizing to a SOL amount switches the mode with it');
+
+// and the fixed-size screen renders its own explanation, not the percent one
+const fixedScreen = stubCtx();
+await T.showCopyTarget(fixedScreen.ctx, target.id);
+assert.match(fixedScreen.last(), /0\.08 SOL per wallet/);
+assert.doesNotMatch(fixedScreen.last(), /of their size/);
+ok('the screen describes whichever sizing is actually in force');
+
+// a target removed in another tab must not throw when its screen is opened
+const gone = stubCtx();
+await T.showCopyTarget(gone.ctx, 'no-such-target');
+assert.match(gone.alerts.join(' '), /no longer followed/);
+ok('opening a wallet that was unfollowed says so instead of crashing');
+
+console.log('\n[19] Every button has a route');
+
+/*
+ * A button whose callback_data no routeCallback case matches does nothing at
+ * all when tapped — no error, no screen, just a spinner that stops. That is
+ * indistinguishable from a slow screen, so it survives manual testing easily.
+ * Comparing what the keyboards emit against what the router handles catches it
+ * the moment a screen is added.
+ */
+const uiSources = ['src/bot/ui.ts', 'src/bot/handlers/core.ts', 'src/bot/handlers/trade.ts', 'src/bot/handlers/wallets.ts'];
+const emitted = new Map<string, string>();
+
+for (const file of uiSources) {
+  const src = fs.readFileSync(file, 'utf8');
+  const button = /\.text\(\s*(?:'[^']*'|"[^"]*"|`[^`]*`)\s*,\s*(?:'([^']+)'|`([^`]+)`)/g;
+  for (const m of src.matchAll(button)) {
+    const action = (m[1] ?? m[2] ?? '').split(':')[0] ?? '';
+    // a computed action cannot be checked statically
+    if (!action || action.includes('${')) continue;
+    if (!emitted.has(action)) emitted.set(action, file);
+  }
+}
+
+const router = fs.readFileSync('src/bot/index.ts', 'utf8');
+const routed = new Set([...router.slice(router.indexOf('async function routeCallback')).matchAll(/case '([a-z_0-9]+)'/g)].map((m) => m[1]!));
+
+const orphans = [...emitted].filter(([action]) => !routed.has(action));
+assert.deepEqual(orphans, [], `buttons with no route: ${orphans.map(([a, f]) => `${a} (${f})`).join(', ')}`);
+assert.ok(emitted.size > 40, `expected the scan to find the keyboards, found ${emitted.size} buttons`);
+ok(`all ${emitted.size} button actions reach a handler`);
+
+console.log('\n[20] Secret redaction in logs');
 const { redact } = await import('../src/logger.js');
 assert.ok(!redact(`key is ${exported}`).includes(exported), 'base58 secret key redacted');
 assert.ok(!redact(`pk 0x${'a'.repeat(64)}`).includes('a'.repeat(64)), 'hex private key redacted');
