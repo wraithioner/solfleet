@@ -491,6 +491,18 @@ async function routeCallback(ctx: Context, action: string, args: string[]): Prom
     case 'copy_exits':
       return T.cycleCopyExits(ctx, args[0] ?? '');
 
+    case 'copy_safety':
+      return T.showCopySafety(ctx);
+
+    case 'safety_top10':
+      return T.cycleSafety(ctx, 'top10');
+    case 'safety_dev':
+      return T.cycleSafety(ctx, 'dev');
+    case 'safety_auth':
+      return T.cycleSafety(ctx, 'auth');
+    case 'safety_liq':
+      return T.cycleSafety(ctx, 'liq');
+
     case 'copy_tp':
       return T.cycleCopyTakeProfit(ctx, args[0] ?? '');
 

@@ -4,6 +4,7 @@ import { config } from '../config.js';
 import { writeAtomic } from './vault.js';
 import type { WalletRecord, LegacyWalletRecord } from '../types.js';
 import type { ExecutionMode } from '../config.js';
+import { DEFAULT_SAFETY, type SafetyLimits } from '../services/safety.js';
 
 /**
  * Flat-file store. The dataset here is a few hundred wallet rows at most, so a
@@ -31,6 +32,13 @@ export interface Settings {
   priorityFeeMode: 'fixed' | 'auto';
   /** Upper bound for auto mode, so a congestion spike cannot run away. */
   priorityFeeCeilingSol: number;
+  /**
+   * The limits a copied buy has to clear.
+   *
+   * Only copy trading is gated. Every other buy is a deliberate tap on a screen
+   * that already lists these warnings; a copied one happens unattended.
+   */
+  copySafety: SafetyLimits;
 }
 
 /**
@@ -228,6 +236,7 @@ const defaultSettings = (): Settings => ({
   sweepReserveSol: 0.002,
   priorityFeeMode: 'auto',
   priorityFeeCeilingSol: 0.005,
+  copySafety: { ...DEFAULT_SAFETY },
 });
 
 const dbPath = () => path.join(config.dataDir, 'wallets.json');
@@ -282,7 +291,14 @@ function load(): DbShape {
     version: 1,
     wallets,
     // merge so new settings keys added in later versions get sane defaults
-    settings: { ...defaultSettings(), ...(parsed.settings ?? {}) },
+    // shallow merge, so the nested limits need filling in for a document
+    // written before they existed — a half-populated limit set would read as
+    // "no limit" for whatever was missing
+    settings: {
+      ...defaultSettings(),
+      ...(parsed.settings ?? {}),
+      copySafety: { ...DEFAULT_SAFETY, ...(parsed.settings?.copySafety ?? {}) },
+    },
     mnemonic: parsed.mnemonic,
     tradeLog: parsed.tradeLog ?? [],
     positions: parsed.positions ?? {},

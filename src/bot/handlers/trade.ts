@@ -38,6 +38,7 @@ import {
 import { render } from './core.js';
 import { newRuleId, entryPriceSol, describe as describeRule } from '../../services/watcher.js';
 import { priceInSol } from '../../services/price.js';
+import { describeLimits } from '../../services/safety.js';
 import type { TradeRequest } from '../../types.js';
 
 /**
@@ -1083,7 +1084,10 @@ export async function showCopyTrade(ctx: Context): Promise<void> {
     `<i>Every copy is spread across your ${selectWallets().length} selected wallets. Tap ⚙️ to change size, how far to follow them in, and what to do when they sell.</i>`,
   );
 
-  const kb = new InlineKeyboard().text('➕ Follow a wallet', 'copy_add').row();
+  const kb = new InlineKeyboard()
+    .text('➕ Follow a wallet', 'copy_add')
+    .text('🛡 Safety', 'copy_safety')
+    .row();
   for (const t of targets.slice(0, 8)) {
     kb.text(`⚙️ ${t.label}`, `copy_open:${t.id}`)
       .text(t.enabled ? '⏸' : '▶️', `copy_toggle:${t.id}`)
@@ -1358,6 +1362,65 @@ export function nextStep(steps: number[], current: number | undefined): number |
   const i = steps.indexOf(current);
   if (i === -1) return steps[0];
   return steps[i + 1];
+}
+
+// ── the limits a copied buy has to clear ──────────────────────────────────────
+
+const TOP10_STEPS = [40, 50, 60, 70, 100];
+const DEV_STEPS = [5, 10, 20, 40, 100];
+const LIQ_STEPS = [0, 1_000, 3_000, 10_000, 25_000];
+
+export async function showCopySafety(ctx: Context): Promise<void> {
+  const limits = db.settings().copySafety;
+
+  await render(
+    ctx,
+    [
+      '<b>🛡 Copy trade safety</b>',
+      '',
+      'Checked on every copied buy, before any money moves. A token that fails is skipped and never reconsidered.',
+      '',
+      ...describeLimits(limits).map((l) => `· ${l}`),
+      '',
+      '<i>Only copy trading is gated. Buying by hand shows you the same warnings and lets you decide.</i>',
+      '',
+      '<i>Anything unreadable counts as a failure — a holder query the RPC refused means concentration is unknown, not zero.</i>',
+    ].join('\n'),
+    new InlineKeyboard()
+      .text(`👥 Top 10 max ${limits.maxTop10Pct}%`, 'safety_top10')
+      .row()
+      .text(`👤 Dev max ${limits.maxDevPct}%`, 'safety_dev')
+      .row()
+      .text(`🔒 Authorities: ${limits.requireRevokedAuthorities ? 'must be revoked' : 'not checked'}`, 'safety_auth')
+      .row()
+      .text(
+        limits.minLiquidityUsd > 0
+          ? `💧 Liquidity min $${limits.minLiquidityUsd.toLocaleString('en-US')}`
+          : '💧 Liquidity not checked',
+        'safety_liq',
+      )
+      .row()
+      .text('← Copy trading', 'copy_trade'),
+  );
+}
+
+/** Each limit cycles its presets; 100% and $0 are the "not checked" ends. */
+export async function cycleSafety(ctx: Context, which: string): Promise<void> {
+  const limits = { ...db.settings().copySafety };
+
+  if (which === 'top10') limits.maxTop10Pct = cycleStep(TOP10_STEPS, limits.maxTop10Pct);
+  else if (which === 'dev') limits.maxDevPct = cycleStep(DEV_STEPS, limits.maxDevPct);
+  else if (which === 'liq') limits.minLiquidityUsd = cycleStep(LIQ_STEPS, limits.minLiquidityUsd);
+  else if (which === 'auth') limits.requireRevokedAuthorities = !limits.requireRevokedAuthorities;
+
+  db.updateSettings({ copySafety: limits });
+  await showCopySafety(ctx);
+}
+
+/** Wrap around rather than bottoming out, so no tap is a dead end. */
+export function cycleStep(steps: number[], current: number): number {
+  const i = steps.indexOf(current);
+  return steps[(i + 1) % steps.length] ?? steps[0]!;
 }
 
 export async function promptCopyResize(ctx: Context, id: string): Promise<void> {

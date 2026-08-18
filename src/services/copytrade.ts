@@ -5,6 +5,8 @@ import { selectWallets } from '../store/wallets.js';
 import { batchPumpTrade } from '../trade/engine.js';
 import { retry, errMessage, fmtAmount } from '../util.js';
 import { config } from '../config.js';
+import { assessToken } from './safety.js';
+import { getTokenInfo } from './tokeninfo.js';
 import { log } from '../logger.js';
 import { newRuleId, type Notifier } from './watcher.js';
 
@@ -192,6 +194,28 @@ export function armCopyRules(target: CopyTarget, mint: string, notify?: Notifier
   }
 }
 
+/**
+ * Judge a token against the copy-trade limits, failing closed.
+ *
+ * A lookup that throws leaves every field undefined, and `assessToken` reads
+ * unknown as unsafe — so a rate-limited RPC refuses the buy rather than waving
+ * it through. That is the right way round: a missed entry costs nothing that
+ * can be measured, and the alternative is an unattended buy into a token
+ * nothing could be read about.
+ */
+async function screenToken(mint: string) {
+  const limits = db.settings().copySafety;
+  try {
+    return assessToken(await getTokenInfo(mint, 'solana'), limits);
+  } catch (err) {
+    return {
+      safe: false,
+      reasons: [`Could not read the token to check it: ${errMessage(err)}`],
+      notes: [],
+    };
+  }
+}
+
 /** Poll every enabled target once. Called from the watcher tick. */
 export async function pollCopyTargets(notify: Notifier): Promise<void> {
   for (const target of db.activeCopyTargets()) {
@@ -297,6 +321,40 @@ async function mirrorBuy(
   const perWallet = copyBuySol(target, theirSol, wallets.length, config.safety.maxBuySolPerWallet);
   if (perWallet <= 0) {
     log.warn(`Skipped copying ${target.label} into ${move.mint}: computed size was zero.`);
+    return;
+  }
+
+  /*
+   * Read the token before buying it.
+   *
+   * The trader being followed may be the deployer, may be exit liquidity, or
+   * may simply be wrong. Nothing about their buy says the token can be sold
+   * again, and this is the only buy in the bot that nobody looks at first.
+   *
+   * The entry is claimed either way. A token refused once should not be
+   * reconsidered on their next buy into it — the answer will not have changed,
+   * and re-reading it every time turns one bad token into a stream of alerts.
+   */
+  const verdict = await screenToken(move.mint);
+  if (!verdict.safe) {
+    db.updateCopyTarget(target.id, {
+      copiedMints: target.copiedMints.includes(move.mint)
+        ? target.copiedMints
+        : [...target.copiedMints, move.mint],
+      entryCounts: { ...(target.entryCounts ?? {}), [move.mint]: allowed },
+    });
+
+    log.warn(`Refused to copy ${target.label} into ${move.mint}: ${verdict.reasons.join(' ')}`);
+    await notify(
+      [
+        `🛡 <b>Did not copy ${target.label}</b>`,
+        `<code>${move.mint}</code>`,
+        '',
+        ...verdict.reasons.map((r) => `· ${r}`),
+        '',
+        '<i>Copy trading → Safety to change these limits.</i>',
+      ].join('\n'),
+    ).catch(() => {});
     return;
   }
 

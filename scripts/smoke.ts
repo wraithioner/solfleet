@@ -1096,7 +1096,68 @@ assert.equal(spam.boughtHere, false, 'one that just appeared was not');
 assert.equal(listed[0]!.mint, 'BOUGHT_MINT', 'real positions sort above dust whatever it claims to be worth');
 ok('a token that arrived on its own is told apart from one that was bought');
 
-console.log('\n[19] Every button has a route');
+console.log('\n[19] Copy-trade safety gate');
+const { assessToken, DEFAULT_SAFETY } = await import('../src/services/safety.js');
+
+const clean = {
+  address: 'M', chain: 'solana' as const, warnings: [],
+  freezeAuthority: null, mintAuthority: null,
+  top10Pct: 22, creatorHoldsPct: 1.5, liquidityUsd: 50_000,
+};
+assert.equal(assessToken(clean).safe, true);
+ok('a clean token passes');
+
+// the audit from the screenshot: top 10 at 61.4%, dev at 59.4%
+const concentrated = { ...clean, top10Pct: 61.4, creatorHoldsPct: 59.4 };
+const v = assessToken(concentrated);
+assert.equal(v.safe, false);
+assert.equal(v.reasons.length, 2, 'both limits are reported, not just the first');
+assert.match(v.reasons.join(' '), /61\.4%/);
+assert.match(v.reasons.join(' '), /59\.4%/);
+ok('top 10 at 61.4% and dev at 59.4% is refused, and says both numbers');
+
+// freeze authority is the Solana honeypot: a frozen account cannot sell
+const honeypot = { ...clean, freezeAuthority: 'SomeAuthority' };
+assert.equal(assessToken(honeypot).safe, false);
+assert.match(assessToken(honeypot).reasons[0]!, /freeze/i);
+ok('a live freeze authority is refused — that is the Solana honeypot');
+
+assert.equal(assessToken({ ...clean, mintAuthority: 'Someone' }).safe, false);
+ok('a live mint authority is refused');
+
+/*
+ * Unknown must never read as safe. A rate-limited holder query returns no
+ * concentration figure at all, and treating that as "concentration is fine" is
+ * how an unattended buyer walks into the exact token this exists to avoid.
+ */
+const unread = { ...clean, top10Pct: undefined, holdersUnavailable: true };
+assert.equal(assessToken(unread).safe, false);
+assert.match(assessToken(unread).reasons[0]!, /unknown, not zero/);
+ok('an unreadable holder distribution is refused, not assumed fine');
+
+const noAuthRead = { ...clean, freezeAuthority: undefined };
+assert.equal(assessToken(noAuthRead).safe, false, 'an unread freeze authority is unknown, not absent');
+ok('an unread authority is refused too');
+
+// a token still on its curve has no pool, so thin-liquidity does not apply
+const onCurve = { ...clean, isPumpFun: true, curveComplete: false, liquidityUsd: undefined };
+assert.equal(assessToken(onCurve).safe, true, 'a bonding curve always fills, at a price');
+const graduatedThin = { ...clean, isPumpFun: true, curveComplete: true, liquidityUsd: 200 };
+assert.equal(assessToken(graduatedThin).safe, false);
+ok('liquidity is judged once there is a pool, and not before');
+
+// the limits are limits, not suggestions
+assert.equal(assessToken({ ...clean, top10Pct: 60 }).safe, true, '60 is not over 60');
+assert.equal(assessToken({ ...clean, top10Pct: 60.1 }).safe, false);
+assert.equal(assessToken({ ...clean, top10Pct: 61.4 }, { ...DEFAULT_SAFETY, maxTop10Pct: 100 }).safe, true);
+ok('the thresholds are exact and configurable');
+
+const { cycleStep } = await import('../src/bot/handlers/trade.js');
+assert.equal(cycleStep([40, 50, 60], 60), 40, 'cycling wraps rather than dead-ending');
+assert.equal(cycleStep([40, 50, 60], 999), 40, 'an unrecognised value restarts');
+ok('every safety button cycles rather than sticking');
+
+console.log('\n[20] Every button has a route');
 
 /*
  * A button whose callback_data no routeCallback case matches does nothing at
@@ -1127,14 +1188,14 @@ assert.deepEqual(orphans, [], `buttons with no route: ${orphans.map(([a, f]) => 
 assert.ok(emitted.size > 40, `expected the scan to find the keyboards, found ${emitted.size} buttons`);
 ok(`all ${emitted.size} button actions reach a handler`);
 
-console.log('\n[20] Secret redaction in logs');
+console.log('\n[21] Secret redaction in logs');
 const { redact } = await import('../src/logger.js');
 assert.ok(!redact(`key is ${exported}`).includes(exported), 'base58 secret key redacted');
 assert.ok(!redact(`pk 0x${'a'.repeat(64)}`).includes('a'.repeat(64)), 'hex private key redacted');
 assert.ok(redact(`addr ${mint}`).includes(mint), 'public addresses are not redacted');
 ok('logger redacts secrets but keeps addresses readable');
 
-console.log('\n[21] Opening a vault at boot');
+console.log('\n[22] Opening a vault at boot');
 
 /*
  * What happens on an existing deployment the first time it runs this build.

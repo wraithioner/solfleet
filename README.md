@@ -61,6 +61,20 @@ at all. Everyone else gets silence, not an error.
   their timing: following someone out means selling seconds after they did, at
   whatever the price has become by then. The take-profit sells half and lets the
   rest run; the stop exits completely
+- **Every copied buy is screened first.** Copy trading is the only buy in this
+  bot with no human in the loop — every other one is a deliberate tap on a
+  screen already listing the warnings. Before money moves, a copied token is
+  refused if the top 10 hold over 60% of supply, the launch wallet holds over
+  20%, the mint or freeze authority is still live, or the pool is under $3,000.
+  All four are adjustable under **Copy trading → 🛡 Safety**
+- **A live freeze authority is the Solana honeypot.** There is no sell tax or
+  blacklist function here as there is on an EVM chain — a deployer who wants to
+  trap holders freezes their token accounts, and a frozen account cannot
+  transfer, so it cannot sell, and no chart shows it coming
+- **Unknown counts as unsafe.** A holder query the RPC rate-limited returns no
+  concentration figure, and reading that as "concentration is fine" is how an
+  unattended buyer walks into exactly the token the check exists to avoid. A
+  token that could not be read is refused
 - **A token is entered once and never again.** Not after they sell it, not if
   they buy back in a week. `copiedMints` records that this wallet already got
   you into that token and nothing clears it
@@ -382,7 +396,7 @@ npm run check
 Runs three layers:
 
 - `typecheck` — full TypeScript strict-mode pass
-- `smoke` — 134 offline assertions: vault crypto (round-trip, unique IVs, tamper
+- `smoke` — 143 offline assertions: vault crypto (round-trip, unique IVs, tamper
   rejection, dropping a passphrase without losing a key, a key file that is
   wrong or missing being refused loudly, and a vault that opens itself at boot),
   wallet
