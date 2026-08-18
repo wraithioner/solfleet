@@ -270,8 +270,19 @@ async function routeCallback(ctx: Context, action: string, args: string[]): Prom
       if (!mint) return void ctx.answerCallbackQuery({ text: 'Token reference expired.', show_alert: true });
       if (what === 'clear') return T.clearAutoRules(ctx, mint);
 
-      const kind = what === 'tp' ? 'take_profit' : what === 'sl' ? 'stop_loss' : 'trailing_stop';
+      const kind =
+        what === 'tp' ? 'take_profit'
+        : what === 'sl' ? 'stop_loss'
+        : what === 'dip' ? 'limit_buy'
+        : what === 'lsell' ? 'limit_sell'
+        : 'trailing_stop';
       return T.addAutoRule(ctx, mint, kind, Number(pctRaw));
+    }
+
+    case 'dca_add': {
+      const mint = mintFromId(args[0] ?? '');
+      if (!mint) return void ctx.answerCallbackQuery({ text: 'Token reference expired.', show_alert: true });
+      return T.promptDca(ctx, mint);
     }
 
     case 'sell_all_confirm':
@@ -557,6 +568,9 @@ async function handlePending(
       await deleteMessage(ctx);
       return executeFactoryReset(ctx, text);
     }
+
+    case 'dca_setup':
+      return T.handleDcaSetup(ctx, pending.mint, text);
 
     case 'copy_address':
       return T.handleCopyAddress(ctx, text);

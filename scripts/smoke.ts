@@ -444,6 +444,26 @@ assert.equal(ruleTriggered(trail, 4.5, 1.0), false, '10% off the peak does not')
 assert.equal(ruleTriggered(trail, 4.0, null), true, 'and it works with no entry price at all');
 ok('trailing stop measures from the peak, and needs no entry price');
 
+// limit orders anchor to an absolute price fixed when the rule was made
+const dip = { ...baseRule, kind: 'limit_buy' as const, triggerPct: -30, triggerPriceSol: 0.7, buySol: 0.05 };
+assert.equal(ruleTriggered(dip, 0.7, null), true, 'a limit buy fills at the target');
+assert.equal(ruleTriggered(dip, 0.69, null), true, 'and below it');
+assert.equal(ruleTriggered(dip, 0.71, null), false, 'but not above it');
+ok('a dip buy fills at or below its target price');
+
+const lsell = { ...baseRule, kind: 'limit_sell' as const, triggerPct: 100, triggerPriceSol: 2.0 };
+assert.equal(ruleTriggered(lsell, 2.0, null), true, 'a limit sell fills at the target');
+assert.equal(ruleTriggered(lsell, 1.99, null), false, 'and not below it');
+ok('a limit sell fills at or above its target price');
+
+// a limit order with no price recorded must never fire
+assert.equal(ruleTriggered({ ...dip, triggerPriceSol: undefined }, 0.0001, null), false);
+ok('a limit order missing its target price stays dormant');
+
+// limit orders need no entry price — they are absolute, not relative
+assert.equal(ruleTriggered(dip, 0.5, null), true, 'no entry price is required');
+ok('limit orders work without a recorded entry');
+
 // the failure that must never happen: an unreadable price dumping a position
 assert.equal(ruleTriggered(tp, 0, 1.0), false, 'a zero price is not a trigger');
 assert.equal(ruleTriggered(sl, 0, 1.0), false, 'not even for a stop loss');

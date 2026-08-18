@@ -66,11 +66,21 @@ export interface AutoRule {
   id: string;
   mint: string;
   symbol?: string;
-  kind: 'take_profit' | 'stop_loss' | 'trailing_stop';
-  /** Percentage from entry that arms the rule. Positive for TP, negative for SL. */
+  kind: 'take_profit' | 'stop_loss' | 'trailing_stop' | 'limit_buy' | 'limit_sell';
+  /**
+   * For TP/SL: percentage from the recorded entry. For a trailing stop: how far
+   * below the peak. Limit orders ignore it and use triggerPriceSol instead.
+   */
   triggerPct: number;
-  /** How much of the holding to sell when it fires. */
+  /**
+   * Absolute price in SOL for limit orders. Set when the rule is created from a
+   * percentage off the price at that moment, so the target cannot drift.
+   */
+  triggerPriceSol?: number;
+  /** How much of the holding to sell when a selling rule fires. */
   sellPercent: number;
+  /** SOL per wallet when a limit buy fires. */
+  buySol?: number;
   /** For trailing stops: the highest price seen since the rule was created. */
   peakPriceSol?: number;
   enabled: boolean;
@@ -101,6 +111,28 @@ export interface CopyTarget {
   createdAt: number;
 }
 
+/**
+ * A recurring buy, spread over time rather than placed in one go.
+ *
+ * The point of averaging in is that no single entry decides the position, so a
+ * plan carries the number of rounds it has left and stops on its own — an
+ * automation that buys forever is a way to lose money slowly while believing
+ * you have a strategy.
+ */
+export interface DcaPlan {
+  id: string;
+  mint: string;
+  symbol?: string;
+  /** SOL per wallet, per round. */
+  buySol: number;
+  intervalMinutes: number;
+  roundsTotal: number;
+  roundsDone: number;
+  nextRunAt: number;
+  enabled: boolean;
+  createdAt: number;
+}
+
 export interface TradeLogEntry {
   at: number;
   action: string;
@@ -121,6 +153,7 @@ interface DbShape {
   positions: Record<string, PositionRecord>;
   rules: AutoRule[];
   copyTargets: CopyTarget[];
+  dcaPlans: DcaPlan[];
 }
 
 const defaultSettings = (): Settings => ({
@@ -144,7 +177,7 @@ function load(): DbShape {
   if (cache) return cache;
 
   if (!fs.existsSync(dbPath())) {
-    cache = { version: 1, wallets: [], settings: defaultSettings(), tradeLog: [], positions: {}, rules: [], copyTargets: [] };
+    cache = { version: 1, wallets: [], settings: defaultSettings(), tradeLog: [], positions: {}, rules: [], copyTargets: [], dcaPlans: [] };
     return cache;
   }
 
@@ -169,6 +202,7 @@ function load(): DbShape {
     positions: parsed.positions ?? {},
     rules: parsed.rules ?? [],
     copyTargets: parsed.copyTargets ?? [],
+    dcaPlans: parsed.dcaPlans ?? [],
   };
   return cache;
 }
@@ -335,6 +369,35 @@ export const db = {
     flush();
   },
 
+  dcaPlans(): DcaPlan[] {
+    return load().dcaPlans;
+  },
+
+  /** Plans that are enabled, still have rounds left, and are due. */
+  dueDcaPlans(now = Date.now()): DcaPlan[] {
+    return load().dcaPlans.filter(
+      (p) => p.enabled && p.roundsDone < p.roundsTotal && p.nextRunAt <= now,
+    );
+  },
+
+  addDcaPlan(plan: DcaPlan): void {
+    load().dcaPlans.push(plan);
+    flush();
+  },
+
+  updateDcaPlan(id: string, patch: Partial<DcaPlan>): void {
+    const p = load().dcaPlans.find((x) => x.id === id);
+    if (!p) return;
+    Object.assign(p, patch);
+    flush();
+  },
+
+  removeDcaPlan(id: string): void {
+    const d = load();
+    d.dcaPlans = d.dcaPlans.filter((p) => p.id !== id);
+    flush();
+  },
+
   /** Escape hatch used by the passphrase-rotation flow. */
   raw(): DbShape {
     return load();
@@ -348,6 +411,6 @@ export const db = {
    */
   wipe(): void {
     fs.rmSync(dbPath(), { force: true });
-    cache = { version: 1, wallets: [], settings: defaultSettings(), tradeLog: [], positions: {}, rules: [], copyTargets: [] };
+    cache = { version: 1, wallets: [], settings: defaultSettings(), tradeLog: [], positions: {}, rules: [], copyTargets: [], dcaPlans: [] };
   },
 };

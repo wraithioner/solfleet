@@ -62,6 +62,12 @@ at all. Everyone else gets silence, not an error.
   (an RPC hiccup is not a price of zero), a rule **fires once** (marked before
   the sell is attempted, so a crash cannot replay it), and a **locked vault
   pauses rather than fails** — you get one message, not a stream of errors
+- **Limit orders** — buy the dip or sell into strength at a fixed price. Set as a
+  percentage off the current price and stored as an absolute target, so it cannot
+  drift with the market afterwards
+- **DCA** — average in with "0.05 30 6": 0.05 SOL per wallet, every 30 minutes,
+  six rounds. Plans carry their remaining rounds and stop on their own; a failed
+  round advances the schedule rather than bunching the buys together
 - Fresh pump.fun tokens are priced off the **bonding curve**, not an aggregator,
   so a stop-loss works from launch rather than from whenever an indexer catches up
 

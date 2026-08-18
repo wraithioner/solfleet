@@ -59,6 +59,14 @@ export function ruleTriggered(
 ): boolean {
   if (currentPrice <= 0) return false;
 
+  // Limit orders are absolute: the target was fixed when the rule was made, so
+  // it cannot drift with the market the way a percentage would.
+  if (rule.kind === 'limit_buy' || rule.kind === 'limit_sell') {
+    const target = rule.triggerPriceSol;
+    if (target === undefined || target <= 0) return false;
+    return rule.kind === 'limit_buy' ? currentPrice <= target : currentPrice >= target;
+  }
+
   if (rule.kind === 'trailing_stop') {
     const peak = rule.peakPriceSol ?? currentPrice;
     // triggerPct is negative: how far below the peak is far enough
@@ -90,7 +98,8 @@ async function tick(notify: Notifier): Promise<void> {
   try {
     const rules = db.activeRules();
     const copyTargets = db.activeCopyTargets();
-    if (rules.length === 0 && copyTargets.length === 0) return;
+    const dca = db.dueDcaPlans();
+    if (rules.length === 0 && copyTargets.length === 0 && dca.length === 0) return;
 
     if (!isUnlocked()) {
       if (!warnedLocked) {
@@ -112,6 +121,7 @@ async function tick(notify: Notifier): Promise<void> {
     // mirroring runs before the rules: a copied exit should not be delayed by
     // a price sweep that has nothing to do with it
     if (copyTargets.length > 0) await pollCopyTargets(notify);
+    await runDueDca(notify);
 
     if (rules.length === 0) return;
     const prices = await pricesInSol([...new Set(rules.map((r) => r.mint))]);
@@ -150,13 +160,48 @@ async function fire(rule: AutoRule, price: number, notify: Notifier): Promise<vo
 
   try {
     const wallets = selectWallets();
+    const settings = db.settings();
+
+    if (rule.kind === 'limit_buy') {
+      const summary = await batchPumpTrade(wallets, {
+        action: 'buy',
+        mint: rule.mint,
+        amount: rule.buySol ?? 0,
+        denominatedInSol: true,
+        slippagePercent: settings.slippagePercent,
+        priorityFeeSol: settings.priorityFeeSol,
+        pool: 'auto',
+      });
+
+      const fills = summary.results.filter((r) => r.ok && r.signature).length;
+      db.recordBuy(rule.mint, (rule.buySol ?? 0) * fills, fills);
+      db.appendTradeLog({
+        at: Date.now(),
+        action: `limit buy ${rule.buySol} SOL`,
+        mint: rule.mint,
+        walletCount: wallets.length,
+        succeeded: summary.succeeded,
+        failed: summary.failed,
+        note: 'automatic',
+      });
+
+      await notify(
+        [
+          `📉 <b>Limit buy filled — ${label}</b>`,
+          '',
+          `Price reached ${price.toExponential(4)} SOL`,
+          `Bought ${rule.buySol} SOL × ${wallets.length} wallets`,
+          `✅ ${summary.succeeded}   ❌ ${summary.failed}`,
+        ].join('\n'),
+      );
+      return;
+    }
+
     const holders = await getMintBalances(wallets.map((w) => w.address), rule.mint).catch(() => new Map());
     if (holders.size === 0) {
       await notify(`⚠️ <b>${label}</b>: ${describe(rule)} triggered, but no wallet holds it any more.`);
       return;
     }
-
-    const settings = db.settings();
     const summary = await batchPumpTrade(wallets, {
       action: 'sell',
       mint: rule.mint,
@@ -196,5 +241,65 @@ async function fire(rule: AutoRule, price: number, notify: Notifier): Promise<vo
 export function describe(rule: AutoRule): string {
   if (rule.kind === 'take_profit') return `Take profit +${rule.triggerPct}%`;
   if (rule.kind === 'stop_loss') return `Stop loss ${rule.triggerPct}%`;
-  return `Trailing stop ${rule.triggerPct}%`;
+  if (rule.kind === 'trailing_stop') return `Trailing stop ${rule.triggerPct}%`;
+  if (rule.kind === 'limit_buy') return `Limit buy ${rule.buySol} SOL at ${rule.triggerPriceSol?.toExponential(3)}`;
+  return `Limit sell ${rule.sellPercent}% at ${rule.triggerPriceSol?.toExponential(3)}`;
+}
+
+// ── DCA ───────────────────────────────────────────────────────────────────────
+
+/**
+ * Run any averaging-in rounds that have come due.
+ *
+ * A round that fails still advances the schedule. Retrying a missed buy at the
+ * next tick would bunch the purchases together, which is the opposite of what
+ * averaging in is for.
+ */
+async function runDueDca(notify: Notifier): Promise<void> {
+  for (const plan of db.dueDcaPlans()) {
+    const wallets = selectWallets();
+    const settings = db.settings();
+    const round = plan.roundsDone + 1;
+
+    db.updateDcaPlan(plan.id, {
+      roundsDone: round,
+      nextRunAt: Date.now() + plan.intervalMinutes * 60_000,
+    });
+
+    try {
+      const summary = await batchPumpTrade(wallets, {
+        action: 'buy',
+        mint: plan.mint,
+        amount: plan.buySol,
+        denominatedInSol: true,
+        slippagePercent: settings.slippagePercent,
+        priorityFeeSol: settings.priorityFeeSol,
+        pool: 'auto',
+      });
+
+      const fills = summary.results.filter((r) => r.ok && r.signature).length;
+      db.recordBuy(plan.mint, plan.buySol * fills, fills);
+      db.appendTradeLog({
+        at: Date.now(),
+        action: `DCA ${round}/${plan.roundsTotal}`,
+        mint: plan.mint,
+        walletCount: wallets.length,
+        succeeded: summary.succeeded,
+        failed: summary.failed,
+        note: 'automatic',
+      });
+
+      const done = round >= plan.roundsTotal;
+      await notify(
+        [
+          `🔁 <b>DCA round ${round}/${plan.roundsTotal} — ${plan.symbol ?? plan.mint.slice(0, 8)}</b>`,
+          `Bought ${plan.buySol} SOL × ${wallets.length} wallets`,
+          `✅ ${summary.succeeded}   ❌ ${summary.failed}`,
+          done ? '\n<i>Plan complete.</i>' : `\n<i>Next round in ${plan.intervalMinutes} minutes.</i>`,
+        ].join('\n'),
+      );
+    } catch (err) {
+      await notify(`❌ DCA round ${round} failed: <i>${errMessage(err)}</i>`).catch(() => {});
+    }
+  }
 }

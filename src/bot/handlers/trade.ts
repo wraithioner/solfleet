@@ -823,14 +823,19 @@ export { mintFromId };
 const TP_PRESETS = [50, 100, 200, 500];
 const SL_PRESETS = [-20, -35, -50];
 const TRAIL_PRESETS = [-15, -25, -40];
+/** Buy the dip: how far below the current price to place the order. */
+const DIP_PRESETS = [-20, -35, -50];
+/** Sell into strength: how far above the current price. */
+const LIMIT_SELL_PRESETS = [50, 100, 300];
 
 export async function showAutoSell(ctx: Context, mint: string): Promise<void> {
   const id = tokenId(mint);
   const rules = db.rulesFor(mint);
   const entry = entryPriceSol(mint);
   const price = await priceInSol(mint).catch(() => null);
+  const plans = db.dcaPlans().filter((p) => p.mint === mint && p.enabled);
 
-  const lines = ['<b>🎯 Auto-sell</b>', ''];
+  const lines = ['<b>🤖 Automation</b>', ''];
 
   if (entry === null) {
     lines.push('<i>No entry price recorded for this token, so take-profit and stop-loss have nothing to measure against.</i>');
@@ -847,11 +852,20 @@ export async function showAutoSell(ctx: Context, mint: string): Promise<void> {
   if (rules.length > 0) {
     lines.push('');
     lines.push('<b>Armed:</b>');
-    for (const r of rules) lines.push(`· ${describeRule(r)} → sell ${r.sellPercent}%`);
+    for (const r of rules) lines.push(`· ${describeRule(r)}`);
+  }
+
+  if (plans.length > 0) {
+    lines.push('');
+    lines.push('<b>Averaging in:</b>');
+    for (const p of plans) {
+      lines.push(`· ${p.buySol} SOL every ${p.intervalMinutes}m — round ${p.roundsDone}/${p.roundsTotal}`);
+    }
   }
 
   lines.push('');
-  lines.push('<i>Rules are checked every 20 seconds and survive restarts. A rule fires once.</i>');
+  lines.push('<i>Checked every 20 seconds; rules survive restarts and fire once.</i>');
+  lines.push('<i>Limit prices are fixed from the price shown above when you tap.</i>');
 
   const kb = new InlineKeyboard();
   for (const pct of TP_PRESETS) kb.text(`🎯 +${pct}%`, `rule:tp:${id}:${pct}`);
@@ -860,7 +874,12 @@ export async function showAutoSell(ctx: Context, mint: string): Promise<void> {
   kb.row();
   for (const pct of TRAIL_PRESETS) kb.text(`📉 trail ${pct}%`, `rule:trail:${id}:${pct}`);
   kb.row();
-  if (rules.length > 0) kb.text('🗑 Clear all rules', `rule:clear:${id}:0`).row();
+  for (const pct of DIP_PRESETS) kb.text(`💰 dip buy ${pct}%`, `rule:dip:${id}:${pct}`);
+  kb.row();
+  for (const pct of LIMIT_SELL_PRESETS) kb.text(`🚀 sell at +${pct}%`, `rule:lsell:${id}:${pct}`);
+  kb.row();
+  kb.text('🔁 Set up DCA', `dca_add:${id}`).row();
+  if (rules.length > 0 || plans.length > 0) kb.text('🗑 Clear all automation', `rule:clear:${id}:0`).row();
   kb.text('← Back to token', `tokeninfo:${id}`);
 
   await render(ctx, lines.join('\n'), kb);
@@ -869,9 +888,41 @@ export async function showAutoSell(ctx: Context, mint: string): Promise<void> {
 export async function addAutoRule(
   ctx: Context,
   mint: string,
-  kind: 'take_profit' | 'stop_loss' | 'trailing_stop',
+  kind: 'take_profit' | 'stop_loss' | 'trailing_stop' | 'limit_buy' | 'limit_sell',
   triggerPct: number,
 ): Promise<void> {
+  // A limit order needs a price to anchor to, and it is fixed now rather than
+  // recomputed later so the target cannot drift with the market.
+  if (kind === 'limit_buy' || kind === 'limit_sell') {
+    const now = await priceInSol(mint).catch(() => null);
+    if (now === null) {
+      await ctx.answerCallbackQuery({ text: 'No price available for this token right now.', show_alert: true });
+      return;
+    }
+
+    const info = await getTokenInfo(mint, 'solana').catch(() => null);
+    const settings = db.settings();
+    const buySol = settings.quickBuyPresets[0] ?? 0.05;
+
+    db.addRule({
+      id: newRuleId(),
+      mint,
+      symbol: info?.symbol,
+      kind,
+      triggerPct,
+      triggerPriceSol: now * (1 + triggerPct / 100),
+      sellPercent: kind === 'limit_sell' ? 100 : 0,
+      buySol: kind === 'limit_buy' ? buySol : undefined,
+      enabled: true,
+      createdAt: Date.now(),
+    });
+
+    await ctx.answerCallbackQuery({
+      text: kind === 'limit_buy' ? `Dip buy armed at ${triggerPct}%` : `Limit sell armed at +${triggerPct}%`,
+    });
+    return showAutoSell(ctx, mint);
+  }
+
   // A take-profit or stop-loss is measured from entry; without one there is
   // nothing to measure and the rule would never fire correctly.
   if (kind !== 'trailing_stop' && entryPriceSol(mint) === null) {
@@ -905,8 +956,69 @@ export async function addAutoRule(
 
 export async function clearAutoRules(ctx: Context, mint: string): Promise<void> {
   for (const r of db.rulesFor(mint)) db.removeRule(r.id);
-  await ctx.answerCallbackQuery({ text: 'Rules cleared.' });
+  for (const p of db.dcaPlans().filter((x) => x.mint === mint)) db.removeDcaPlan(p.id);
+  await ctx.answerCallbackQuery({ text: 'Automation cleared.' });
   return showAutoSell(ctx, mint);
+}
+
+export async function promptDca(ctx: Context, mint: string): Promise<void> {
+  setPending(ctx.from!.id, { kind: 'dca_setup', mint });
+  await render(
+    ctx,
+    [
+      '<b>🔁 Average into this token over time</b>',
+      '',
+      'Send three numbers: <b>SOL per wallet, minutes between rounds, number of rounds</b>.',
+      '',
+      '<i>e.g. "0.05 30 6" buys 0.05 SOL per wallet every 30 minutes, six times.</i>',
+      '',
+      `<i>Across ${selectWallets().length} wallets that would commit ${(0.05 * selectWallets().length * 6).toFixed(3)} SOL in total.</i>`,
+    ].join('\n'),
+    backButton(`autosell:${tokenId(mint)}`),
+  );
+}
+
+export async function handleDcaSetup(ctx: Context, mint: string, text: string): Promise<void> {
+  const parts = text.split(/[\s,]+/).filter(Boolean).map(Number);
+  const [buySol, intervalMinutes, roundsTotal] = parts;
+
+  if (parts.length !== 3 || parts.some((n) => !Number.isFinite(n) || n <= 0)) {
+    await ctx.reply('Send three positive numbers: SOL per wallet, minutes, rounds. e.g. 0.05 30 6');
+    return;
+  }
+  if (buySol! > config.safety.maxBuySolPerWallet) {
+    await ctx.reply(`That exceeds the per-wallet cap of ${config.safety.maxBuySolPerWallet} SOL.`);
+    return;
+  }
+
+  const info = await getTokenInfo(mint, 'solana').catch(() => null);
+  const wallets = selectWallets().length;
+
+  db.addDcaPlan({
+    id: newRuleId(),
+    mint,
+    symbol: info?.symbol,
+    buySol: buySol!,
+    intervalMinutes: intervalMinutes!,
+    roundsTotal: Math.round(roundsTotal!),
+    roundsDone: 0,
+    // the first round runs on the next tick, so the plan starts immediately
+    nextRunAt: Date.now(),
+    enabled: true,
+    createdAt: Date.now(),
+  });
+
+  await ctx.reply(
+    [
+      '🔁 <b>DCA plan armed.</b>',
+      '',
+      `${buySol} SOL per wallet × ${wallets} wallets, every ${intervalMinutes}m, ${Math.round(roundsTotal!)} rounds.`,
+      `Total commitment: <b>${(buySol! * wallets * Math.round(roundsTotal!)).toFixed(3)} SOL</b>.`,
+      '',
+      '<i>The first round runs within the next 20 seconds.</i>',
+    ].join('\n'),
+    { parse_mode: 'HTML' },
+  );
 }
 
 
