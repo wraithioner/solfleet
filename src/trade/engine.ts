@@ -37,6 +37,10 @@ function summarise(results: ExecutionResult[], startedAt: number): BatchSummary 
 }
 
 function fail(w: WalletRecord, err: unknown): ExecutionResult {
+  // The result carries the reason to the screen, but a batch fired by the
+  // watcher has no screen — copy trading reported "❌ 1" and left nothing
+  // anywhere to say why. Every failure gets written down.
+  log.warn(`${w.label} (${w.address.slice(0, 8)}…) failed: ${errMessage(err)}`);
   return { walletId: w.id, label: w.label, address: w.address, ok: false, error: errMessage(err) };
 }
 
@@ -131,6 +135,8 @@ export async function batchPumpTrade(
         balances,
         requiredForBuy(req.amount, req.priorityFeeSol, {
           jitoTipSol: db.settings().executionMode === 'bundle' ? db.settings().jitoTipSol : 0,
+          // anything off the curve is an SPL pool, so the buy wraps SOL first
+          wrapsSol: detectedPool !== 'pump',
         }),
       );
 

@@ -491,6 +491,22 @@ const bundled = requiredForBuy(buy, prio, { jitoTipSol: 0.001 });
 assert.ok(bundled > plain + BigInt(0.001 * LAMPORTS_PER_SOL), 'the tip is counted for the buy and the exit');
 ok('bundle mode raises the requirement by its tips');
 
+/*
+ * A graduated token costs a second rent-exempt account. Every venue past the
+ * bonding curve is an SPL pool, so the buy has to wrap SOL: open a WSOL
+ * account, fund it, swap, close it. The close refunds the rent but the wallet
+ * still has to put it up, and one short by exactly this fails the whole buy —
+ * which is what a real copy trade did before this was counted.
+ */
+const graduated = requiredForBuy(buy, prio, { wrapsSol: true });
+assert.equal(graduated - plain, ATA_RENT_LAMPORTS, 'wrapping SOL costs one more rent-exempt account');
+ok('an AMM buy asks for the wrapped-SOL account it has to open');
+
+// the wallet that passes a curve-priced check and then fails an AMM buy
+const curvePriced = partitionByBalance([{ address: 'W' }], new Map([['W', plain]]), graduated);
+assert.equal(curvePriced.funded.length, 0, 'sized for a curve buy is not enough for a pool buy');
+ok('a wallet sized for the curve is held back from a graduated token');
+
 // a short read must not be mistaken for a set of empty wallets
 const shortRead = partitionByBalance(buyers, new Map([['RICH', BigInt(2 * LAMPORTS_PER_SOL)]]), need);
 assert.equal(shortRead.funded.length, 4, 'an incomplete balance read skips nobody');

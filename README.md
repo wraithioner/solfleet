@@ -86,6 +86,11 @@ at all. Everyone else gets silence, not an error.
   rent that opening the token account costs, a bundle tip where one applies, and
   a reserve for the sell — two sells' worth, so one failed attempt does not strand
   the position. A 0.05 SOL buy therefore needs **0.0522 SOL** in the wallet
+- **A graduated token costs one more rent-exempt account.** Past the bonding
+  curve every venue is an SPL pool, so the buy has to wrap SOL: open a WSOL
+  account, fund it, swap, close it again. The close refunds the rent, but the
+  wallet still has to put it up — so a buy on PumpSwap or Raydium asks for
+  **0.0543 SOL**, not 0.0522
 - This is the mistake the check exists to prevent: fund fifty wallets with
   exactly 0.05 and buy 0.05, and every one of them either fails outright on the
   rent or fills and is then left holding a token it has no SOL left to sell
@@ -377,7 +382,7 @@ npm run check
 Runs three layers:
 
 - `typecheck` — full TypeScript strict-mode pass
-- `smoke` — 131 offline assertions: vault crypto (round-trip, unique IVs, tamper
+- `smoke` — 133 offline assertions: vault crypto (round-trip, unique IVs, tamper
   rejection, dropping a passphrase without losing a key, a key file that is
   wrong or missing being refused loudly, and a vault that opens itself at boot),
   wallet

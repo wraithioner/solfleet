@@ -275,10 +275,27 @@ export function exitReserveLamports(priorityFeeSol: number, jitoTipSol = 0): big
 export function requiredForBuy(
   solPerWallet: number,
   priorityFeeSol: number,
-  opts: { jitoTipSol?: number; needsTokenAccount?: boolean } = {},
+  opts: { jitoTipSol?: number; needsTokenAccount?: boolean; wrapsSol?: boolean } = {},
 ): bigint {
   const tip = opts.jitoTipSol ?? 0;
-  const rent = opts.needsTokenAccount === false ? 0n : ATA_RENT_LAMPORTS;
+
+  // the account the tokens land in
+  let rent = opts.needsTokenAccount === false ? 0n : ATA_RENT_LAMPORTS;
+
+  /*
+   * Buying on an AMM costs a second rent-exempt account.
+   *
+   * A bonding-curve buy pays lamports straight to the curve. Every graduated
+   * venue is an SPL-token pool, so the SOL has to be wrapped first: the
+   * transaction opens a WSOL account, funds it, swaps, and closes it again. The
+   * close refunds the rent, but the wallet has to be able to put it up in the
+   * first place — and a wallet short by exactly this fails the whole buy.
+   *
+   * Confirmed by decoding what PumpPortal builds for a graduated token: create
+   * and fund a WSOL account, create the token account, swap, close the WSOL
+   * account.
+   */
+  if (opts.wrapsSol) rent += ATA_RENT_LAMPORTS;
 
   return (
     BigInt(Math.floor(solPerWallet * LAMPORTS)) +
