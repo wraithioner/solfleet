@@ -1,9 +1,10 @@
 import { PublicKey } from '@solana/web3.js';
-import { rpc, WSOL_MINT, getMintBalances } from '../chains/solana.js';
-import { db, type CopyTarget } from '../store/db.js';
+import { rpc, WSOL_MINT, getMintBalances, LAMPORTS } from '../chains/solana.js';
+import { db, type CopyTarget, type CopyExitMode } from '../store/db.js';
 import { selectWallets } from '../store/wallets.js';
 import { batchPumpTrade } from '../trade/engine.js';
-import { retry, errMessage } from '../util.js';
+import { retry, errMessage, fmtAmount } from '../util.js';
+import { config } from '../config.js';
 import { log } from '../logger.js';
 import type { Notifier } from './watcher.js';
 
@@ -24,6 +25,10 @@ export interface TokenMove {
   delta: number;
   /** What they held before, used to size a proportional exit. */
   before: number;
+}
+
+interface ParsedAccount {
+  pubkey: { toBase58(): string } | string;
 }
 
 interface ParsedBalance {
@@ -70,6 +75,83 @@ export function detectTokenMoves(
   }
 
   return moves;
+}
+
+/**
+ * How much SOL an address parted with in one transaction.
+ *
+ * This is what makes proportional sizing possible: the token balance change
+ * says *what* they bought, and only the native balance change says how much
+ * conviction was behind it. Positive is spent, negative is received.
+ *
+ * The number includes the transaction fee and any rent for accounts opened
+ * along the way when the address is the fee payer. On a memecoin buy those are
+ * a rounding error next to the trade, and erring slightly high is the safe
+ * direction for a cap to be wrong in.
+ */
+export function solSpent(
+  accountKeys: ParsedAccount[],
+  preBalances: number[],
+  postBalances: number[],
+  owner: string,
+): number {
+  const index = accountKeys.findIndex((a) => {
+    const key = typeof a.pubkey === 'string' ? a.pubkey : a.pubkey.toBase58();
+    return key === owner;
+  });
+  if (index < 0) return 0;
+
+  const before = preBalances[index];
+  const after = postBalances[index];
+  if (before === undefined || after === undefined) return 0;
+
+  return (before - after) / LAMPORTS;
+}
+
+/**
+ * SOL to commit to one copied buy, across the whole batch.
+ *
+ * Percent mode is deliberately a share of the batch rather than a share per
+ * wallet: "copy him at 5%" should mean a position 5% the size of his, not 5%
+ * multiplied by however many wallets happen to be running.
+ */
+export function copyBuySol(
+  target: Pick<CopyTarget, 'sizeMode' | 'buySol' | 'sizePercent'>,
+  theirSol: number,
+  walletCount: number,
+  maxPerWallet: number,
+): number {
+  if (walletCount <= 0) return 0;
+
+  const perWallet =
+    target.sizeMode === 'percent'
+      ? (theirSol * (target.sizePercent / 100)) / walletCount
+      : target.buySol;
+
+  if (!Number.isFinite(perWallet) || perWallet <= 0) return 0;
+
+  // the per-wallet safety cap still applies however the number was arrived at
+  return Math.min(perWallet, maxPerWallet);
+}
+
+/**
+ * What share of our position to sell when they sell some of theirs.
+ *
+ * `proportional` copies the trim as a trim. `all` reads any sell as the exit
+ * signal and closes the whole position — a trader who takes 10% off the top is
+ * often on the way out, and being seconds behind them makes a partial follow
+ * the worst of both. Returns 0 when nothing should be sold.
+ */
+export function copySellPercent(mode: CopyExitMode, move: TokenMove): number {
+  if (mode === 'off') return 0;
+  if (mode === 'all') return 100;
+
+  // they may have sold from a balance we never saw grow; treat that as a full exit
+  if (move.before <= 0) return 100;
+
+  const share = (Math.abs(move.delta) / move.before) * 100;
+  // never round a real sell down to nothing, and never past a full exit
+  return Math.min(100, Math.max(1, Math.round(share)));
 }
 
 /** Poll every enabled target once. Called from the watcher tick. */
@@ -126,33 +208,85 @@ async function pollTarget(target: CopyTarget, notify: Notifier): Promise<void> {
       target.address,
     );
 
+    // what the whole transaction cost them, used to size a proportional copy
+    const theirSol = solSpent(
+      tx.transaction.message.accountKeys as ParsedAccount[],
+      tx.meta.preBalances ?? [],
+      tx.meta.postBalances ?? [],
+      target.address,
+    );
+
     for (const move of moves) {
-      if (move.delta > 0) await mirrorBuy(target, move, notify);
-      else if (target.copySells) await mirrorSell(target, move, notify);
+      if (move.delta > 0) await mirrorBuy(target, move, theirSol, notify);
+      else if (target.exitMode !== 'off') await mirrorSell(target, move, notify);
     }
   }
 }
 
-async function mirrorBuy(target: CopyTarget, move: TokenMove, notify: Notifier): Promise<void> {
-  // one copy per token per target — a trader scaling in over twenty
-  // transactions must not drag the operator into twenty separate buys
-  if (target.copiedMints.includes(move.mint)) return;
+/** How many copied buys this target has already made into one token. */
+function entriesSoFar(target: CopyTarget, mint: string): number {
+  const counted = target.entryCounts?.[mint];
+  if (counted !== undefined) return counted;
+  // records written before entryCounts existed only ever made one entry
+  return target.copiedMints.includes(mint) ? 1 : 0;
+}
 
-  db.updateCopyTarget(target.id, { copiedMints: [...target.copiedMints, move.mint] });
-  target.copiedMints.push(move.mint);
+async function mirrorBuy(
+  target: CopyTarget,
+  move: TokenMove,
+  theirSol: number,
+  notify: Notifier,
+): Promise<void> {
+  const already = entriesSoFar(target, move.mint);
+
+  /*
+   * How far to follow a trader averaging in. On `first` their opening buy is
+   * the signal and the rest is noise; on `every` we average in with them, up to
+   * a cap — without one, how much of the operator's money goes into a token
+   * would be decided entirely by how many times somebody else clicks buy.
+   */
+  const allowed = target.entryMode === 'every' ? Math.max(1, target.maxEntries) : 1;
+  if (already >= allowed) {
+    if (already === allowed && target.entryMode === 'every') {
+      log.info(`Copy cap reached for ${move.mint} from ${target.label} (${allowed} entries).`);
+    }
+    return;
+  }
 
   const wallets = selectWallets();
   if (wallets.length === 0) return;
 
+  const perWallet = copyBuySol(target, theirSol, wallets.length, config.safety.maxBuySolPerWallet);
+  if (perWallet <= 0) {
+    log.warn(`Skipped copying ${target.label} into ${move.mint}: computed size was zero.`);
+    return;
+  }
+
+  // claim the entry before spending, so a crash mid-buy cannot replay it
+  db.updateCopyTarget(target.id, {
+    copiedMints: target.copiedMints.includes(move.mint)
+      ? target.copiedMints
+      : [...target.copiedMints, move.mint],
+    entryCounts: { ...(target.entryCounts ?? {}), [move.mint]: already + 1 },
+  });
+  if (!target.copiedMints.includes(move.mint)) target.copiedMints.push(move.mint);
+  target.entryCounts = { ...(target.entryCounts ?? {}), [move.mint]: already + 1 };
+
   const settings = db.settings();
-  log.info(`Copying ${target.label} into ${move.mint}`);
+  log.info(`Copying ${target.label} into ${move.mint} (entry ${already + 1}/${allowed})`);
+
+  const sizing =
+    target.sizeMode === 'percent'
+      ? `${target.sizePercent}% of their ${fmtAmount(theirSol, 3)} SOL`
+      : `${target.buySol} SOL each`;
 
   await notify(
     [
       `👥 <b>${target.label} bought</b>`,
       `<code>${move.mint}</code>`,
       '',
-      `Mirroring ${target.buySol} SOL × ${wallets.length} wallets…`,
+      `Entry ${already + 1}/${allowed} · ${sizing}`,
+      `Mirroring ${fmtAmount(perWallet, 4)} SOL × ${wallets.length} wallets…`,
     ].join('\n'),
   ).catch(() => {});
 
@@ -160,7 +294,7 @@ async function mirrorBuy(target: CopyTarget, move: TokenMove, notify: Notifier):
     const summary = await batchPumpTrade(wallets, {
       action: 'buy',
       mint: move.mint,
-      amount: target.buySol,
+      amount: perWallet,
       denominatedInSol: true,
       slippagePercent: settings.slippagePercent,
       priorityFeeSol: settings.priorityFeeSol,
@@ -168,15 +302,15 @@ async function mirrorBuy(target: CopyTarget, move: TokenMove, notify: Notifier):
     });
 
     const fills = summary.results.filter((r) => r.ok && r.signature).length;
-    db.recordBuy(move.mint, target.buySol * fills, fills);
+    db.recordBuy(move.mint, perWallet * fills, fills);
     db.appendTradeLog({
       at: Date.now(),
-      action: `copy buy ${target.buySol} SOL`,
+      action: `copy buy ${fmtAmount(perWallet, 4)} SOL`,
       mint: move.mint,
       walletCount: wallets.length,
       succeeded: summary.succeeded,
       failed: summary.failed,
-      note: `copied ${target.label}`,
+      note: `copied ${target.label} (entry ${already + 1}/${allowed})`,
     });
 
     await notify(`👥 Copy buy done — ✅ ${summary.succeeded}  ❌ ${summary.failed}`).catch(() => {});
@@ -193,10 +327,8 @@ async function mirrorSell(target: CopyTarget, move: TokenMove, notify: Notifier)
   const held = await getMintBalances(wallets.map((w) => w.address), move.mint).catch(() => new Map());
   if (held.size === 0) return;
 
-  // sell the same share of our position that they sold of theirs, so a partial
-  // trim is copied as a trim rather than as a full exit
-  const soldShare = move.before > 0 ? Math.min(100, (Math.abs(move.delta) / move.before) * 100) : 100;
-  const percent = Math.max(1, Math.round(soldShare));
+  const percent = copySellPercent(target.exitMode, move);
+  if (percent <= 0) return;
 
   const settings = db.settings();
   log.info(`Copying ${target.label} out of ${move.mint} (${percent}%)`);

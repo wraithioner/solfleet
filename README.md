@@ -41,10 +41,20 @@ at all. Everyone else gets silence, not an error.
   metadata and the bonding curve directly
 
 **Copy trading**
-- Follow any Solana wallet — their buys are mirrored across every one of your
-  wallets at a size you choose, their sells mirrored proportionally
-- **One copy per token per target.** A trader scaling into a position over
-  twenty transactions must not drag you into twenty separate buys
+- Follow any Solana wallet. Three settings per wallet, each one tap:
+- **Size** — a fixed SOL amount per wallet (`0.05`), or a share of their trade
+  (`5%`). Percent sizing reads the SOL that actually left their wallet, so a
+  10 SOL conviction buy and a 0.5 SOL nibble are copied at different sizes
+  instead of being flattened to one number. `5%` means the whole batch is 5% of
+  their trade — not 5% multiplied by however many wallets you have running, and
+  the per-wallet safety cap still binds
+- **Entries** — *first buy only*, or *follow their DCA* up to 3, 5 or 10 entries.
+  A trader scaling in over twenty transactions must not be able to decide how
+  much of your money goes into a token, so following in is always bounded
+- **Exits** — *mirror the share they sell* (they trim 10%, you trim 10%),
+  *exit fully on any sell* (a trader trimming is often on the way out, and being
+  seconds behind makes a partial follow the worst of both), or *ignore their
+  sells* and let your own take-profit and stop-loss decide
 - Following a wallet records where it is and starts from there. Their existing
   positions are never retroactively bought
 - **The honest limitation:** the bot polls every 20 seconds, so your copy lands
@@ -345,7 +355,7 @@ npm run check
 Runs three layers:
 
 - `typecheck` — full TypeScript strict-mode pass
-- `smoke` — 97 offline assertions: vault crypto (round-trip, unique IVs, tamper
+- `smoke` — 104 offline assertions: vault crypto (round-trip, unique IVs, tamper
   rejection, lock/unlock, passphrase rotation re-sealing every key), wallet
   derivation, group and main-wallet invariants, bonding curve maths and batch
   simulation, funding arithmetic (shortfall-only top-ups, transaction packing,

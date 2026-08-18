@@ -447,6 +447,57 @@ ok('wrapped SOL is filtered out rather than copied');
 assert.equal(detectTokenMoves([bal('MINT_A', THEM, 1)], [bal('MINT_A', THEM, 1)], THEM).length, 0);
 ok('an unchanged balance produces no trade');
 
+// ── how much their trade cost them, which is what proportional sizing scales to
+const { solSpent, copyBuySol, copySellPercent } = await import('../src/services/copytrade.js');
+const SOL = 1_000_000_000;
+const keys = [{ pubkey: 'SomeoneElse' }, { pubkey: THEM }, { pubkey: 'Program' }];
+
+assert.equal(solSpent(keys, [5 * SOL, 10 * SOL, 0], [5 * SOL, 8 * SOL, 0], THEM), 2, 'spent 2 SOL');
+assert.equal(solSpent(keys, [0, 8 * SOL, 0], [0, 10 * SOL, 0], THEM), -2, 'a sale reads as negative');
+assert.equal(solSpent(keys, [0, 0, 0], [0, 0, 0], 'NotInThisTx'), 0, 'an absent wallet spent nothing');
+ok('native SOL movement is read off the transaction');
+
+// ── sizing ────────────────────────────────────────────────────────────────────
+const fixedTarget = { sizeMode: 'fixed' as const, buySol: 0.05, sizePercent: 5 };
+assert.equal(copyBuySol(fixedTarget, 999, 10, 1), 0.05, 'fixed ignores what they spent');
+
+// "5% of their size" must mean the batch is 5% of their trade, not 5% per wallet
+const pctTarget = { sizeMode: 'percent' as const, buySol: 0.05, sizePercent: 5 };
+assert.equal(copyBuySol(pctTarget, 10, 10, 1), 0.05, '5% of 10 SOL over 10 wallets is 0.05 each');
+assert.equal(copyBuySol(pctTarget, 10, 10, 1) * 10, 0.5, 'the batch totals 5% of their 10 SOL');
+assert.equal(copyBuySol(pctTarget, 2, 10, 1), 0.01, 'a smaller entry of theirs is copied smaller');
+ok('percent sizing scales the whole batch to their conviction, not each wallet');
+
+// a whale's entry must not blow past the per-wallet safety cap
+assert.equal(copyBuySol(pctTarget, 10_000, 1, 0.5), 0.5, 'the per-wallet cap still binds');
+assert.equal(copyBuySol(pctTarget, 0, 10, 1), 0, 'a trade that cost them nothing is not copied');
+assert.equal(copyBuySol(fixedTarget, 1, 0, 1), 0, 'no wallets means no copy');
+ok('sizing is capped and refuses to guess at zero');
+
+// ── exits ─────────────────────────────────────────────────────────────────────
+const trim = { mint: 'M', delta: -100, before: 1000 };
+assert.equal(copySellPercent('proportional', trim), 10, 'a 10% trim is copied as 10%');
+assert.equal(copySellPercent('all', trim), 100, 'full-exit mode reads any sell as the exit');
+assert.equal(copySellPercent('off', trim), 0, 'exits can be left to your own rules');
+ok('each exit mode does what its label says');
+
+// rounding must never silently turn a real sell into nothing
+assert.equal(copySellPercent('proportional', { mint: 'M', delta: -1, before: 100_000 }), 1);
+assert.equal(copySellPercent('proportional', { mint: 'M', delta: -5000, before: 1000 }), 100, 'never past a full exit');
+assert.equal(copySellPercent('proportional', { mint: 'M', delta: -10, before: 0 }), 100, 'a sell from an unseen bag exits fully');
+ok('proportional exits stay between 1% and 100%');
+
+// ── the size prompt takes both forms ──────────────────────────────────────────
+const { parseCopySize } = await import('../src/bot/handlers/trade.js');
+assert.deepEqual(parseCopySize('0.05'), { mode: 'fixed', value: 0.05 });
+assert.deepEqual(parseCopySize(' 5% '), { mode: 'percent', value: 5 });
+assert.deepEqual(parseCopySize('0,05'), { mode: 'fixed', value: 0.05 }, 'a decimal comma is accepted');
+assert.equal(parseCopySize('101%'), null, 'more than all of their size is refused');
+assert.equal(parseCopySize('0'), null);
+assert.equal(parseCopySize('-1'), null);
+assert.equal(parseCopySize('a lot'), null, 'garbage is refused rather than guessed at');
+ok('one prompt tells a SOL amount from a percentage');
+
 console.log('\n[10] Auto-sell rules');
 const { ruleTriggered } = await import('../src/services/watcher.js');
 const baseRule = { id: 'r', mint: 'M', sellPercent: 100, enabled: true, createdAt: 0 };
@@ -734,6 +785,23 @@ db.reload();
 assert.equal(db.legacyWallets().length, 0, 'and they are gone once asked for');
 assert.ok(wallets.allWallets().length > 0, 'the Solana wallets are untouched');
 ok('deletion is opt-in and leaves the real wallets alone');
+
+// ── a followed wallet saved before the sizing options existed ─────────────────
+const doc = JSON.parse(fs.readFileSync(`${DATA}/wallets.json`, 'utf8'));
+doc.copyTargets = [
+  { id: 'old-1', address: 'Whale', label: 'Whale', buySol: 0.05, copySells: true, enabled: true, copiedMints: ['MINT_A'], createdAt: 1 },
+  { id: 'old-2', address: 'Quiet', label: 'Quiet', buySol: 0.1, copySells: false, enabled: true, copiedMints: [], createdAt: 1 },
+];
+fs.writeFileSync(`${DATA}/wallets.json`, JSON.stringify(doc, null, 2));
+db.reload();
+
+const [whale, quiet] = db.copyTargets();
+assert.equal(whale!.sizeMode, 'fixed', 'an old target keeps its fixed size');
+assert.equal(whale!.buySol, 0.05, 'and the size itself is untouched');
+assert.equal(whale!.entryMode, 'first', 'and still takes only their opening buy');
+assert.equal(whale!.exitMode, 'proportional', 'copySells: true becomes proportional exits');
+assert.equal(quiet!.exitMode, 'off', 'copySells: false becomes exits off');
+ok('targets saved before the options existed keep trading exactly as they did');
 
 console.log('\n[18] Secret redaction in logs');
 const { redact } = await import('../src/logger.js');

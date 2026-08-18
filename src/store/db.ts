@@ -95,19 +95,66 @@ export interface AutoRule {
  * into a position over twenty transactions would drag the operator into twenty
  * separate buys. One copy per token per target, unless the operator resets it.
  */
+/**
+ * How a copied buy is sized.
+ *
+ * `fixed` spends the same amount every time, whatever they risked. `percent`
+ * scales with their conviction — a trader's 10 SOL entry and their 0.5 SOL
+ * nibble are not the same signal, and copying both at one size throws that
+ * information away.
+ */
+export type CopySizeMode = 'fixed' | 'percent';
+
+/**
+ * Whether to follow a trader averaging into a position.
+ *
+ * `first` takes their opening buy and ignores the rest, so a trader scaling in
+ * over twenty transactions costs one entry. `every` averages in alongside them,
+ * bounded by `maxEntries` because the alternative is an open-ended commitment
+ * decided by somebody else's wallet.
+ */
+export type CopyEntryMode = 'first' | 'every';
+
+/**
+ * What to do when they sell.
+ *
+ * `proportional` mirrors the share they sold — a 10% trim is copied as a 10%
+ * trim. `all` exits completely the first time they take anything off, which is
+ * the safer read of a trader who trims before dumping. `off` leaves exits to
+ * your own take-profit and stop-loss rules.
+ */
+export type CopyExitMode = 'proportional' | 'all' | 'off';
+
 export interface CopyTarget {
   id: string;
   address: string;
   label: string;
-  /** SOL per wallet when mirroring one of their buys. */
+  /**
+   * SOL per wallet when `sizeMode` is `fixed`. Kept as the field name it has
+   * always had so existing followed wallets load unchanged.
+   */
   buySol: number;
-  /** Mirror their exits as well as their entries. */
-  copySells: boolean;
+  sizeMode: CopySizeMode;
+  /**
+   * Share of the SOL they spent, when `sizeMode` is `percent`. Applied to the
+   * batch as a whole and then divided across the wallets, so "5%" means your
+   * copy is 5% the size of their trade — not 5% times however many wallets you
+   * happen to have running.
+   */
+  sizePercent: number;
+  entryMode: CopyEntryMode;
+  /** Cap on copied buys per token in `every` mode. */
+  maxEntries: number;
+  exitMode: CopyExitMode;
+  /** @deprecated Superseded by exitMode; retained so old records still load. */
+  copySells?: boolean;
   enabled: boolean;
   /** Newest signature already processed, so a restart does not replay history. */
   lastSignature?: string;
   /** Mints already copied from this target. */
   copiedMints: string[];
+  /** Copied buys so far per mint, for the `every` cap. */
+  entryCounts?: Record<string, number>;
   createdAt: number;
 }
 
@@ -173,6 +220,25 @@ const dbPath = () => path.join(config.dataDir, 'wallets.json');
 
 let cache: DbShape | null = null;
 
+/**
+ * Fill in the fields a followed wallet gained after it was saved.
+ *
+ * The defaults reproduce exactly what the old code did — one fixed-size entry
+ * per token, exits mirrored proportionally — so upgrading never silently
+ * changes how an existing target trades.
+ */
+function migrateCopyTarget(t: CopyTarget): CopyTarget {
+  return {
+    ...t,
+    sizeMode: t.sizeMode ?? 'fixed',
+    sizePercent: t.sizePercent ?? 5,
+    entryMode: t.entryMode ?? 'first',
+    maxEntries: t.maxEntries ?? 3,
+    exitMode: t.exitMode ?? (t.copySells === false ? 'off' : 'proportional'),
+    entryCounts: t.entryCounts ?? {},
+  };
+}
+
 function load(): DbShape {
   if (cache) return cache;
 
@@ -206,7 +272,7 @@ function load(): DbShape {
     tradeLog: parsed.tradeLog ?? [],
     positions: parsed.positions ?? {},
     rules: parsed.rules ?? [],
-    copyTargets: parsed.copyTargets ?? [],
+    copyTargets: (parsed.copyTargets ?? []).map(migrateCopyTarget),
     dcaPlans: parsed.dcaPlans ?? [],
   };
   return cache;

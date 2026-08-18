@@ -301,7 +301,7 @@ async function routeCallback(ctx: Context, action: string, args: string[]): Prom
     case 'copy_add':
       return T.promptCopyAdd(ctx);
     case 'copy_toggle':
-      return T.toggleCopyTarget(ctx, args[0] ?? '');
+      return T.toggleCopyTarget(ctx, args[0] ?? '', args[1] === 'stay');
     case 'copy_remove':
       return T.removeCopyTarget(ctx, args[0] ?? '');
     case 'consolidate_menu':
@@ -531,6 +531,18 @@ async function routeCallback(ctx: Context, action: string, args: string[]): Prom
       setPending(userId, { kind: 'change_passphrase', stage: 'current' });
       return render(ctx, '<b>🔑 Send your current passphrase.</b>', backButton('settings'));
 
+    case 'copy_open':
+      return T.showCopyTarget(ctx, args[0] ?? '');
+
+    case 'copy_size':
+      return T.promptCopyResize(ctx, args[0] ?? '');
+
+    case 'copy_entries':
+      return T.cycleCopyEntries(ctx, args[0] ?? '');
+
+    case 'copy_exits':
+      return T.cycleCopyExits(ctx, args[0] ?? '');
+
     case 'legacy_keys':
       return showLegacyKeys(ctx);
 
@@ -689,14 +701,12 @@ async function handlePending(
     case 'copy_address':
       return T.handleCopyAddress(ctx, text);
 
-    case 'copy_size': {
-      const sol = Number(text);
-      if (!Number.isFinite(sol) || sol <= 0) {
-        await ctx.reply('That is not a valid SOL amount.');
-        return;
-      }
-      return T.handleCopySize(ctx, pending.address, sol);
-    }
+    // both sizings arrive here as text; handleCopySize decides which it is
+    case 'copy_size':
+      return T.handleCopySize(ctx, pending.address, text);
+
+    case 'copy_resize':
+      return T.handleCopyResize(ctx, pending.targetId, text);
 
     case 'fund_amount': {
       const sol = Number(text);

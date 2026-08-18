@@ -24,6 +24,7 @@ export type PendingInput =
   | { kind: 'factory_reset' }
   | { kind: 'copy_address' }
   | { kind: 'copy_size'; address: string }
+  | { kind: 'copy_resize'; targetId: string }
   | { kind: 'dca_setup'; mint: string }
   | { kind: 'set_slippage' }
   | { kind: 'set_priority_fee' }
