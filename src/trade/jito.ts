@@ -72,3 +72,32 @@ export async function waitForBundle(bundleId: string, timeoutMs = 45_000): Promi
 
   return last;
 }
+
+/**
+ * What tips are actually landing bundles right now.
+ *
+ * A fixed tip is a guess that ages badly in both directions. Measured while
+ * writing this, the bot's hardcoded 0.0001 SOL was roughly 20x the 75th
+ * percentile of landed tips and 33x the median — real money burned on every
+ * bundle for no extra priority. The same number would be far too small during a
+ * genuine fee spike, where the 99th percentile ran to 0.0013.
+ *
+ * The 75th percentile is the sensible target for a trade that wants to land
+ * promptly without bidding against searchers chasing an arbitrage.
+ */
+export async function recentJitoTipSol(): Promise<number | null> {
+  try {
+    const res = await fetchJson<Array<Record<string, number>>>(
+      'https://bundles.jito.wtf/api/v1/bundles/tip_floor',
+      { timeoutMs: 8_000 },
+    );
+
+    const tip = res?.[0]?.['landed_tips_75th_percentile'];
+    return typeof tip === 'number' && tip > 0 ? tip : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Bundles ignore priority fees entirely, so the tip is the whole bid. */
+export const JITO_MIN_TIP_SOL = 0.000001;

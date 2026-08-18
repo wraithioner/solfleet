@@ -239,6 +239,25 @@ export async function promptBuy(ctx: Context, mint: string, solPerWallet: number
         lines.push('');
         lines.push(`⚠️ <b>This batch moves the price +${sim.priceMovePct.toFixed(0)}% on its own.</b>`);
       }
+
+      /*
+       * The batch competing with itself. Each wallet's transaction carries the
+       * slippage tolerance as a limit, and the wallets ahead of it in the same
+       * batch have already moved the price. Once the cumulative move exceeds
+       * that tolerance the later transactions revert on arrival — the operator
+       * pays the fees and gets no fill, with nothing on screen having warned
+       * them their own settings were in conflict.
+       */
+      if (sim.priceMovePct > settings.slippagePercent) {
+        lines.push('');
+        lines.push(
+          `🚨 <b>Your slippage is ${settings.slippagePercent}% but this batch moves the price ` +
+            `${sim.priceMovePct.toFixed(0)}%.</b> Later wallets will revert and pay fees for nothing.`,
+        );
+        lines.push(
+          `<i>Raise slippage above ${Math.ceil(sim.priceMovePct)}%, buy less per wallet, or use fewer wallets.</i>`,
+        );
+      }
     }
   } catch {
     /* quoting is a nicety; never block the trade on it */

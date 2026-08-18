@@ -18,7 +18,7 @@ import {
   WSOL_MINT,
 } from '../chains/solana.js';
 import { buildTrade, buildTradeBundle, signTx, toTradeArgs, type TradeArgs } from './pumpportal.js';
-import { sendBundle, waitForBundle } from './jito.js';
+import { sendBundle, waitForBundle, recentJitoTipSol, JITO_MIN_TIP_SOL } from './jito.js';
 import { detectPool, PUMP_PROGRAM_ID } from './curve.js';
 import { swapToSol, swapFromSol } from './jupiter.js';
 import { fundingBalances, partitionByBalance, requiredForBuy } from './fund.js';
@@ -63,11 +63,26 @@ export async function batchPumpTrade(
     return summarise([], startedAt);
   }
 
-  // route to the curve or the AMM depending on whether the token graduated
   const settings = db.settings();
+
+  /*
+   * Which venue this token trades on, read from the curve. Used for display,
+   * for the simulation, and to decide whether Jupiter is a plausible fallback —
+   * but deliberately NOT sent to PumpPortal.
+   *
+   * PumpPortal happily builds a bonding-curve transaction for a token that has
+   * already graduated; it does not check. Our read happens once, then applies
+   * to fifty wallets over several seconds, and a token graduates exactly when
+   * buying pressure is high — which is when this bot is buying. Every wallet
+   * after the migration would send a doomed curve transaction and burn its fee.
+   * Passing 'auto' lets PumpPortal resolve the venue per transaction at build
+   * time, which is always fresher than anything decided up front.
+   */
+  const detectedPool = request.pool === 'auto' ? await detectPool(request.mint) : request.pool;
+
   const req: TradeRequest = {
     ...request,
-    pool: request.pool === 'auto' ? await detectPool(request.mint) : request.pool,
+    pool: request.pool === 'auto' ? 'auto' : request.pool,
     priorityFeeSol: await resolvePriorityFee(request.mint, request.priorityFeeSol),
   };
 
@@ -88,7 +103,7 @@ export async function batchPumpTrade(
     // A token still on its curve exists nowhere else, so there is no aggregator
     // to fall back to. Anything else might be routable by Jupiter even when
     // PumpPortal refuses it.
-    allowJupiter: req.pool !== 'pump',
+    allowJupiter: detectedPool !== 'pump',
     holdings: req.action === 'sell' ? await readHoldings(solWallets, req.mint) : undefined,
   };
 
@@ -134,7 +149,7 @@ export async function batchPumpTrade(
 
   log.info(
     `Batch ${req.action} ${req.mint} across ${active.length} wallets ` +
-      `(mode=${mode}, pool=${req.pool}, jupiterFallback=${ctx.allowJupiter}` +
+      `(mode=${mode}, venue=${detectedPool}, jupiterFallback=${ctx.allowJupiter}` +
       `${idle.length > 0 ? `, ${idle.length} skipped as ${req.action === 'buy' ? 'unfunded' : 'holding none'}` : ''})`,
   );
 
@@ -167,6 +182,28 @@ async function resolvePriorityFee(mint: string, configuredSol: number): Promise<
     floorSol: configuredSol,
     ceilingSol: settings.priorityFeeCeilingSol,
   });
+}
+
+/**
+ * Size the bundle tip against what is actually landing.
+ *
+ * In auto mode the configured tip becomes a ceiling rather than the amount:
+ * bundles ignore priority fees, so the tip is the entire bid, and overpaying it
+ * by 20x buys nothing. If the tip floor cannot be read the configured value
+ * stands.
+ */
+async function resolveJitoTip(): Promise<number> {
+  const settings = db.settings();
+  if (settings.priorityFeeMode !== 'auto') return settings.jitoTipSol;
+
+  const observed = await recentJitoTipSol();
+  if (observed === null) return settings.jitoTipSol;
+
+  const tip = Math.min(settings.jitoTipSol, Math.max(JITO_MIN_TIP_SOL, observed * 1.5));
+  if (tip !== settings.jitoTipSol) {
+    log.info(`Jito tip set to ${tip.toFixed(9)} SOL from the live tip floor (configured ${settings.jitoTipSol})`);
+  }
+  return tip;
 }
 
 interface TradeContext {
@@ -328,7 +365,7 @@ async function bundleTrades(
 ): Promise<BatchSummary> {
   const results: ExecutionResult[] = [];
   const groups = chunk(wallets, 5);
-  const tip = db.settings().jitoTipSol;
+  const tip = await resolveJitoTip();
   let done = 0;
 
   for (const [gi, group] of groups.entries()) {

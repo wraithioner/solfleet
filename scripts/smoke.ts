@@ -391,7 +391,19 @@ assert.equal(parseTokenAccountAmount(Buffer.alloc(165)), 0n);
 assert.equal(parseTokenAccountAmount(Buffer.alloc(8)), 0n, 'a truncated account reads as empty, not a crash');
 ok('empty and truncated accounts read as zero');
 
-console.log('\n[9] Priority fee bidding');
+console.log('\n[9] Batch vs slippage');
+// The batch competes with itself: each wallet's slippage limit is measured
+// against a price the earlier wallets already moved. Ten wallets at 0.5 SOL
+// move a fresh curve ~36%, so a 15% tolerance reverts the tail of the batch.
+const conflict = curve.simulateSequentialBuys(fresh, 0.5, 10);
+assert.ok(conflict.priceMovePct > 15, 'the default 15% slippage is under this batch\'s own impact');
+ok(`10 × 0.5 SOL moves ${conflict.priceMovePct.toFixed(1)}% — a 15% slippage setting would revert later wallets`);
+
+const gentle = curve.simulateSequentialBuys(fresh, 0.02, 10);
+assert.ok(gentle.priceMovePct < 15, 'a smaller size per wallet stays inside the tolerance');
+ok(`10 × 0.02 SOL moves only ${gentle.priceMovePct.toFixed(2)}% — inside the same setting`);
+
+console.log('\n[10] Priority fee bidding');
 const { priorityFeeSolFromMicroLamports } = await import('../src/chains/solana.js');
 const clampOpts = { floorSol: 0.00005, ceilingSol: 0.005 };
 
@@ -416,7 +428,7 @@ assert.ok(
 );
 ok('the bid tracks the observed market rather than a fixed guess');
 
-console.log('\n[10] Mint authorities');
+console.log('\n[11] Mint authorities');
 const { parseMintAccount } = await import('../src/services/mintauth.js');
 
 function mintAccount(opts: { mintAuth?: boolean; freezeAuth?: boolean; decimals?: number }): Buffer {
@@ -457,7 +469,7 @@ ok('a revoked authority is not misread from leftover pubkey bytes');
 assert.equal(parseMintAccount(Buffer.alloc(40)), null, 'a truncated account returns null, not a guess');
 ok('a truncated mint account returns null rather than a false reading');
 
-console.log('\n[11] Position P&L');
+console.log('\n[12] Position P&L');
 const { positionPnl, formatPnl } = await import('../src/services/pnl.js');
 const base = { mint: 'M', investedSol: 0, realisedSol: 0, buyFills: 0, sellFills: 0, firstBuyAt: 0, lastTradeAt: 0 };
 
@@ -487,7 +499,7 @@ assert.equal(airdrop.netPct, 0, 'no invested SOL means no percentage, not Infini
 assert.ok(Number.isFinite(airdrop.netPct));
 ok('a position with no cost basis reports no percentage rather than Infinity');
 
-console.log('\n[12] Token card rendering');
+console.log('\n[13] Token card rendering');
 const { renderTokenCard } = await import('../src/bot/ui.js');
 
 // a token on a chain this bot has no RPC for must still say where it trades
@@ -513,7 +525,7 @@ const unavailable = renderTokenCard({
 assert.ok(/Unavailable/i.test(unavailable), 'unknown holders say so explicitly');
 ok('unavailable holder data renders as "unknown", never as silence');
 
-console.log('\n[13] Factory reset');
+console.log('\n[14] Factory reset');
 const { destroyVault, vaultExists } = await import('../src/store/vault.js');
 const { db } = await import('../src/store/db.js');
 
@@ -549,7 +561,7 @@ await assert.rejects(() => unlockVault('a much better passphrase'), /Wrong passp
 await unlockVault('a completely fresh start');
 ok('the old passphrase is dead; the new one works');
 
-console.log('\n[14] Secret redaction in logs');
+console.log('\n[15] Secret redaction in logs');
 const { redact } = await import('../src/logger.js');
 assert.ok(!redact(`key is ${exported}`).includes(exported), 'base58 secret key redacted');
 assert.ok(!redact(`pk 0x${'a'.repeat(64)}`).includes('a'.repeat(64)), 'hex private key redacted');
