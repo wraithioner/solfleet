@@ -20,11 +20,11 @@ export function mainMenu(): InlineKeyboard {
   return new InlineKeyboard()
     .text('💼 Portfolio', 'portfolio').text('🪙 Positions', 'positions')
     .row()
-    .text('👛 Wallets', 'wallets').text('👥 Copy Trade', 'copy_trade')
+    .text('👛 Wallets', 'wallets').text('💸 Move Funds', 'consolidate_menu')
     .row()
-    .text('💸 Move Funds', 'consolidate_menu').text('🔥 Sell Everything', 'sell_all_confirm')
+    .text('👥 Copy Trade', 'copy_trade').text('⚙️ Settings', 'settings')
     .row()
-    .text('⚙️ Settings', 'settings').text('🔒 Lock', 'lock');
+    .text('🔒 Lock', 'lock');
 }
 
 export function backButton(to = 'home'): InlineKeyboard {
@@ -232,11 +232,11 @@ export function tokenKeyboard(mint: string, settings: Settings, holdsPosition: b
   }
 
   kb.row();
-  kb.text('🎯 Auto-sell', `autosell:${id}`);
+  kb.text('🤖 Automation', `autosell:${id}`).text('👥 Holders', `holders:${id}`);
   kb.row();
-  kb.text('🔄 Refresh', `tokeninfo:${id}`).text('👥 Holders', `holders:${id}`);
-  kb.row();
-  kb.url('📉 Chart', `https://dexscreener.com/search?q=${mint}`).text('← Menu', 'home');
+  kb.text('🔄', `tokeninfo:${id}`)
+    .url('📉 Chart', `https://dexscreener.com/search?q=${mint}`)
+    .text('← Menu', 'home');
 
   return kb;
 }

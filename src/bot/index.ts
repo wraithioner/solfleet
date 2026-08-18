@@ -58,6 +58,35 @@ export function createBot(): Bot {
   return bot;
 }
 
+/**
+ * The blue "Menu" button next to the message field.
+ *
+ * Telegram renders it from the bot's registered command list, so this is what
+ * turns a chat where you have to remember commands into one where they are a
+ * tap away. Registered once at startup rather than per chat.
+ */
+export async function registerMenu(bot: Bot): Promise<void> {
+  try {
+    await bot.api.setMyCommands([
+      { command: 'start', description: '⚡ Main menu' },
+      { command: 'portfolio', description: '💼 Balances across every wallet' },
+      { command: 'positions', description: '🪙 Open positions and P&L' },
+      { command: 'wallets', description: '👛 Manage wallets' },
+      { command: 'copy', description: '👥 Copy trading' },
+      { command: 'funds', description: '💸 Fund wallets or sweep back' },
+      { command: 'settings', description: '⚙️ Slippage, fees, presets' },
+      { command: 'history', description: '📜 Recent operations' },
+      { command: 'lock', description: '🔒 Wipe keys from memory' },
+      { command: 'help', description: '❓ How to use this bot' },
+    ]);
+
+    await bot.api.setChatMenuButton({ menu_button: { type: 'commands' } });
+    log.info('Telegram menu button registered.');
+  } catch (err) {
+    log.warn(`Could not register the menu button: ${errMessage(err)}`);
+  }
+}
+
 // ── commands ──────────────────────────────────────────────────────────────────
 
 function registerCommands(bot: Bot): void {
@@ -113,6 +142,26 @@ function registerCommands(bot: Bot): void {
     await W.showWallets(ctx);
   });
 
+  bot.command('positions', async (ctx) => {
+    if (!(await requireUnlocked(ctx))) return;
+    await showPositions(ctx);
+  });
+
+  bot.command('copy', async (ctx) => {
+    if (!(await requireUnlocked(ctx))) return;
+    await T.showCopyTrade(ctx);
+  });
+
+  bot.command('funds', async (ctx) => {
+    if (!(await requireUnlocked(ctx))) return;
+    await T.showConsolidateMenu(ctx);
+  });
+
+  bot.command('settings', async (ctx) => {
+    if (!(await requireUnlocked(ctx))) return;
+    await showSettings(ctx);
+  });
+
   bot.command('history', async (ctx) => {
     const entries = db.tradeLog(15);
     if (entries.length === 0) {
@@ -135,18 +184,16 @@ function registerCommands(bot: Bot): void {
   bot.command('help', async (ctx) => {
     await ctx.reply(
       [
-        '<b>Commands</b>',
+        '<b>How this works</b>',
         '',
-        '/start — main menu',
-        '/unlock &lt;passphrase&gt; — unlock the vault',
-        '/lock — wipe keys from memory',
-        '/portfolio — balances across every wallet',
-        '/wallets — manage wallets',
-        '/history — recent batch operations',
+        '1. <b>Wallets</b> → make or derive some',
+        '2. <b>Move Funds</b> → fund them from your main wallet',
+        '3. <b>Paste a token address</b> → stats, safety checks, buy buttons',
+        '4. <b>🤖 Automation</b> on any token → stop loss, take profit, DCA',
         '',
-        '<b>Paste any token address</b> to get its stats, holder breakdown and trade buttons.',
+        'Every command is in the <b>Menu</b> button next to the message box.',
         '',
-        'Wallets need SOL before they can buy: <b>Move Funds → Fund wallets from main</b>.',
+        '<i>Locked? Just send your passphrase — no command needed.</i>',
       ].join('\n'),
       { parse_mode: 'HTML' },
     );
@@ -264,6 +311,12 @@ async function routeCallback(ctx: Context, action: string, args: string[]): Prom
       if (!mint) return void ctx.answerCallbackQuery({ text: 'Token reference expired.', show_alert: true });
       return T.showAutoSell(ctx, mint);
     }
+    case 'rmenu': {
+      const mint = mintFromId(args[1] ?? '');
+      if (!mint) return void ctx.answerCallbackQuery({ text: 'Token reference expired.', show_alert: true });
+      return T.showRulePresets(ctx, mint, args[0] ?? '');
+    }
+
     case 'rule': {
       const [what, tokenRef, pctRaw] = [args[0] ?? '', args[1] ?? '', args[2] ?? '0'];
       const mint = mintFromId(tokenRef);

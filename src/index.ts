@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import { config } from './config.js';
 import { log } from './logger.js';
 import { errMessage } from './util.js';
-import { createBot } from './bot/index.js';
+import { createBot, registerMenu } from './bot/index.js';
 import { autoUnlockIfConfigured, vaultExists, isUnlocked, lockVault } from './store/vault.js';
 import { flush } from './store/db.js';
 import { allWallets } from './store/wallets.js';
@@ -73,6 +73,8 @@ async function main(): Promise<void> {
   process.on('unhandledRejection', (reason) => {
     log.error('Unhandled promise rejection', reason);
   });
+
+  await registerMenu(bot);
 
   await bot.start({
     onStart: (info) => {

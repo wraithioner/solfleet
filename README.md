@@ -348,6 +348,9 @@ tell you which dependency moved.
 | `/history` | Recent batch operations |
 | `/help` | Command list |
 
+Every command also appears behind the **Menu** button beside the message box —
+Telegram builds that from the bot's registered command list.
+
 Everything else is inline buttons. Pasting a token address is the main entry
 point.
 

@@ -867,19 +867,15 @@ export async function showAutoSell(ctx: Context, mint: string): Promise<void> {
   lines.push('<i>Checked every 20 seconds; rules survive restarts and fire once.</i>');
   lines.push('<i>Limit prices are fixed from the price shown above when you tap.</i>');
 
-  const kb = new InlineKeyboard();
-  for (const pct of TP_PRESETS) kb.text(`🎯 +${pct}%`, `rule:tp:${id}:${pct}`);
-  kb.row();
-  for (const pct of SL_PRESETS) kb.text(`🛑 ${pct}%`, `rule:sl:${id}:${pct}`);
-  kb.row();
-  for (const pct of TRAIL_PRESETS) kb.text(`📉 trail ${pct}%`, `rule:trail:${id}:${pct}`);
-  kb.row();
-  for (const pct of DIP_PRESETS) kb.text(`💰 dip buy ${pct}%`, `rule:dip:${id}:${pct}`);
-  kb.row();
-  for (const pct of LIMIT_SELL_PRESETS) kb.text(`🚀 sell at +${pct}%`, `rule:lsell:${id}:${pct}`);
-  kb.row();
-  kb.text('🔁 Set up DCA', `dca_add:${id}`).row();
-  if (rules.length > 0 || plans.length > 0) kb.text('🗑 Clear all automation', `rule:clear:${id}:0`).row();
+  const kb = new InlineKeyboard()
+    .text('🎯 Take profit', `rmenu:tp:${id}`).text('🛑 Stop loss', `rmenu:sl:${id}`)
+    .row()
+    .text('📉 Trailing stop', `rmenu:trail:${id}`).text('💰 Buy the dip', `rmenu:dip:${id}`)
+    .row()
+    .text('🚀 Limit sell', `rmenu:lsell:${id}`).text('🔁 DCA', `dca_add:${id}`)
+    .row();
+
+  if (rules.length > 0 || plans.length > 0) kb.text('🗑 Clear all', `rule:clear:${id}:0`).row();
   kb.text('← Back to token', `tokeninfo:${id}`);
 
   await render(ctx, lines.join('\n'), kb);
@@ -1142,4 +1138,63 @@ export async function removeCopyTarget(ctx: Context, id: string): Promise<void> 
   db.removeCopyTarget(id);
   await ctx.answerCallbackQuery({ text: 'Unfollowed' });
   return showCopyTrade(ctx);
+}
+
+
+/** One rule type, one small screen of choices. */
+export async function showRulePresets(ctx: Context, mint: string, what: string): Promise<void> {
+  const id = tokenId(mint);
+  const price = await priceInSol(mint).catch(() => null);
+  const entry = entryPriceSol(mint);
+
+  const menus: Record<string, { title: string; blurb: string; presets: number[]; icon: string }> = {
+    tp: {
+      title: '🎯 Take profit',
+      blurb: 'Sells half your position when it is up this much from your entry, letting the rest run.',
+      presets: TP_PRESETS,
+      icon: '+',
+    },
+    sl: {
+      title: '🛑 Stop loss',
+      blurb: 'Sells everything if it falls this far below your entry.',
+      presets: SL_PRESETS,
+      icon: '',
+    },
+    trail: {
+      title: '📉 Trailing stop',
+      blurb: 'Follows the price up and sells if it drops this far from the highest point. Works even on tokens you did not buy here.',
+      presets: TRAIL_PRESETS,
+      icon: '',
+    },
+    dip: {
+      title: '💰 Buy the dip',
+      blurb: 'Buys automatically if the price falls this far from where it is now.',
+      presets: DIP_PRESETS,
+      icon: '',
+    },
+    lsell: {
+      title: '🚀 Limit sell',
+      blurb: 'Sells everything if the price rises this far above where it is now.',
+      presets: LIMIT_SELL_PRESETS,
+      icon: '+',
+    },
+  };
+
+  const menu = menus[what];
+  if (!menu) return showAutoSell(ctx, mint);
+
+  const lines = [`<b>${menu.title}</b>`, '', menu.blurb, ''];
+  if (price !== null) lines.push(`Price now: <b>${price.toExponential(4)} SOL</b>`);
+  if (entry !== null && (what === 'tp' || what === 'sl')) {
+    lines.push(`Your entry: <b>${entry.toExponential(4)} SOL</b>`);
+  }
+  if (entry === null && (what === 'tp' || what === 'sl')) {
+    lines.push('<i>No entry recorded — buy through the bot first, or use a trailing stop.</i>');
+  }
+
+  const kb = new InlineKeyboard();
+  for (const pct of menu.presets) kb.text(`${menu.icon}${pct}%`, `rule:${what}:${id}:${pct}`);
+  kb.row().text('← Back', `autosell:${id}`);
+
+  await render(ctx, lines.join('\n'), kb);
 }
