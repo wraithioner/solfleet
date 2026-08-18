@@ -117,6 +117,21 @@ at all. Everyone else gets silence, not an error.
   a trader; it does not race one. Sub-50ms needs a Geyser/gRPC stream at
   $99–499/month, which is a different kind of bot
 
+**If PumpPortal goes down**
+- PumpPortal builds every transaction this bot sends, so its availability was a
+  single point of failure — and the tokens with no fallback were exactly the
+  fresh launches this bot exists to trade
+- Jupiter is now the fallback for everything, including tokens still on their
+  bonding curve. That used to be excluded on the reasoning that a token existing
+  nowhere but its curve has no aggregator behind it; true when written, and no
+  longer — Jupiter integrated pump.fun and quotes those with `Pump.fun` as the
+  route. Verified end to end: a live on-curve mint quoted, built into a
+  1212-byte swap, and simulated against a funded trader as executing in 135,309
+  compute units
+- PumpPortal is still tried first. Its transaction is 610 bytes against
+  Jupiter's 1212 and runs in 117,817 compute units against 135,309 — the
+  fallback is a fallback, not a preference
+
 **Speed**
 - Every RPC request is cut off at 12 seconds and a timeout is never retried, so
   a stalled endpoint produces a readable error instead of a screen that never
@@ -474,8 +489,10 @@ Runs three layers:
   caught here rather than in Telegram), a check that every button the keyboards
   emit reaches a route — a dead button looks exactly like a slow one — address
   parsing, concurrency helpers, log redaction
-- `netcheck` — 19 live read-only checks against Solana RPC, DexScreener, Jupiter,
-  PumpPortal and the pump.fun program
+- `netcheck` — 20 live read-only checks against Solana RPC, DexScreener, Jupiter,
+  PumpPortal and the pump.fun program, including that Jupiter can still route a
+  token on its bonding curve — a fallback nobody verifies is a fallback that
+  fails the first time it is needed
 - `batchsim` — the dry run for the path that spends money. Builds and signs a
   real trade for N wallets and simulates each against mainnet instead of
   sending it: routing, instruction layout, account resolution, signing,

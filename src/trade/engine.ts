@@ -136,10 +136,24 @@ export async function batchPumpTrade(
   }
 
   const ctx: TradeContext = {
-    // A token still on its curve exists nowhere else, so there is no aggregator
-    // to fall back to. Anything else might be routable by Jupiter even when
-    // PumpPortal refuses it.
-    allowJupiter: detectedPool !== 'pump',
+    /*
+     * Jupiter is the fallback for everything, including tokens still on the
+     * curve.
+     *
+     * This used to exclude them, on the reasoning that a token which exists
+     * nowhere but its bonding curve has no aggregator to fall back to. That was
+     * true when it was written and is not any more — Jupiter integrated
+     * pump.fun, and quotes on-curve tokens with "Pump.fun" as the route.
+     * Verified end to end rather than assumed: a live on-curve mint quoted,
+     * built into a 1212-byte swap, and simulated against a funded trader as
+     * executing in 135,309 compute units.
+     *
+     * It matters because PumpPortal builds every transaction this bot sends. If
+     * it is unreachable, buying stopped dead — and the tokens with no fallback
+     * were exactly the fresh launches this bot exists to trade. PumpPortal is
+     * still tried first: its transaction is half the size and cheaper to run.
+     */
+    allowJupiter: true,
     holdings: req.action === 'sell' ? await readHoldings(solWallets, req.mint) : undefined,
   };
 

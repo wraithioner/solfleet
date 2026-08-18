@@ -258,5 +258,36 @@ await check('detectPool routes correctly', async () => {
   return `pool=${pool}`;
 });
 
+/*
+ * The fallback claim, checked against the chain rather than trusted.
+ *
+ * PumpPortal builds every transaction this bot sends, so if it is unreachable
+ * the only thing standing between the operator and a dead bot is Jupiter being
+ * able to route the same trade. That was not true for tokens on their bonding
+ * curve until Jupiter integrated pump.fun, and a fallback nobody verifies is a
+ * fallback that fails the first time it is needed.
+ */
+await check('Jupiter can route a token still on its curve', async () => {
+  const res = await fetch('https://api.dexscreener.com/token-profiles/latest/v1');
+  const profiles = (await res.json()) as Array<{ chainId: string; tokenAddress: string }>;
+
+  for (const p of profiles.filter((x) => x.chainId === 'solana' && x.tokenAddress.endsWith('pump')).slice(0, 8)) {
+    const curve = await fetchBondingCurve(p.tokenAddress).catch(() => null);
+    if (!curve || curve.complete) continue;
+
+    const quote = await getQuote({
+      inputMint: 'So11111111111111111111111111111111111111112',
+      outputMint: p.tokenAddress,
+      amount: 50_000_000n,
+      slippageBps: 1500,
+    });
+    const route = (quote.routePlan ?? []).map((r: { swapInfo: { label: string } }) => r.swapInfo.label).join(' + ');
+    if (!route) throw new Error(`Jupiter returned no route for on-curve ${p.tokenAddress}`);
+    return `${p.tokenAddress.slice(0, 8)}… routes via ${route} — PumpPortal has a fallback`;
+  }
+
+  return 'no on-curve token in the sample to test with — inconclusive';
+});
+
 console.log(`\n${fail === 0 ? '✅' : '⚠️'}  ${pass} passed, ${fail} failed\n`);
 process.exit(fail > 0 ? 1 : 0);
