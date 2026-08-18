@@ -22,6 +22,8 @@ export type PendingInput =
   | { kind: 'send_to_address'; token?: string }
   | { kind: 'fund_amount'; mode: 'each' | 'topup' }
   | { kind: 'factory_reset' }
+  | { kind: 'copy_address' }
+  | { kind: 'copy_size'; address: string }
   | { kind: 'set_slippage' }
   | { kind: 'set_priority_fee' }
   | { kind: 'set_jito_tip' }

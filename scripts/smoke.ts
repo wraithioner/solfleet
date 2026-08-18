@@ -391,7 +391,39 @@ assert.equal(parseTokenAccountAmount(Buffer.alloc(165)), 0n);
 assert.equal(parseTokenAccountAmount(Buffer.alloc(8)), 0n, 'a truncated account reads as empty, not a crash');
 ok('empty and truncated accounts read as zero');
 
-console.log('\n[9] Auto-sell rules');
+console.log('\n[9] Copy trading detection');
+const { detectTokenMoves } = await import('../src/services/copytrade.js');
+const THEM = 'TargetWallet';
+const bal = (mint: string, owner: string, amount: number) => ({ mint, owner, uiTokenAmount: { uiAmount: amount } });
+const WSOL_M = 'So11111111111111111111111111111111111111112';
+
+// a fresh buy: nothing before, a balance after
+const bought = detectTokenMoves([], [bal('MINT_A', THEM, 1000)], THEM);
+assert.equal(bought.length, 1);
+assert.equal(bought[0]!.delta, 1000, 'a new position reads as a buy');
+ok('a first buy is detected with no prior balance');
+
+// a partial exit, with the prior size kept so it can be copied proportionally
+const trimmed = detectTokenMoves([bal('MINT_A', THEM, 1000)], [bal('MINT_A', THEM, 250)], THEM);
+assert.equal(trimmed[0]!.delta, -750);
+assert.equal(trimmed[0]!.before, 1000, 'the prior holding is reported for sizing the copy');
+ok('a partial sell reports both the change and the size it came from');
+
+// somebody else's balances in the same transaction must not be mirrored
+const others = detectTokenMoves([], [bal('MINT_B', 'SomeoneElse', 5000)], THEM);
+assert.equal(others.length, 0, 'only the followed wallet counts');
+ok('another wallet trading in the same transaction is ignored');
+
+// wrapped SOL moves on nearly every swap and is not a position
+const wsol = detectTokenMoves([], [bal(WSOL_M, THEM, 2), bal('MINT_C', THEM, 10)], THEM);
+assert.deepEqual(wsol.map((m) => m.mint), ['MINT_C'], 'WSOL is not treated as a trade');
+ok('wrapped SOL is filtered out rather than copied');
+
+// dust must not trigger a real buy
+assert.equal(detectTokenMoves([bal('MINT_A', THEM, 1)], [bal('MINT_A', THEM, 1)], THEM).length, 0);
+ok('an unchanged balance produces no trade');
+
+console.log('\n[10] Auto-sell rules');
 const { ruleTriggered } = await import('../src/services/watcher.js');
 const baseRule = { id: 'r', mint: 'M', sellPercent: 100, enabled: true, createdAt: 0 };
 
@@ -422,7 +454,7 @@ assert.equal(ruleTriggered(tp, 99, null), false);
 assert.equal(ruleTriggered(sl, 0.01, null), false);
 ok('take profit and stop loss stay dormant without a recorded entry');
 
-console.log('\n[10] Batch vs slippage');
+console.log('\n[11] Batch vs slippage');
 // The batch competes with itself: each wallet's slippage limit is measured
 // against a price the earlier wallets already moved. Ten wallets at 0.5 SOL
 // move a fresh curve ~36%, so a 15% tolerance reverts the tail of the batch.
@@ -434,7 +466,7 @@ const gentle = curve.simulateSequentialBuys(fresh, 0.02, 10);
 assert.ok(gentle.priceMovePct < 15, 'a smaller size per wallet stays inside the tolerance');
 ok(`10 × 0.02 SOL moves only ${gentle.priceMovePct.toFixed(2)}% — inside the same setting`);
 
-console.log('\n[11] Priority fee bidding');
+console.log('\n[12] Priority fee bidding');
 const { priorityFeeSolFromMicroLamports } = await import('../src/chains/solana.js');
 const clampOpts = { floorSol: 0.00005, ceilingSol: 0.005 };
 
@@ -459,7 +491,7 @@ assert.ok(
 );
 ok('the bid tracks the observed market rather than a fixed guess');
 
-console.log('\n[12] Mint authorities');
+console.log('\n[13] Mint authorities');
 const { parseMintAccount } = await import('../src/services/mintauth.js');
 
 function mintAccount(opts: { mintAuth?: boolean; freezeAuth?: boolean; decimals?: number }): Buffer {
@@ -500,7 +532,7 @@ ok('a revoked authority is not misread from leftover pubkey bytes');
 assert.equal(parseMintAccount(Buffer.alloc(40)), null, 'a truncated account returns null, not a guess');
 ok('a truncated mint account returns null rather than a false reading');
 
-console.log('\n[13] Position P&L');
+console.log('\n[14] Position P&L');
 const { positionPnl, formatPnl } = await import('../src/services/pnl.js');
 const base = { mint: 'M', investedSol: 0, realisedSol: 0, buyFills: 0, sellFills: 0, firstBuyAt: 0, lastTradeAt: 0 };
 
@@ -530,7 +562,7 @@ assert.equal(airdrop.netPct, 0, 'no invested SOL means no percentage, not Infini
 assert.ok(Number.isFinite(airdrop.netPct));
 ok('a position with no cost basis reports no percentage rather than Infinity');
 
-console.log('\n[14] Token card rendering');
+console.log('\n[15] Token card rendering');
 const { renderTokenCard } = await import('../src/bot/ui.js');
 
 // a token on a chain this bot has no RPC for must still say where it trades
@@ -556,7 +588,7 @@ const unavailable = renderTokenCard({
 assert.ok(/Unavailable/i.test(unavailable), 'unknown holders say so explicitly');
 ok('unavailable holder data renders as "unknown", never as silence');
 
-console.log('\n[15] Factory reset');
+console.log('\n[16] Factory reset');
 const { destroyVault, vaultExists } = await import('../src/store/vault.js');
 const { db } = await import('../src/store/db.js');
 
@@ -592,7 +624,7 @@ await assert.rejects(() => unlockVault('a much better passphrase'), /Wrong passp
 await unlockVault('a completely fresh start');
 ok('the old passphrase is dead; the new one works');
 
-console.log('\n[16] Secret redaction in logs');
+console.log('\n[17] Secret redaction in logs');
 const { redact } = await import('../src/logger.js');
 assert.ok(!redact(`key is ${exported}`).includes(exported), 'base58 secret key redacted');
 assert.ok(!redact(`pk 0x${'a'.repeat(64)}`).includes('a'.repeat(64)), 'hex private key redacted');

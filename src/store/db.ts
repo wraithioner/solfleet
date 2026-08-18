@@ -78,6 +78,29 @@ export interface AutoRule {
   firedAt?: number;
 }
 
+/**
+ * A wallet whose trades this bot mirrors.
+ *
+ * `copiedMints` is the guard that matters: without it, a target that scales
+ * into a position over twenty transactions would drag the operator into twenty
+ * separate buys. One copy per token per target, unless the operator resets it.
+ */
+export interface CopyTarget {
+  id: string;
+  address: string;
+  label: string;
+  /** SOL per wallet when mirroring one of their buys. */
+  buySol: number;
+  /** Mirror their exits as well as their entries. */
+  copySells: boolean;
+  enabled: boolean;
+  /** Newest signature already processed, so a restart does not replay history. */
+  lastSignature?: string;
+  /** Mints already copied from this target. */
+  copiedMints: string[];
+  createdAt: number;
+}
+
 export interface TradeLogEntry {
   at: number;
   action: string;
@@ -97,6 +120,7 @@ interface DbShape {
   tradeLog: TradeLogEntry[];
   positions: Record<string, PositionRecord>;
   rules: AutoRule[];
+  copyTargets: CopyTarget[];
 }
 
 const defaultSettings = (): Settings => ({
@@ -120,7 +144,7 @@ function load(): DbShape {
   if (cache) return cache;
 
   if (!fs.existsSync(dbPath())) {
-    cache = { version: 1, wallets: [], settings: defaultSettings(), tradeLog: [], positions: {}, rules: [] };
+    cache = { version: 1, wallets: [], settings: defaultSettings(), tradeLog: [], positions: {}, rules: [], copyTargets: [] };
     return cache;
   }
 
@@ -144,6 +168,7 @@ function load(): DbShape {
     tradeLog: parsed.tradeLog ?? [],
     positions: parsed.positions ?? {},
     rules: parsed.rules ?? [],
+    copyTargets: parsed.copyTargets ?? [],
   };
   return cache;
 }
@@ -284,6 +309,32 @@ export const db = {
     flush();
   },
 
+  copyTargets(): CopyTarget[] {
+    return load().copyTargets;
+  },
+
+  activeCopyTargets(): CopyTarget[] {
+    return load().copyTargets.filter((t) => t.enabled);
+  },
+
+  addCopyTarget(target: CopyTarget): void {
+    load().copyTargets.push(target);
+    flush();
+  },
+
+  updateCopyTarget(id: string, patch: Partial<CopyTarget>): void {
+    const t = load().copyTargets.find((x) => x.id === id);
+    if (!t) return;
+    Object.assign(t, patch);
+    flush();
+  },
+
+  removeCopyTarget(id: string): void {
+    const d = load();
+    d.copyTargets = d.copyTargets.filter((t) => t.id !== id);
+    flush();
+  },
+
   /** Escape hatch used by the passphrase-rotation flow. */
   raw(): DbShape {
     return load();
@@ -297,6 +348,6 @@ export const db = {
    */
   wipe(): void {
     fs.rmSync(dbPath(), { force: true });
-    cache = { version: 1, wallets: [], settings: defaultSettings(), tradeLog: [], positions: {}, rules: [] };
+    cache = { version: 1, wallets: [], settings: defaultSettings(), tradeLog: [], positions: {}, rules: [], copyTargets: [] };
   },
 };

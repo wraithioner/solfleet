@@ -197,6 +197,14 @@ async function routeCallback(ctx: Context, action: string, args: string[]): Prom
       return W.showWallets(ctx);
     case 'trade_menu':
       return T.showTradeMenu(ctx);
+    case 'copy_trade':
+      return T.showCopyTrade(ctx);
+    case 'copy_add':
+      return T.promptCopyAdd(ctx);
+    case 'copy_toggle':
+      return T.toggleCopyTarget(ctx, args[0] ?? '');
+    case 'copy_remove':
+      return T.removeCopyTarget(ctx, args[0] ?? '');
     case 'consolidate_menu':
       return T.showConsolidateMenu(ctx);
 
@@ -548,6 +556,18 @@ async function handlePending(
       // the phrase itself is not a secret, but the screen it came from is noisy
       await deleteMessage(ctx);
       return executeFactoryReset(ctx, text);
+    }
+
+    case 'copy_address':
+      return T.handleCopyAddress(ctx, text);
+
+    case 'copy_size': {
+      const sol = Number(text);
+      if (!Number.isFinite(sol) || sol <= 0) {
+        await ctx.reply('That is not a valid SOL amount.');
+        return;
+      }
+      return T.handleCopySize(ctx, pending.address, sol);
     }
 
     case 'fund_amount': {

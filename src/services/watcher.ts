@@ -6,6 +6,7 @@ import { batchPumpTrade } from '../trade/engine.js';
 import { getMintBalances } from '../chains/solana.js';
 import { pricesInSol } from './price.js';
 import { errMessage } from '../util.js';
+import { pollCopyTargets } from './copytrade.js';
 import { log } from '../logger.js';
 
 /**
@@ -74,7 +75,7 @@ export function startWatcher(notify: Notifier): void {
   if (timer) return;
   timer = setInterval(() => void tick(notify), TICK_MS);
   timer.unref?.();
-  log.info(`Auto-sell watcher started, checking every ${TICK_MS / 1000}s.`);
+  log.info(`Watcher started (auto-sell + copy trading), checking every ${TICK_MS / 1000}s.`);
 }
 
 export function stopWatcher(): void {
@@ -88,20 +89,31 @@ async function tick(notify: Notifier): Promise<void> {
 
   try {
     const rules = db.activeRules();
-    if (rules.length === 0) return;
+    const copyTargets = db.activeCopyTargets();
+    if (rules.length === 0 && copyTargets.length === 0) return;
 
     if (!isUnlocked()) {
       if (!warnedLocked) {
         warnedLocked = true;
+        const armed = [
+          rules.length > 0 ? `${rules.length} auto-sell rule${rules.length === 1 ? '' : 's'}` : '',
+          copyTargets.length > 0 ? `${copyTargets.length} copy target${copyTargets.length === 1 ? '' : 's'}` : '',
+        ].filter(Boolean).join(' and ');
+
         await notify(
-          `🔒 <b>${rules.length} auto-sell rule${rules.length === 1 ? '' : 's'} are armed but the vault is locked.</b>\n\n` +
-            'Send your passphrase to resume — nothing can be sold until then.',
+          `🔒 <b>${armed} armed, but the vault is locked.</b>\n\n` +
+            'Send your passphrase to resume — nothing can trade until then.',
         ).catch(() => {});
       }
       return;
     }
     warnedLocked = false;
 
+    // mirroring runs before the rules: a copied exit should not be delayed by
+    // a price sweep that has nothing to do with it
+    if (copyTargets.length > 0) await pollCopyTargets(notify);
+
+    if (rules.length === 0) return;
     const prices = await pricesInSol([...new Set(rules.map((r) => r.mint))]);
 
     for (const rule of rules) {

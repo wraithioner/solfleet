@@ -40,6 +40,18 @@ at all. Everyone else gets silence, not an error.
 - Works on tokens minutes old, before any indexer knows them, by reading Metaplex
   metadata and the bonding curve directly
 
+**Copy trading**
+- Follow any Solana wallet — their buys are mirrored across every one of your
+  wallets at a size you choose, their sells mirrored proportionally
+- **One copy per token per target.** A trader scaling into a position over
+  twenty transactions must not drag you into twenty separate buys
+- Following a wallet records where it is and starts from there. Their existing
+  positions are never retroactively bought
+- **The honest limitation:** the bot polls every 20 seconds, so your copy lands
+  seconds behind theirs, and on a memecoin those seconds are often the move.
+  This follows a trader; it does not race one, and nothing on an interval timer
+  could
+
 **Automation**
 - **Take profit, stop loss and trailing stops** per position, checked every 20
   seconds by a watcher that survives restarts — rules live on disk, so a
@@ -361,6 +373,7 @@ src/
     pnl.ts             cost basis and profit/loss, denominated in SOL
     price.ts           price in SOL: bonding curve first, aggregator second
     watcher.ts         the loop behind take-profit, stop-loss and trailing stops
+    copytrade.ts       mirroring another wallet's entries and exits
     mintauth.ts        mint + freeze authority, the two Solana rug vectors
   bot/                 Telegram layer: routing, screens, session state
 ```

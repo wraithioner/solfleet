@@ -3,7 +3,7 @@ import { InlineKeyboard } from 'grammy';
 import { config } from '../../config.js';
 import { db } from '../../store/db.js';
 import { selectWallets, mainWallet } from '../../store/wallets.js';
-import { getTokenInfo } from '../../services/tokeninfo.js';
+import { getTokenInfo, extractTokenAddress } from '../../services/tokeninfo.js';
 import { getSolPrice } from '../../services/prices.js';
 import { positionPnl, formatPnl } from '../../services/pnl.js';
 import { getMintBalances, getSolBalance, LAMPORTS } from '../../chains/solana.js';
@@ -907,4 +907,127 @@ export async function clearAutoRules(ctx: Context, mint: string): Promise<void> 
   for (const r of db.rulesFor(mint)) db.removeRule(r.id);
   await ctx.answerCallbackQuery({ text: 'Rules cleared.' });
   return showAutoSell(ctx, mint);
+}
+
+
+// ── copy trading ──────────────────────────────────────────────────────────────
+
+export async function showCopyTrade(ctx: Context): Promise<void> {
+  const targets = db.copyTargets();
+
+  const lines = ['<b>👥 Copy trading</b>', ''];
+
+  if (targets.length === 0) {
+    lines.push('<i>No wallets followed yet.</i>');
+  } else {
+    for (const t of targets) {
+      lines.push(
+        `${t.enabled ? '▶️' : '⏸'} <b>${h(t.label)}</b> <code>${shortAddr(t.address, 4, 4)}</code>`,
+      );
+      lines.push(
+        `   ${t.buySol} SOL per wallet · ${t.copySells ? 'copies exits too' : 'entries only'} · ${t.copiedMints.length} copied`,
+      );
+    }
+  }
+
+  lines.push('');
+  lines.push('<b>Read this before following anyone.</b>');
+  lines.push(
+    '<i>The bot polls their wallet every 20 seconds, so your copy lands seconds behind theirs — on a memecoin, that is often the whole move. This follows a trader; it cannot race one.</i>',
+  );
+  lines.push('');
+  lines.push(
+    `<i>Each buy is mirrored at your configured size across all ${selectWallets().length} wallets, once per token. Their sells are mirrored proportionally if enabled.</i>`,
+  );
+
+  const kb = new InlineKeyboard().text('➕ Follow a wallet', 'copy_add').row();
+  for (const t of targets.slice(0, 8)) {
+    kb.text(`${t.enabled ? '⏸ Pause' : '▶️ Resume'} ${t.label}`, `copy_toggle:${t.id}`)
+      .text('🗑', `copy_remove:${t.id}`)
+      .row();
+  }
+  kb.text('← Menu', 'home');
+
+  await render(ctx, lines.join('\n'), kb);
+}
+
+export async function promptCopyAdd(ctx: Context): Promise<void> {
+  setPending(ctx.from!.id, { kind: 'copy_address' });
+  await render(
+    ctx,
+    [
+      '<b>👥 Send the wallet address to follow.</b>',
+      '',
+      '<i>A Solana address. Their buys will be mirrored across your wallets at the size you set next.</i>',
+    ].join('\n'),
+    backButton('copy_trade'),
+  );
+}
+
+export async function handleCopyAddress(ctx: Context, text: string): Promise<void> {
+  const token = extractTokenAddress(text);
+  if (!token || token.kind !== 'solana') {
+    await ctx.reply('That is not a valid Solana address.');
+    return;
+  }
+
+  if (db.copyTargets().some((t) => t.address === token.address)) {
+    await ctx.reply('Already following that wallet.');
+    return;
+  }
+
+  setPending(ctx.from!.id, { kind: 'copy_size', address: token.address });
+  await ctx.reply(
+    [
+      `<b>Following</b> <code>${shortAddr(token.address, 6, 6)}</code>`,
+      '',
+      'How much SOL should each of your wallets buy when they buy?',
+      '',
+      `<i>e.g. 0.05 — across ${selectWallets().length} wallets that is ${(0.05 * selectWallets().length).toFixed(3)} SOL per copied trade.</i>`,
+    ].join('\n'),
+    { parse_mode: 'HTML' },
+  );
+}
+
+export async function handleCopySize(ctx: Context, address: string, buySol: number): Promise<void> {
+  if (buySol > config.safety.maxBuySolPerWallet) {
+    await ctx.reply(`That exceeds the per-wallet cap of ${config.safety.maxBuySolPerWallet} SOL.`);
+    return;
+  }
+
+  db.addCopyTarget({
+    id: newRuleId(),
+    address,
+    label: shortAddr(address, 4, 4),
+    buySol,
+    copySells: true,
+    enabled: true,
+    copiedMints: [],
+    createdAt: Date.now(),
+  });
+
+  await ctx.reply(
+    [
+      '✅ <b>Now following.</b>',
+      '',
+      `<code>${shortAddr(address, 6, 6)}</code> · ${buySol} SOL per wallet`,
+      '',
+      '<i>Their existing positions are ignored — only trades from now on are mirrored.</i>',
+    ].join('\n'),
+    { parse_mode: 'HTML', reply_markup: new InlineKeyboard().text('👥 Copy trading', 'copy_trade') },
+  );
+}
+
+export async function toggleCopyTarget(ctx: Context, id: string): Promise<void> {
+  const t = db.copyTargets().find((x) => x.id === id);
+  if (!t) return;
+  db.updateCopyTarget(id, { enabled: !t.enabled });
+  await ctx.answerCallbackQuery({ text: t.enabled ? 'Paused' : 'Resumed' });
+  return showCopyTrade(ctx);
+}
+
+export async function removeCopyTarget(ctx: Context, id: string): Promise<void> {
+  db.removeCopyTarget(id);
+  await ctx.answerCallbackQuery({ text: 'Unfollowed' });
+  return showCopyTrade(ctx);
 }

@@ -20,7 +20,7 @@ export function mainMenu(): InlineKeyboard {
   return new InlineKeyboard()
     .text('💼 Portfolio', 'portfolio').text('🪙 Positions', 'positions')
     .row()
-    .text('👛 Wallets', 'wallets').text('⚡ Quick Trade', 'trade_menu')
+    .text('👛 Wallets', 'wallets').text('👥 Copy Trade', 'copy_trade')
     .row()
     .text('💸 Move Funds', 'consolidate_menu').text('🔥 Sell Everything', 'sell_all_confirm')
     .row()
