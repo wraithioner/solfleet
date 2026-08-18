@@ -568,6 +568,39 @@ assert.equal(solSpent(keys, [0, 8 * SOL, 0], [0, 10 * SOL, 0], THEM), -2, 'a sal
 assert.equal(solSpent(keys, [0, 0, 0], [0, 0, 0], 'NotInThisTx'), 0, 'an absent wallet spent nothing');
 ok('native SOL movement is read off the transaction');
 
+/*
+ * ── received, not bought ──────────────────────────────────────────────────────
+ *
+ * A token balance going up does not mean they bought anything. Dusting a wallet
+ * that other people copy is a way of getting those people to buy something
+ * worthless: the recipient pays nothing and their balance rises exactly as it
+ * would after a purchase. Their SOL is the only thing that separates the two,
+ * and in fixed sizing nothing else was looking.
+ */
+const { isPurchase, MIN_SPEND_FOR_BUY_SOL } = await import('../src/services/copytrade.js');
+
+assert.equal(isPurchase(0), false, 'an airdrop costs the recipient nothing');
+assert.equal(isPurchase(0.000005), false, 'a bare signature fee is not a purchase');
+assert.equal(isPurchase(-0.5), false, 'receiving SOL is certainly not spending it');
+assert.equal(isPurchase(NaN), false, 'an unreadable amount is not a purchase');
+
+// the case a naive floor gets wrong: a receipt is not free when the recipient
+// pays their own account rent — measured on chain at around 0.004 SOL
+assert.equal(isPurchase(0.00204), false, 'rent for one token account is not a purchase');
+assert.equal(isPurchase(0.004044), false, 'nor two accounts plus fees, which is what dusting costs');
+assert.equal(isPurchase(0.008), false, 'nor that with a fat priority fee on top');
+
+assert.equal(isPurchase(MIN_SPEND_FOR_BUY_SOL), true, 'the floor itself counts');
+assert.equal(isPurchase(0.05), true, 'a real buy counts');
+ok('a token that arrived without SOL leaving is not treated as a buy');
+
+// the trap this closes: fixed sizing never looked at what they spent, so a
+// dusted wallet would have bought the configured amount of whatever arrived
+const fixedSizing = { sizeMode: 'fixed' as const, buySol: 0.05, sizePercent: 5 };
+assert.equal(copyBuySol(fixedSizing, 0, 1, 1), 0.05, 'fixed sizing still ignores their spend by design');
+assert.equal(isPurchase(0), false, 'so the gate has to happen before sizing is asked');
+ok('fixed sizing would have bought a dusted token, which is why the check is upstream');
+
 // ── sizing ────────────────────────────────────────────────────────────────────
 const fixedTarget = { sizeMode: 'fixed' as const, buySol: 0.05, sizePercent: 5 };
 assert.equal(copyBuySol(fixedTarget, 999, 10, 1), 0.05, 'fixed ignores what they spent');

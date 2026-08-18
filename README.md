@@ -61,6 +61,16 @@ at all. Everyone else gets silence, not an error.
   their timing: following someone out means selling seconds after they did, at
   whatever the price has become by then. The take-profit sells half and lets the
   rest run; the stop exits completely
+- **A token arriving is not a purchase.** Anyone can send tokens to anyone, and
+  dusting a wallet other people copy is a way of making those people buy
+  something worthless — the recipient's balance rises exactly as it would after
+  a trade. The SOL that left is the only thing telling the two apart, and the
+  copy only fires when they spent at least **0.01 SOL**. That floor is not
+  arbitrary: a receipt costs its holder up to ~0.004 SOL in account rent and
+  fees while buying nothing, measured on chain at wallets gaining nine million
+  tokens for 0.004 SOL. It is also the smallest quick-buy this bot offers — if
+  they spent less than the least you would ever choose to spend, it is not a
+  signal worth paying for
 - **Every copied buy is screened first.** Copy trading is the only buy in this
   bot with no human in the loop — every other one is a deliberate tap on a
   screen already listing the warnings. Before money moves, a copied token is
@@ -473,7 +483,7 @@ npm run check
 Runs three layers:
 
 - `typecheck` — full TypeScript strict-mode pass
-- `smoke` — 155 offline assertions: vault crypto (round-trip, unique IVs, tamper
+- `smoke` — 157 offline assertions: vault crypto (round-trip, unique IVs, tamper
   rejection, dropping a passphrase without losing a key, a key file that is
   wrong or missing being refused loudly, and a vault that opens itself at boot),
   wallet

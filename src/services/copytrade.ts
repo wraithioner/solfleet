@@ -111,6 +111,43 @@ export function solSpent(
 }
 
 /**
+ * The least SOL a wallet must part with for an arriving token to count as a buy.
+ *
+ * A token balance going up does not mean they bought anything. Anyone can send
+ * tokens to anyone, and dusting a wallet that other people copy is a way of
+ * getting those people to buy something worthless — the recipient pays nothing,
+ * is not even the fee payer, and their balance rises exactly as it would after
+ * a purchase. Their SOL is the only thing that tells the two apart.
+ *
+ * Where the floor sits, and why not lower. Receiving a token is not free for
+ * the recipient when they pay their own fees: opening the token account it
+ * lands in costs 0.00204 SOL of rent, a wrapped-SOL account alongside it
+ * another 0.00204, and a fat priority fee can add a further 0.002. So a pure
+ * receipt can cost its holder the better part of half a hundredth of a SOL
+ * while buying nothing — measured on chain, wallets gaining nine million
+ * tokens for 0.004 SOL. A floor under that reads those as purchases.
+ *
+ * 0.01 SOL clears it with room, and is also the smallest quick-buy this bot
+ * offers: if they spent less than the least you would ever choose to spend, it
+ * is not a signal worth paying for.
+ *
+ * It also excludes a token-for-token swap, where they genuinely acquired
+ * something without SOL leaving. Pricing the input side would be the fix;
+ * declining to copy a trade is cheaper than copying a poisoned one.
+ */
+export const MIN_SPEND_FOR_BUY_SOL = 0.01;
+
+/**
+ * Did they pay for this, or did it simply arrive?
+ *
+ * Pure and exported because it decides whether money moves, and the cost of
+ * getting it wrong is a real buy of a token somebody chose for you.
+ */
+export function isPurchase(theirSol: number): boolean {
+  return Number.isFinite(theirSol) && theirSol >= MIN_SPEND_FOR_BUY_SOL;
+}
+
+/**
  * SOL to commit to one copied buy, across the whole batch.
  *
  * Percent mode is deliberately a share of the batch rather than a share per
@@ -295,8 +332,23 @@ async function handleSignature(target: CopyTarget, signature: string, notify: No
   if (!current || !current.enabled) return;
 
   for (const move of moves) {
-    if (move.delta > 0) await mirrorBuy(current, move, theirSol, notify);
-    else if (current.exitMode !== 'off') await mirrorSell(current, move, notify);
+    if (move.delta > 0) {
+      /*
+       * A token arriving is not a purchase. Someone dusting a followed wallet
+       * would otherwise have this bot buy whatever they sent — and in fixed
+       * sizing it would buy the configured amount, because that mode never
+       * looks at what the trader spent.
+       */
+      if (!isPurchase(theirSol)) {
+        log.info(
+          `Ignored ${move.mint} from ${current.label}: they received it without spending SOL.`,
+        );
+        continue;
+      }
+      await mirrorBuy(current, move, theirSol, notify);
+    } else if (current.exitMode !== 'off') {
+      await mirrorSell(current, move, notify);
+    }
   }
 }
 
