@@ -9,8 +9,8 @@ import {
   forgetLegacyWallets,
 } from '../../store/wallets.js';
 import { isUnlocked, destroyVault, initVaultWithKeyfile } from '../../store/vault.js';
-import { buildPortfolio, listPositions } from '../../services/portfolio.js';
-import { positionPnl, entryPrice } from '../../services/pnl.js';
+import { buildPortfolio, listPositions, type Portfolio } from '../../services/portfolio.js';
+import { positionPnl, entryPrice, accountPnl } from '../../services/pnl.js';
 import { getSolBalances, LAMPORTS } from '../../chains/solana.js';
 import { fmtAmount, fmtUsd, fmtPriceUsd, errMessage } from '../../util.js';
 import { log } from '../../logger.js';
@@ -19,6 +19,8 @@ import {
   mainMenu,
   renderPortfolio,
   portfolioKeyboard,
+  renderPnl,
+  pnlKeyboard,
   renderSettings,
   settingsKeyboard,
   backButton,
@@ -109,19 +111,69 @@ export async function showHome(ctx: Context): Promise<void> {
   else await ctx.reply(text, { parse_mode: 'HTML', reply_markup: mainMenu() });
 }
 
+/**
+ * Mark every open position in SOL, keyed by mint.
+ *
+ * The P&L needs to know what is still held to say whether the whole thing is
+ * ahead; anything not in this map is treated as having gone to zero, which is
+ * the correct reading of a token the wallets no longer hold.
+ */
+function openValueSol(portfolio: Portfolio): Map<string, number> {
+  const solPrice = portfolio.totals.solPriceUsd;
+  const map = new Map<string, number>();
+  if (solPrice <= 0) return map;
+
+  for (const p of listPositions(portfolio)) map.set(p.mint, p.totalUsd / solPrice);
+  return map;
+}
+
 export async function showPortfolio(ctx: Context): Promise<void> {
   const settings = db.settings();
   await render(ctx, '<b>💼 Portfolio</b>\n\n<i>Reading balances…</i>');
 
   try {
     const portfolio = await buildPortfolio({ group: settings.activeGroup, includeTokens: true });
+    // marked from the wallets on screen, so the line agrees with the number
+    // above it; the dedicated screen always reads the whole account
+    const pnl = accountPnl(db.positions(), openValueSol(portfolio), portfolio.totals.solPriceUsd);
+
     await render(
       ctx,
-      `${renderPortfolio(portfolio, settings.activeGroup)}\n\n${updatedStamp()}`,
+      `${renderPortfolio(portfolio, settings.activeGroup, pnl)}\n\n${updatedStamp()}`,
       portfolioKeyboard(),
     );
   } catch (err) {
     await render(ctx, `❌ Could not load the portfolio.\n\n<i>${h(errMessage(err))}</i>`, backButton());
+  }
+}
+
+/**
+ * The whole result, on its own screen.
+ *
+ * Built without the group filter deliberately: a P&L is a fact about the
+ * account, and hiding half the wallets would not make the money that went
+ * through them stop counting.
+ */
+export async function showPnl(ctx: Context): Promise<void> {
+  await render(ctx, '<b>📈 Profit &amp; loss</b>\n\n<i>Adding it up…</i>');
+
+  try {
+    const portfolio = await buildPortfolio({ group: null, includeTokens: true });
+    const pnl = accountPnl(db.positions(), openValueSol(portfolio), portfolio.totals.solPriceUsd);
+
+    // a look is also a reading; the hourly loop is the backstop, not the only
+    // source, so opening this screen after a redeploy still leaves a mark
+    if (portfolio.errors.length === 0 && portfolio.totals.solPriceUsd > 0) {
+      db.recordValueMark(portfolio.totals.grandTotalUsd, portfolio.totals.solTotal);
+    }
+
+    await render(
+      ctx,
+      `${renderPnl(pnl, db.valueMarks(), portfolio.totals.grandTotalUsd)}\n\n${updatedStamp()}`,
+      pnlKeyboard(),
+    );
+  } catch (err) {
+    await render(ctx, `❌ Could not work out the P&amp;L.\n\n<i>${h(errMessage(err))}</i>`, backButton());
   }
 }
 
@@ -137,7 +189,11 @@ export async function showPositions(ctx: Context): Promise<void> {
       await render(
         ctx,
         `<b>🪙 Positions</b>\n\n<i>No token positions across the selected wallets.</i>\n\n${updatedStamp()}`,
-        new InlineKeyboard().text('🔄 Refresh', 'positions').primary().row().text('← Menu', 'home'),
+        new InlineKeyboard()
+          .text('🔄 Refresh', 'positions').primary()
+          .text('📈 P&L', 'pnl').primary()
+          .row()
+          .text('← Menu', 'home'),
       );
       return;
     }
@@ -212,9 +268,9 @@ export async function showPositions(ctx: Context): Promise<void> {
     lines.push('');
     lines.push(updatedStamp());
 
-    kb.text('🔄 Refresh', 'positions').primary();
-    if (owned.length > 0) kb.text('🔥 Sell everything', 'sell_all_confirm').danger();
-    kb.row().text('← Menu', 'home');
+    kb.text('🔄 Refresh', 'positions').primary().text('📈 P&L', 'pnl').primary().row();
+    if (owned.length > 0) kb.text('🔥 Sell everything', 'sell_all_confirm').danger().row();
+    kb.text('← Menu', 'home');
     await render(ctx, lines.join('\n'), kb);
   } catch (err) {
     await render(ctx, `❌ Could not load positions.\n\n<i>${h(errMessage(err))}</i>`, backButton());

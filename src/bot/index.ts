@@ -20,6 +20,7 @@ import {
   showHome,
   showPortfolio,
   showPositions,
+  showPnl,
   showSettings,
   showFactoryReset,
   executeFactoryReset,
@@ -66,7 +67,8 @@ export async function registerMenu(bot: Bot): Promise<void> {
     await bot.api.setMyCommands([
       { command: 'start', description: '⚡ Main menu' },
       { command: 'portfolio', description: '💼 Balances across every wallet' },
-      { command: 'positions', description: '🪙 Open positions and P&L' },
+      { command: 'positions', description: '🪙 Open positions' },
+      { command: 'pnl', description: '📈 Am I up or down?' },
       { command: 'wallets', description: '👛 Manage wallets' },
       { command: 'copy', description: '👥 Copy trading' },
       { command: 'funds', description: '💸 Fund wallets or sweep back' },
@@ -106,6 +108,11 @@ function registerCommands(bot: Bot): void {
   bot.command('positions', async (ctx) => {
     if (!(await requireUnlocked(ctx))) return;
     await showPositions(ctx);
+  });
+
+  bot.command('pnl', async (ctx) => {
+    if (!(await requireUnlocked(ctx))) return;
+    await showPnl(ctx);
   });
 
   bot.command('copy', async (ctx) => {
@@ -247,6 +254,8 @@ async function routeCallback(ctx: Context, action: string, args: string[]): Prom
       return showPortfolio(ctx);
     case 'positions':
       return showPositions(ctx);
+    case 'pnl':
+      return showPnl(ctx);
     case 'settings':
       return showSettings(ctx);
     case 'wallets':

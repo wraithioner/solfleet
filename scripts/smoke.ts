@@ -1383,5 +1383,115 @@ await assert.rejects(() => unlockAndConvert('not it', wallets.resealAll));
 assert.equal(convertEmptyVaultToKeyfile(true), false, 'and a populated vault refuses the shortcut');
 ok('a failed attempt leaves the vault exactly as it was');
 
+console.log('\n[23] Profit and loss');
+
+/*
+ * The number that tells the operator whether any of this worked. It is
+ * assembled from three measurements of different quality and every one of them
+ * has a way of flattering the result, so each is pinned here.
+ */
+const { accountPnl, costOf, markAgo } = await import('../src/services/pnl.js');
+
+db.wipe();
+assert.equal(accountPnl(db.positions(), new Map(), 200).empty, true);
+ok('an account that has never traded says so rather than claiming 0%');
+
+// a 1 SOL buy that actually cost 1.01 after fees, sold for 1.5
+db.recordBuy('MintA', 1, 1, 1_000_000, 'AAA', 1.01);
+db.recordSell('MintA', 1.5, 1);
+
+const a1 = accountPnl(db.positions(), new Map(), 200);
+assert.equal(a1.costSol, 1.01, 'cost is what left the wallets, not what was requested');
+assert.equal(Number(a1.feesSol.toFixed(6)), 0.01, 'the gap between the two is the fees');
+assert.equal(Number(a1.netSol.toFixed(6)), 0.49, 'net is proceeds less true cost');
+assert.equal(a1.netUsd, a1.netSol * 200);
+assert.equal(a1.closedCount, 1, 'nothing held means the position is closed');
+assert.equal(a1.wins, 1);
+ok('a closed winner is priced against what it really cost');
+
+/*
+ * The failure this guards against: reporting the requested size as the cost.
+ * On these numbers that would read +50.0% against a true +48.5%, and on a
+ * scratch trade it is the difference between a small profit and a small loss.
+ */
+assert.ok(a1.netPct < 49, `flattered by the notional: ${a1.netPct}`);
+assert.equal(Number(a1.netPct.toFixed(1)), 48.5);
+ok('the percentage is measured against the true cost');
+
+// still-held tokens are marked, and count as open rather than banked
+db.recordBuy('MintB', 2, 1, 500, 'BBB', 2.02);
+const a2 = accountPnl(db.positions(), new Map([['MintB', 3]]), 200);
+assert.equal(a2.openCount, 1);
+assert.equal(a2.closedCount, 1);
+assert.equal(Number(a2.openValueSol.toFixed(4)), 3);
+assert.equal(Number(a2.netSol.toFixed(4)), Number((1.5 + 3 - 3.03).toFixed(4)));
+ok('an open position is marked to market and counted apart from a closed one');
+
+/*
+ * Banked is what survives the open position going to zero, which on an
+ * illiquid memecoin is not a hypothetical. Here the headline is positive only
+ * because of the mark; the banked figure is negative and says so.
+ */
+assert.ok(a2.netSol > 0, 'the headline is up');
+assert.ok(a2.realisedNetSol < 0, 'but nothing like that has actually been banked');
+ok('banked and marked are never the same number');
+
+const a3 = accountPnl(db.positions(), new Map(), 200);
+assert.equal(a3.best?.symbol, 'AAA');
+assert.equal(a3.worst?.symbol, 'BBB');
+assert.equal(a3.losses, 1, 'a held token marked at zero is a loss, not an absence');
+ok('the best and worst trades are named');
+
+// a position written before costs were measured falls back to its notional
+db.wipe();
+db.recordBuy('MintC', 1, 1, 100, 'CCC');
+const legacyPos = db.position('MintC')!;
+assert.equal(costOf({ ...legacyPos, costSol: undefined }), 1);
+ok('a position from before the measurement uses what it was recorded as spending');
+
+// and a later buy on that position must not lose the earlier cost
+db.recordBuy('MintC', 1, 1, 100, 'CCC', 1.02);
+assert.equal(Number(db.position('MintC')!.costSol!.toFixed(4)), 2.02);
+ok('adding a measured buy to an unmeasured position keeps both');
+
+// positionPnl and accountPnl must agree on a single position
+const cardView = positionPnl(db.position('MintC')!, 0);
+assert.equal(cardView.investedSol, 2, 'the per-position view still reports the notional');
+assert.equal(accountPnl([db.position('MintC')!], new Map(), 1).costSol, 2.02);
+ok('the position card and the account total each use the figure they mean');
+
+console.log('\n[24] Account value over time');
+
+const NOW = 1_800_000_000_000;
+const HOUR = 3_600_000;
+const marks = [
+  { at: NOW - 30 * 24 * HOUR, usd: 5, sol: 0.1 },
+  { at: NOW - 7 * 24 * HOUR, usd: 10, sol: 0.15 },
+  { at: NOW - 24 * HOUR, usd: 13.7, sol: 0.18 },
+  { at: NOW - HOUR, usd: 14.9, sol: 0.19 },
+];
+
+assert.equal(markAgo(marks, 24 * HOUR, NOW)?.usd, 13.7);
+assert.equal(markAgo(marks, 7 * 24 * HOUR, NOW)?.usd, 10);
+ok('each window finds the mark nearest to it');
+
+/*
+ * The one that matters: a gap in the series must read as "no data", never as
+ * the nearest surviving mark. Labelling a reading from three weeks ago as "24h"
+ * is not an approximation, it is a wrong number with a confident caption.
+ */
+assert.equal(markAgo([marks[0]!], 24 * HOUR, NOW), null, 'a month-old mark is not yesterday');
+assert.equal(markAgo([], 24 * HOUR, NOW), null);
+ok('a gap in the history reports nothing rather than the wrong day');
+
+db.wipe();
+db.recordValueMark(100, 1);
+db.recordValueMark(999, 9);
+assert.equal(db.valueMarks().length, 1, 'a second look inside the hour is not a second mark');
+assert.equal(db.valueMarks()[0]!.usd, 100);
+db.recordValueMark(Number.NaN, 1);
+assert.equal(db.valueMarks().length, 1, 'an unreadable portfolio is never written down');
+ok('marks are hourly, and a bad reading is dropped rather than stored');
+
 fs.rmSync(DATA, { recursive: true, force: true });
 console.log(`\n✅ ${passed} assertions passed\n`);

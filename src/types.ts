@@ -76,6 +76,16 @@ export interface BatchSummary {
   failed: number;
   startedAt: number;
   finishedAt: number;
+  /**
+   * SOL that actually left the wallets, measured across the whole batch.
+   *
+   * The requested trade size is not what a buy costs. Priority fees, a Jito
+   * tip, the rent on a token account the first buy has to open — none of that
+   * appears in the amount the operator typed, and all of it is money gone.
+   * Undefined when the balances could not be read on both sides, because a
+   * half-measured cost is worse than an admittedly missing one.
+   */
+  solSpent?: number;
 }
 
 export type TradeAction = 'buy' | 'sell';

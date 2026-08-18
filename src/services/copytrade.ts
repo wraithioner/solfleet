@@ -642,7 +642,7 @@ async function mirrorBuy(
     // the token count is the cost basis: without it there is no entry price,
     // and without an entry price a take-profit or stop-loss cannot fire at all
     const tokensGained = await measureTokensGained(addresses, move.mint, heldBefore, info?.decimals);
-    db.recordBuy(move.mint, perWallet * fills, fills, tokensGained, info?.symbol);
+    db.recordBuy(move.mint, perWallet * fills, fills, tokensGained, info?.symbol, summary.solSpent);
 
     if (fills > 0) armCopyRules(target, move.mint, notify);
     db.appendTradeLog({

@@ -173,9 +173,15 @@ export async function batchPumpTrade(
     }
   }
 
+  // the pre-buy read the funding check already performs, kept so the cost can
+  // be measured against it afterwards without a second round trip before the
+  // trade — copy buys are raced, and latency here is latency on the entry
+  let solBefore: Map<string, bigint> | undefined;
+
   if (req.action === 'buy') {
     try {
       const balances = await fundingBalances(active.map((w) => w.address));
+      solBefore = balances;
       const { funded, unfunded } = partitionByBalance(
         active,
         balances,
@@ -214,7 +220,51 @@ export async function batchPumpTrade(
       ? await bundleTrades(active, req, startedAt, ctx, onProgress)
       : await parallelTrades(active, req, startedAt, ctx, onProgress);
 
-  return summarise([...summary.results, ...idle], startedAt);
+  const combined = summarise([...summary.results, ...idle], startedAt);
+  if (req.action === 'buy') {
+    combined.solSpent = await measureSolSpent(active.map((w) => w.address), solBefore);
+  }
+  return combined;
+}
+
+/**
+ * What a batch of buys actually cost, measured from the wallets' own balances.
+ *
+ * The alternative is to trust the requested size, which is what every P&L
+ * number in this bot used to do — and it is wrong in the same direction every
+ * time. A 0.05 SOL buy leaves with 0.05, plus the priority fee, plus a Jito tip
+ * in bundle mode, plus 0.00204 of rent for the token account it opens, plus
+ * another for a wrapped-SOL account off the curve. Reported as costing 0.05, a
+ * set of trades that broke even reads as a profit.
+ *
+ * Measured after the fact, so it also catches a fee that was raised by auto
+ * mode between the quote and the send.
+ *
+ * Returns undefined when either side of the measurement is missing. A trade
+ * running concurrently in the same wallets would land in this window; the
+ * number is a very good estimate rather than an accounting record, and is
+ * described as such wherever it is shown.
+ */
+export async function measureSolSpent(
+  addresses: string[],
+  before: Map<string, bigint> | undefined,
+): Promise<number | undefined> {
+  if (!before || addresses.length === 0) return undefined;
+
+  const after = await fundingBalances(addresses).catch(() => undefined);
+  if (!after) return undefined;
+
+  let spent = 0n;
+  for (const address of addresses) {
+    const start = before.get(address);
+    const end = after.get(address);
+    if (start === undefined || end === undefined) continue;
+    spent += start - end;
+  }
+
+  // a batch that spent nothing filled nothing; negative means the read straddled
+  // something else entirely and is not worth recording
+  return spent > 0n ? Number(spent) / 1e9 : undefined;
 }
 
 /**

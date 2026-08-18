@@ -343,7 +343,7 @@ async function executeBuy(ctx: Context, mint: string, solPerWallet: number): Pro
     const bought = await getTokenInfo(mint, 'solana').catch(() => null);
     const tokensGained = await measureTokensGained(buyAddresses, mint, heldBefore, bought?.decimals);
 
-    db.recordBuy(mint, solPerWallet * fills, fills, tokensGained, bought?.symbol);
+    db.recordBuy(mint, solPerWallet * fills, fills, tokensGained, bought?.symbol, summary.solSpent);
 
     await render(
       ctx,

@@ -7,6 +7,7 @@ import { getMintBalances } from '../chains/solana.js';
 import { pricesInSol } from './price.js';
 import { errMessage } from '../util.js';
 import { pollCopyTargets, syncSubscriptions, stopSubscriptions } from './copytrade.js';
+import { buildPortfolio } from './portfolio.js';
 import { log } from '../logger.js';
 
 /**
@@ -30,7 +31,13 @@ export type Notifier = (text: string) => Promise<void>;
 
 const TICK_MS = 20_000;
 
+/** Hourly. The store keeps a month of these; more resolution buys nothing. */
+const VALUE_MARK_EVERY_MS = 60 * 60_000;
+
 let timer: NodeJS.Timeout | null = null;
+// starts at zero so the first tick after a boot takes a mark, which is what
+// makes a redeploy show up as a point rather than a gap
+let lastValueMarkAt = 0;
 let running = false;
 let warnedLocked = false;
 
@@ -94,11 +101,45 @@ export function stopWatcher(): void {
   void stopSubscriptions();
 }
 
+/**
+ * Write down what the account is worth, roughly hourly.
+ *
+ * This lives in the watcher rather than on the portfolio screen because the
+ * series has to exist whether or not anyone looked. Someone who opens the bot
+ * once a week and asks how they were doing on Tuesday needs a mark from
+ * Tuesday, and a screen that only records when it is being read can never have
+ * one.
+ *
+ * A bad reading is worse than a missing one — a mark of zero written while the
+ * RPC was down becomes a permanent crash on the chart — so this records only a
+ * complete, priced portfolio and otherwise waits for the next hour.
+ */
+async function markAccountValue(): Promise<void> {
+  if (Date.now() - lastValueMarkAt < VALUE_MARK_EVERY_MS) return;
+  lastValueMarkAt = Date.now();
+
+  try {
+    // every wallet, not the active group: this is the account, not a view of it
+    const portfolio = await buildPortfolio({ group: null, includeTokens: true });
+    if (portfolio.errors.length > 0 || portfolio.totals.solPriceUsd <= 0) return;
+    if (portfolio.solana.length === 0) return;
+
+    db.recordValueMark(portfolio.totals.grandTotalUsd, portfolio.totals.solTotal);
+  } catch (err) {
+    log.warn(`Could not mark account value: ${errMessage(err)}`);
+  }
+}
+
 async function tick(notify: Notifier): Promise<void> {
   if (running) return; // a slow tick must not overlap the next one
   running = true;
 
   try {
+    // before the early return below, so the history keeps building on an
+    // account with nothing armed — which is exactly the account whose owner
+    // will not remember what they had
+    await markAccountValue();
+
     const rules = db.activeRules();
     const copyTargets = db.activeCopyTargets();
     const dca = db.dueDcaPlans();
@@ -193,7 +234,7 @@ async function fire(rule: AutoRule, price: number, notify: Notifier): Promise<vo
 
       const fills = summary.results.filter((r) => r.ok && r.signature).length;
       const gained = await measureTokensGained(addresses, rule.mint, heldBefore, undefined);
-      db.recordBuy(rule.mint, (rule.buySol ?? 0) * fills, fills, gained, rule.symbol);
+      db.recordBuy(rule.mint, (rule.buySol ?? 0) * fills, fills, gained, rule.symbol, summary.solSpent);
       db.appendTradeLog({
         at: Date.now(),
         action: `limit buy ${rule.buySol} SOL`,
@@ -301,7 +342,7 @@ async function runDueDca(notify: Notifier): Promise<void> {
 
       const fills = summary.results.filter((r) => r.ok && r.signature).length;
       const gained = await measureTokensGained(addresses, plan.mint, heldBefore, undefined);
-      db.recordBuy(plan.mint, plan.buySol * fills, fills, gained, plan.symbol);
+      db.recordBuy(plan.mint, plan.buySol * fills, fills, gained, plan.symbol, summary.solSpent);
       db.appendTradeLog({
         at: Date.now(),
         action: `DCA ${round}/${plan.roundsTotal}`,

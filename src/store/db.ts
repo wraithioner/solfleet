@@ -54,6 +54,19 @@ export interface PositionRecord {
   symbol?: string;
   /** SOL committed to buys. Exact — it is what the batch was told to spend. */
   investedSol: number;
+  /**
+   * What those buys actually took out of the wallets, fees and rent included.
+   *
+   * Kept apart from `investedSol` because the two answer different questions.
+   * The notional is what the token cost, and dividing it by the tokens received
+   * is the entry price a take-profit measures against. This is what the trade
+   * cost, and it is the only honest denominator for "am I up".
+   *
+   * Absent on positions opened before it was measured, and on any batch whose
+   * balances could not be read on both sides; readers fall back to the notional
+   * and are slightly flattering rather than wrong.
+   */
+  costSol?: number;
   /** SOL returned by sells, measured from balance deltas, so net of fees. */
   realisedSol: number;
   /** Wallet-fills, not batches. */
@@ -204,6 +217,20 @@ export interface DcaPlan {
   createdAt: number;
 }
 
+/**
+ * What everything was worth at one moment.
+ *
+ * Traded P&L answers "did my trades make money"; it cannot answer "how much
+ * did I have last week", because a deposit is not a trade. A periodic mark of
+ * the whole account does answer that, and needs nothing but a number and a
+ * clock. Kept hourly for a month — about 720 entries, a few tens of kilobytes.
+ */
+export interface ValueMark {
+  at: number;
+  usd: number;
+  sol: number;
+}
+
 export interface TradeLogEntry {
   at: number;
   action: string;
@@ -225,6 +252,7 @@ interface DbShape {
   rules: AutoRule[];
   copyTargets: CopyTarget[];
   dcaPlans: DcaPlan[];
+  valueMarks: ValueMark[];
 }
 
 const defaultSettings = (): Settings => ({
@@ -243,6 +271,10 @@ const defaultSettings = (): Settings => ({
 });
 
 const dbPath = () => path.join(config.dataDir, 'wallets.json');
+
+/** Slightly under an hour, so an hourly caller is never turned away by seconds. */
+const VALUE_MARK_INTERVAL_MS = 55 * 60_000;
+const VALUE_MARK_RETENTION_MS = 30 * 24 * 3_600_000;
 
 let cache: DbShape | null = null;
 
@@ -303,7 +335,7 @@ function load(): DbShape {
   if (cache) return cache;
 
   if (!fs.existsSync(dbPath())) {
-    cache = { version: 1, wallets: [], settings: defaultSettings(), tradeLog: [], positions: {}, rules: [], copyTargets: [], dcaPlans: [] };
+    cache = { version: 1, wallets: [], settings: defaultSettings(), tradeLog: [], positions: {}, rules: [], copyTargets: [], dcaPlans: [], valueMarks: [] };
     return cache;
   }
 
@@ -337,6 +369,7 @@ function load(): DbShape {
     rules: parsed.rules ?? [],
     copyTargets: (parsed.copyTargets ?? []).map(migrateCopyTarget),
     dcaPlans: parsed.dcaPlans ?? [],
+    valueMarks: parsed.valueMarks ?? [],
   };
   return cache;
 }
@@ -428,7 +461,14 @@ export const db = {
   },
 
   /** Add a completed buy to the position's cost basis. */
-  recordBuy(mint: string, solSpent: number, fills: number, tokensBought = 0, symbol?: string): void {
+  recordBuy(
+    mint: string,
+    solSpent: number,
+    fills: number,
+    tokensBought = 0,
+    symbol?: string,
+    costSol?: number,
+  ): void {
     if (solSpent <= 0 || fills <= 0) return;
     const d = load();
     const now = Date.now();
@@ -444,6 +484,11 @@ export const db = {
       lastTradeAt: now,
     };
 
+    // a batch whose true cost went unmeasured contributes its notional, so the
+    // running total stays comparable rather than developing a hole — and a
+    // position that predates the measurement starts from what it was recorded
+    // as having spent rather than from zero
+    pos.costSol = (pos.costSol ?? pos.investedSol) + (costSol ?? solSpent);
     pos.investedSol += solSpent;
     pos.buyFills += fills;
     pos.tokensBought += tokensBought;
@@ -475,6 +520,32 @@ export const db = {
     pos.lastTradeAt = now;
 
     d.positions[mint] = pos;
+    flush();
+  },
+
+  valueMarks(): ValueMark[] {
+    return load().valueMarks;
+  },
+
+  /**
+   * Write down what the account is worth, at most once an hour.
+   *
+   * Rate limited rather than written on every look, because the point of the
+   * series is a shape over days and a hundred marks inside one minute of button
+   * pressing only makes that harder to read. A month is kept; a month is long
+   * enough to answer "was I up last week" and short enough to stay small.
+   */
+  recordValueMark(usd: number, sol: number): void {
+    if (!Number.isFinite(usd) || !Number.isFinite(sol)) return;
+
+    const d = load();
+    const now = Date.now();
+    const last = d.valueMarks.at(-1);
+    if (last && now - last.at < VALUE_MARK_INTERVAL_MS) return;
+
+    d.valueMarks.push({ at: now, usd, sol });
+    const cutoff = now - VALUE_MARK_RETENTION_MS;
+    d.valueMarks = d.valueMarks.filter((m) => m.at >= cutoff);
     flush();
   },
 
@@ -576,7 +647,7 @@ export const db = {
    */
   wipe(): void {
     fs.rmSync(dbPath(), { force: true });
-    cache = { version: 1, wallets: [], settings: defaultSettings(), tradeLog: [], positions: {}, rules: [], copyTargets: [], dcaPlans: [] };
+    cache = { version: 1, wallets: [], settings: defaultSettings(), tradeLog: [], positions: {}, rules: [], copyTargets: [], dcaPlans: [], valueMarks: [] };
   },
 
   /**

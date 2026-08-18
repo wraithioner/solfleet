@@ -10,7 +10,8 @@ import {
   fmtDuration,
 } from '../util.js';
 import { tokenId, shortWalletId } from './session.js';
-import type { Settings } from '../store/db.js';
+import type { Settings, ValueMark } from '../store/db.js';
+import { formatAccountPnl, markAgo, formatValueChange, type AccountPnl } from '../services/pnl.js';
 import type { Portfolio } from '../services/portfolio.js';
 import type { TokenInfo } from '../services/tokeninfo.js';
 import { assessToken, DEFAULT_SAFETY, type SafetyLimits } from '../services/safety.js';
@@ -40,10 +41,12 @@ export function mainMenu(): InlineKeyboard {
     .text('💼 Portfolio', 'portfolio').primary()
     .text('🪙 Positions', 'positions').primary()
     .row()
+    .text('📈 P&L', 'pnl').primary()
     .text('👛 Wallets', 'wallets').primary()
-    .text('💸 Move Funds', 'consolidate_menu').primary()
     .row()
+    .text('💸 Move Funds', 'consolidate_menu').primary()
     .text('👥 Copy Trade', 'copy_trade').success()
+    .row()
     .text('⚙️ Settings', 'settings');
 }
 
@@ -53,7 +56,7 @@ export function backButton(to = 'home'): InlineKeyboard {
 
 // ── portfolio ─────────────────────────────────────────────────────────────────
 
-export function renderPortfolio(p: Portfolio, group: string | null): string {
+export function renderPortfolio(p: Portfolio, group: string | null, pnl?: AccountPnl): string {
   const lines: string[] = [];
 
   lines.push('<b>💼 Portfolio</b>');
@@ -68,6 +71,20 @@ export function renderPortfolio(p: Portfolio, group: string | null): string {
   ].filter(Boolean);
   lines.push(`<i>${split.join('  ·  ')}</i>`);
   lines.push('');
+
+  /*
+   * A balance is not a result.
+   *
+   * This screen used to show what the wallets are worth and stop there, which
+   * leaves the only question that matters — am I up? — to the operator's memory
+   * of what they put in. Nobody remembers. One line, directly under the number
+   * it qualifies, and the full working is a tap away.
+   */
+  if (pnl && !pnl.empty) {
+    lines.push(formatAccountPnl(pnl));
+    lines.push(`<i>on ${fmtAmount(pnl.costSol, 4)} ◎ traded</i>`);
+    lines.push('');
+  }
 
   if (p.mainSolana) {
     lines.push(
@@ -119,8 +136,111 @@ export function portfolioKeyboard(): InlineKeyboard {
     .text('🔄 Refresh', 'portfolio').primary()
     .text('🪙 Positions', 'positions').primary()
     .row()
+    .text('📈 P&L', 'pnl').primary()
     .text('💸 Sweep SOL → Main', 'sweep_sol_confirm')
     .row()
+    .text('← Menu', 'home');
+}
+
+// ── profit and loss ───────────────────────────────────────────────────────────
+
+/** Right-aligned in a monospace span, because a column of numbers should read as one. */
+function solCell(n: number, width = 9): string {
+  const sign = n < 0 ? '−' : '';
+  return `<code>${(sign + Math.abs(n).toFixed(4)).padStart(width)} ◎</code>`;
+}
+
+/**
+ * The full working behind the one line on the portfolio card.
+ *
+ * Two sections that must not be confused with one another. Traded P&L is what
+ * the buying and selling did, and no deposit or withdrawal can move it. Account
+ * value is what the wallets are worth over time, and sending yourself SOL moves
+ * it a lot. Both are worth knowing; presenting either as the other is how a
+ * losing month reads as a good one.
+ */
+export function renderPnl(a: AccountPnl, marks: ValueMark[], currentUsd: number): string {
+  const lines: string[] = ['<b>📈 Profit &amp; loss</b>', ''];
+
+  if (a.empty) {
+    lines.push('<i>Nothing bought through this bot yet, so there is no result to report.</i>', '');
+  } else {
+    lines.push(formatAccountPnl(a), '');
+
+    lines.push('<b>Traded</b>');
+    lines.push(`   ${solCell(a.costSol)}  spent`);
+    lines.push(`   ${solCell(a.realisedSol)}  sold back`);
+    if (a.openValueSol > 0) lines.push(`   ${solCell(a.openValueSol)}  still open`);
+    if (a.feesSol > 0) lines.push(`   ${solCell(a.feesSol)}  <i>fees &amp; rent, included above</i>`);
+    lines.push('');
+
+    /*
+     * Banked is the number that survives the worst case.
+     *
+     * A headline P&L carried by an open position is a claim about a price
+     * somebody else has to agree to pay. This one is SOL that has already
+     * arrived, and on an illiquid memecoin the difference between the two is
+     * the whole story.
+     */
+    if (a.openValueSol > 0) {
+      const banked = a.realisedNetSol;
+      lines.push(
+        `<b>Banked</b>  ${banked >= 0 ? '🟢' : '🔴'} ${banked >= 0 ? '+' : '−'}${Math.abs(banked).toFixed(4)} ◎` +
+          `   <i>already sold</i>`,
+      );
+    }
+
+    const traded = a.wins + a.losses;
+    if (traded > 0) {
+      lines.push(
+        `<b>Record</b>  ${a.wins} up · ${a.losses} down` +
+          `   <i>${a.openCount} open, ${a.closedCount} closed</i>`,
+      );
+    }
+    lines.push('');
+
+    if (a.best && a.best.netSol > 0) {
+      lines.push(`🏆 <b>${h(a.best.symbol)}</b>  +${a.best.netSol.toFixed(4)} ◎  (+${a.best.netPct.toFixed(0)}%)`);
+    }
+    if (a.worst && a.worst.netSol < 0) {
+      lines.push(
+        `💀 <b>${h(a.worst.symbol)}</b>  −${Math.abs(a.worst.netSol).toFixed(4)} ◎  (−${Math.abs(a.worst.netPct).toFixed(0)}%)`,
+      );
+    }
+    if ((a.best && a.best.netSol > 0) || (a.worst && a.worst.netSol < 0)) lines.push('');
+  }
+
+  const windows: Array<[string, number]> = [
+    ['24h', 86_400_000],
+    ['7d', 7 * 86_400_000],
+    ['30d', 30 * 86_400_000],
+  ];
+  const history = windows
+    .map(([label, ms]) => {
+      const mark = markAgo(marks, ms);
+      // the label sits in a monospace cell so 24h, 7d and 30d line up
+      return mark ? `   <code>${label.padEnd(4)}</code>${formatValueChange(mark, currentUsd)}` : null;
+    })
+    .filter((l): l is string => l !== null);
+
+  lines.push('<b>💰 Account value</b>');
+  if (history.length > 0) {
+    lines.push(...history);
+    lines.push('<i>Everything the wallets hold — deposits and withdrawals move this too.</i>');
+  } else {
+    lines.push(`   ${fmtUsd(currentUsd)} <i>now</i>`);
+    lines.push('<i>Checked hourly. Come back tomorrow and this will show the change.</i>');
+  }
+
+  return lines.join('\n');
+}
+
+export function pnlKeyboard(): InlineKeyboard {
+  return new InlineKeyboard()
+    .text('🔄 Refresh', 'pnl').primary()
+    .text('🪙 Positions', 'positions').primary()
+    .row()
+    .text('💼 Portfolio', 'portfolio').primary()
     .text('← Menu', 'home');
 }
 
