@@ -166,6 +166,8 @@ export async function showHolders(ctx: Context, mint: string): Promise<void> {
 // ── buying ────────────────────────────────────────────────────────────────────
 
 export async function promptBuy(ctx: Context, mint: string, solPerWallet: number): Promise<void> {
+  await render(ctx, `<b>🟢 Buy ${solPerWallet} SOL per wallet</b>\n\n<i>Checking balances and simulating the fill…</i>`);
+
   const settings = db.settings();
   const wallets = selectWallets();
 
@@ -539,6 +541,8 @@ export async function showConsolidateMenu(ctx: Context): Promise<void> {
 // ── funding: main wallet → every trading wallet ───────────────────────────────
 
 export async function showFundMenu(ctx: Context): Promise<void> {
+  await render(ctx, '<b>⬇️ Fund wallets from main</b>\n\n<i>Reading balances…</i>');
+
   const main = mainWallet();
   if (!main) {
     await ctx.answerCallbackQuery({ text: 'Set a main Solana wallet first.', show_alert: true });
@@ -829,6 +833,8 @@ const DIP_PRESETS = [-20, -35, -50];
 const LIMIT_SELL_PRESETS = [50, 100, 300];
 
 export async function showAutoSell(ctx: Context, mint: string): Promise<void> {
+  await render(ctx, '<b>🤖 Automation</b>\n\n<i>Reading the price…</i>');
+
   const id = tokenId(mint);
   const rules = db.rulesFor(mint);
   const entry = entryPriceSol(mint);
@@ -1143,6 +1149,8 @@ export async function removeCopyTarget(ctx: Context, id: string): Promise<void> 
 
 /** One rule type, one small screen of choices. */
 export async function showRulePresets(ctx: Context, mint: string, what: string): Promise<void> {
+  await render(ctx, '<i>Reading the price…</i>');
+
   const id = tokenId(mint);
   const price = await priceInSol(mint).catch(() => null);
   const entry = entryPriceSol(mint);

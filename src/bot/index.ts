@@ -215,15 +215,25 @@ function registerCallbacks(bot: Bot): void {
       return;
     }
 
+    /*
+     * Acknowledge the tap before doing any work.
+     *
+     * Telegram spins the button until the callback query is answered and gives
+     * up if that takes too long. Answering afterwards meant that any screen
+     * doing a slow RPC read — which is most of them on a rate-limited endpoint
+     * — looked to the operator like a button that did nothing at all. Handlers
+     * that want to show an alert answer again; a duplicate answer is harmless.
+     */
+    await ctx.answerCallbackQuery().catch(() => {});
+
     try {
       await routeCallback(ctx, action ?? '', args);
     } catch (err) {
       log.error(`Callback "${data}" failed`, err);
-      await ctx.answerCallbackQuery({ text: errMessage(err).slice(0, 190), show_alert: true }).catch(() => {});
+      await ctx
+        .reply(`❌ ${errMessage(err).slice(0, 300)}`)
+        .catch(() => {});
     }
-
-    // grammY throws if a query is answered twice; ignoring that is fine
-    await ctx.answerCallbackQuery().catch(() => {});
   });
 }
 

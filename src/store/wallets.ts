@@ -90,8 +90,7 @@ function insert(rec: Omit<WalletRecord, 'id' | 'createdAt'>): WalletRecord {
   // the first wallet is automatically the main wallet
   if (!wallets.some((w) => w.isMain)) full.isMain = true;
 
-  wallets.push(full);
-  flush();
+  db.addWallet(full);
   return full;
 }
 

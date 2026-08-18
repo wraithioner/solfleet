@@ -169,6 +169,10 @@ export const RESET_PHRASE = 'RESET EVERYTHING';
  * the one fact that should stop someone mid-reset.
  */
 export async function showFactoryReset(ctx: Context): Promise<void> {
+  // Balances are read below and that can be slow on a busy endpoint. Without
+  // something on screen first, the operator taps and sees nothing happen.
+  await render(ctx, '<b>🧨 Factory reset</b>\n\n<i>Checking what this would destroy…</i>');
+
   const wallets = allWallets();
 
   const lines = [

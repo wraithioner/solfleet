@@ -183,13 +183,18 @@ function load(): DbShape {
 
   const parsed = JSON.parse(fs.readFileSync(dbPath(), 'utf8')) as Partial<DbShape>;
 
-  // This bot was multi-chain once. A leftover EVM record would be handed to
-  // Solana signing code that cannot use it, so drop those rather than let them
-  // fail confusingly halfway through a batch.
-  const stored = parsed.wallets ?? [];
-  const wallets = stored.filter((w) => w.kind === 'solana');
-  if (wallets.length !== stored.length) {
-    console.warn(`Ignoring ${stored.length - wallets.length} non-Solana wallet record(s) from an older version.`);
+  /*
+   * This bot was multi-chain once, and a wallets.json written then can still
+   * hold EVM records. They are kept in the document, NOT filtered out of it:
+   * dropping them here and then flushing would write the file back without
+   * them, permanently destroying encrypted keys that may still hold funds.
+   * `db.wallets()` filters at the point of use instead, so Solana signing code
+   * never sees one.
+   */
+  const wallets = parsed.wallets ?? [];
+  const legacy = wallets.filter((w) => w.kind !== 'solana').length;
+  if (legacy > 0) {
+    console.warn(`${legacy} wallet(s) from the multi-chain version are preserved but inactive. Settings → Export legacy keys.`);
   }
 
   cache = {
@@ -214,11 +219,28 @@ export function flush(): void {
 
 export const db = {
   wallets(): WalletRecord[] {
-    return load().wallets;
+    return load().wallets.filter((w) => w.kind === 'solana');
+  },
+
+  /** Records from the multi-chain era: kept on disk, excluded from trading. */
+  legacyWallets(): WalletRecord[] {
+    return load().wallets.filter((w) => w.kind !== 'solana');
+  },
+
+  /**
+   * Append a wallet to the stored list.
+   *
+   * `wallets()` returns a filtered copy, so pushing onto its result would add
+   * the wallet to an array nobody keeps — this is the only way in.
+   */
+  addWallet(record: WalletRecord): void {
+    load().wallets.push(record);
+    flush();
   },
 
   setWallets(next: WalletRecord[]): void {
-    load().wallets = next;
+    // preserve anything this version does not manage, rather than truncating it
+    load().wallets = [...next, ...db.legacyWallets()];
     flush();
   },
 
