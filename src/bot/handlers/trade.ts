@@ -904,7 +904,7 @@ export async function showAutoSell(ctx: Context, mint: string): Promise<void> {
   lines.push('<i>Limit prices are fixed from the price shown above when you tap.</i>');
 
   const kb = new InlineKeyboard()
-    .text('🎯 Take profit', `rmenu:tp:${id}`).text('🛑 Stop loss', `rmenu:sl:${id}`)
+    .text('🎯 Take profit', `rmenu:tp:${id}`).success().text('🛑 Stop loss', `rmenu:sl:${id}`).danger()
     .row()
     .text('📉 Trailing stop', `rmenu:trail:${id}`).text('💰 Buy the dip', `rmenu:dip:${id}`)
     .row()
@@ -1083,8 +1083,8 @@ export async function showCopyTrade(ctx: Context): Promise<void> {
   );
 
   const kb = new InlineKeyboard()
-    .text('➕ Follow a wallet', 'copy_add')
-    .text('🛡 Safety', 'copy_safety')
+    .text('➕ Follow a wallet', 'copy_add').success()
+    .text('🛡 Safety', 'copy_safety').primary()
     .row();
   for (const t of targets.slice(0, 8)) {
     kb.text(`⚙️ ${t.label}`, `copy_open:${t.id}`)
@@ -1280,12 +1280,12 @@ export async function showCopyTarget(ctx: Context, id: string): Promise<void> {
     .row()
     .text(`📤 ${describeCopyExits(t)}`, `copy_exits:${t.id}`)
     .row()
-    .text(`🎯 ${describeCopyTakeProfit(t)}`, `copy_tp:${t.id}`)
+    .text(`🎯 ${describeCopyTakeProfit(t)}`, `copy_tp:${t.id}`).success()
     .row()
-    .text(`🛑 ${describeCopyStopLoss(t)}`, `copy_sl:${t.id}`)
+    .text(`🛑 ${describeCopyStopLoss(t)}`, `copy_sl:${t.id}`).danger()
     .row()
-    .text(t.enabled ? '⏸ Pause' : '▶️ Resume', `copy_toggle:${t.id}:stay`)
-    .text('🗑 Unfollow', `copy_remove:${t.id}`)
+    .text(t.enabled ? '⏸ Pause' : '▶️ Resume', `copy_toggle:${t.id}:stay`).primary()
+    .text('🗑 Unfollow', `copy_remove:${t.id}`).danger()
     .row()
     .text('← Copy trading', 'copy_trade');
 
@@ -1385,9 +1385,9 @@ export async function showCopySafety(ctx: Context): Promise<void> {
       '<i>Anything unreadable counts as a failure — a holder query the RPC refused means concentration is unknown, not zero.</i>',
     ].join('\n'),
     new InlineKeyboard()
-      .text(`👥 Top 10 max ${limits.maxTop10Pct}%`, 'safety_top10')
+      .text(`👥 Top 10 max ${limits.maxTop10Pct}%`, 'safety_top10').primary()
       .row()
-      .text(`👤 Dev max ${limits.maxDevPct}%`, 'safety_dev')
+      .text(`👤 Dev max ${limits.maxDevPct}%`, 'safety_dev').primary()
       .row()
       .text(`🔒 Authorities: ${limits.requireRevokedAuthorities ? 'must be revoked' : 'not checked'}`, 'safety_auth')
       .row()

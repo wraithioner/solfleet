@@ -23,6 +23,7 @@ import {
   settingsKeyboard,
   backButton,
   confirmKeyboard,
+  updatedStamp,
   h,
 } from '../ui.js';
 import { InlineKeyboard, InputFile } from 'grammy';
@@ -103,7 +104,11 @@ export async function showPortfolio(ctx: Context): Promise<void> {
 
   try {
     const portfolio = await buildPortfolio({ group: settings.activeGroup, includeTokens: true });
-    await render(ctx, renderPortfolio(portfolio, settings.activeGroup), portfolioKeyboard());
+    await render(
+      ctx,
+      `${renderPortfolio(portfolio, settings.activeGroup)}\n\n${updatedStamp()}`,
+      portfolioKeyboard(),
+    );
   } catch (err) {
     await render(ctx, `❌ Could not load the portfolio.\n\n<i>${h(errMessage(err))}</i>`, backButton());
   }
@@ -118,7 +123,11 @@ export async function showPositions(ctx: Context): Promise<void> {
     const positions = listPositions(portfolio);
 
     if (positions.length === 0) {
-      await render(ctx, '<b>🪙 Positions</b>\n\n<i>No token positions across the selected wallets.</i>', backButton());
+      await render(
+        ctx,
+        `<b>🪙 Positions</b>\n\n<i>No token positions across the selected wallets.</i>\n\n${updatedStamp()}`,
+        new InlineKeyboard().text('🔄 Refresh', 'positions').primary().row().text('← Menu', 'home'),
+      );
       return;
     }
 
@@ -182,8 +191,12 @@ export async function showPositions(ctx: Context): Promise<void> {
       if (unsolicited.length > 5) lines.push(`<i>…and ${unsolicited.length - 5} more</i>`);
     }
 
-    if (owned.length > 0) kb.text('🔥 Sell everything', 'sell_all_confirm').row();
-    kb.text('← Menu', 'home');
+    lines.push('');
+    lines.push(updatedStamp());
+
+    kb.text('🔄 Refresh', 'positions').primary();
+    if (owned.length > 0) kb.text('🔥 Sell everything', 'sell_all_confirm').danger();
+    kb.row().text('← Menu', 'home');
     await render(ctx, lines.join('\n'), kb);
   } catch (err) {
     await render(ctx, `❌ Could not load positions.\n\n<i>${h(errMessage(err))}</i>`, backButton());
@@ -348,9 +361,9 @@ export async function showLegacyKeys(ctx: Context): Promise<void> {
   lines.push('Download the keys, import them into a wallet that speaks that chain, then delete them here.');
 
   const kb = new InlineKeyboard()
-    .text('🔑 Download keys', 'legacy_download')
+    .text('🔑 Download keys', 'legacy_download').success()
     .row()
-    .text('🗑 Delete them', 'legacy_forget')
+    .text('🗑 Delete them', 'legacy_forget').danger()
     .row()
     .text('← Settings', 'settings');
 

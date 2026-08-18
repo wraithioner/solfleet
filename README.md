@@ -115,6 +115,16 @@ at all. Everyone else gets silence, not an error.
 - The funding screen states the real per-wallet figure, and the buy screen states
   it again alongside how many wallets fall short
 
+**Interface**
+- Buttons are coloured, and the colour means one thing consistently: **green
+  spends or opens** a position, **red closes or destroys** one, **blue only
+  reads**. On a screen where buy and sell sit side by side, that is the
+  difference the eye catches before the text
+- Screens that show live numbers carry a **🔄 Refresh** and the time they were
+  read. The clock is not decoration: a refresh landing on unchanged data would
+  otherwise edit a message into itself, which Telegram rejects, making the tap
+  look like a broken button
+
 **Positions**
 - Every position shows the **price you paid**, the price now, and the move
   between them — averaged across every buy, so adding to a position blends the

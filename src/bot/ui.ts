@@ -16,13 +16,25 @@ const SOLSCAN_ACC = (addr: string) => `https://solscan.io/account/${addr}`;
 
 // ── main menu ─────────────────────────────────────────────────────────────────
 
+/*
+ * Button colour is a real Bot API field, not decoration for its own sake.
+ *
+ * `style` takes "success" (green), "danger" (red) or "primary" (blue), and is
+ * used here to mean one thing consistently: green spends or opens a position,
+ * red closes or destroys one, blue is everything that only reads. On a screen
+ * where 🟢 Buy and 🔴 Sell sit next to each other, colour is the difference the
+ * eye catches before the text, which is the point.
+ */
 export function mainMenu(): InlineKeyboard {
   return new InlineKeyboard()
-    .text('💼 Portfolio', 'portfolio').text('🪙 Positions', 'positions')
+    .text('💼 Portfolio', 'portfolio').primary()
+    .text('🪙 Positions', 'positions').primary()
     .row()
-    .text('👛 Wallets', 'wallets').text('💸 Move Funds', 'consolidate_menu')
+    .text('👛 Wallets', 'wallets').primary()
+    .text('💸 Move Funds', 'consolidate_menu').primary()
     .row()
-    .text('👥 Copy Trade', 'copy_trade').text('⚙️ Settings', 'settings');
+    .text('👥 Copy Trade', 'copy_trade').success()
+    .text('⚙️ Settings', 'settings');
 }
 
 export function backButton(to = 'home'): InlineKeyboard {
@@ -78,9 +90,25 @@ export function renderPortfolio(p: Portfolio, group: string | null): string {
   return lines.join('\n');
 }
 
+/**
+ * When the numbers on screen were read.
+ *
+ * A refresh that lands on unchanged data edits a message into itself, which
+ * Telegram rejects as "message is not modified" — so the tap looks identical to
+ * a broken button. A clock that always moves makes every refresh visibly land,
+ * and answers the question the button is really asking: how old is this?
+ *
+ * UTC, and labelled, because the container runs UTC and a bare time next to a
+ * phone showing something else is worse than no time at all.
+ */
+export function updatedStamp(): string {
+  return `<i>updated ${new Date().toISOString().slice(11, 19)} UTC</i>`;
+}
+
 export function portfolioKeyboard(): InlineKeyboard {
   return new InlineKeyboard()
-    .text('🔄 Refresh', 'portfolio').text('🪙 Positions', 'positions')
+    .text('🔄 Refresh', 'portfolio').primary()
+    .text('🪙 Positions', 'positions').primary()
     .row()
     .text('💸 Sweep SOL → Main', 'sweep_sol_confirm')
     .row()
@@ -214,26 +242,27 @@ export function tokenKeyboard(mint: string, settings: Settings, holdsPosition: b
   // buy row(s) — presets across every selected wallet
   const buys = settings.quickBuyPresets.slice(0, 5);
   for (const [i, amount] of buys.entries()) {
-    kb.text(`🟢 ${amount}◎`, `buy:${id}:${amount}`);
+    kb.text(`🟢 ${amount}◎`, `buy:${id}:${amount}`).success();
     if ((i + 1) % 3 === 0) kb.row();
   }
   kb.row();
-  kb.text('🟢 Custom buy', `buycustom:${id}`);
+  kb.text('💰 Custom buy', `buycustom:${id}`).success();
 
   if (holdsPosition) {
     kb.row();
     for (const pct of settings.quickSellPresets.slice(0, 4)) {
-      kb.text(`🔴 Sell ${pct}%`, `sell:${id}:${pct}`);
+      kb.text(`${pct}%`, `sell:${id}:${pct}`).danger();
     }
     kb.row();
-    kb.text('🔴 Sell ALL wallets 100%', `sell:${id}:100`);
+    kb.text('🔥 Sell it all', `sell:${id}:100`).danger();
   }
 
   kb.row();
-  kb.text('🤖 Automation', `autosell:${id}`).text('👥 Holders', `holders:${id}`);
+  kb.text('🤖 Automation', `autosell:${id}`).primary()
+    .text('👥 Holders', `holders:${id}`).primary();
   kb.row();
-  kb.text('🔄', `tokeninfo:${id}`)
-    .url('📉 Chart', `https://dexscreener.com/search?q=${mint}`)
+  kb.text('🔄 Refresh', `tokeninfo:${id}`).primary()
+    .url('📈 Chart', `https://dexscreener.com/search?q=${mint}`)
     .text('← Menu', 'home');
 
   return kb;
@@ -396,7 +425,7 @@ export function settingsKeyboard(s: Settings, legacyCount = 0): InlineKeyboard {
 
 export function confirmKeyboard(confirmId: string, cancelTo = 'home'): InlineKeyboard {
   return new InlineKeyboard()
-    .text('✅ Confirm', `confirm:${confirmId}`)
+    .text('✅ Confirm', `confirm:${confirmId}`).success()
     .text('✖️ Cancel', cancelTo);
 }
 
