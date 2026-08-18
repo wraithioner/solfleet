@@ -235,7 +235,26 @@ async function loadMarketData(address: string, kind: 'solana' | 'evm'): Promise<
 
 // ── Solana holder distribution ────────────────────────────────────────────────
 
+/**
+ * How long the card will wait for holder concentration before giving up on it.
+ *
+ * `getTokenLargestAccounts` is an index query, and providers throttle it harder
+ * than anything else the card needs — Helius returns "account index service
+ * overloaded" under load, which the retry then sits through three times. The
+ * card renders perfectly well without this section and says so when it is
+ * missing, so it is not worth making the price, market cap and safety checks
+ * wait ten seconds behind it.
+ */
+const HOLDER_DEADLINE_MS = 4000;
+
 async function loadSolanaHolders(mint: string): Promise<Partial<TokenInfo>> {
+  const timeout = new Promise<Partial<TokenInfo>>((resolve) =>
+    setTimeout(() => resolve({ holdersUnavailable: true }), HOLDER_DEADLINE_MS).unref?.(),
+  );
+  return Promise.race([readSolanaHolders(mint), timeout]);
+}
+
+async function readSolanaHolders(mint: string): Promise<Partial<TokenInfo>> {
   try {
     const mintKey = new PublicKey(mint);
 

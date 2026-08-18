@@ -71,6 +71,15 @@ at all. Everyone else gets silence, not an error.
   This follows a trader; it does not race one, and nothing on an interval timer
   could
 
+**Speed**
+- Every RPC request is cut off at 12 seconds and a timeout is never retried, so
+  a stalled endpoint produces a readable error instead of a screen that never
+  arrives
+- The holder-concentration query has a tighter 4-second deadline of its own.
+  Providers throttle that index query harder than anything else a token card
+  needs, and it is the one section the card can render without — the price,
+  market cap and safety checks should not wait behind it
+
 **Fees and rent, so a position can always be closed**
 - A wallet is only sent into a buy if it can afford the *round trip*. The
   requirement is the trade, its signature and priority fees, the ~0.00204 SOL

@@ -110,8 +110,8 @@ async function tick(notify: Notifier): Promise<void> {
         ].filter(Boolean).join(' and ');
 
         await notify(
-          `🔒 <b>${armed} armed, but the vault is locked.</b>\n\n` +
-            'Send your passphrase to resume — nothing can trade until then.',
+          `🔒 <b>${armed} armed, but the vault is not open.</b>\n\n` +
+            'Send /start — nothing can trade until then.',
         ).catch(() => {});
       }
       return;
