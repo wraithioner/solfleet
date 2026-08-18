@@ -115,6 +115,15 @@ at all. Everyone else gets silence, not an error.
 - The funding screen states the real per-wallet figure, and the buy screen states
   it again alongside how many wallets fall short
 
+**Positions**
+- Every position shows the **price you paid**, the price now, and the move
+  between them — averaged across every buy, so adding to a position blends the
+  entry rather than replacing it
+- The entry price is derived from measured facts: the SOL that left the wallets
+  and the tokens that arrived. A buy whose fill could not be measured reports no
+  entry rather than a guess, because a stop-loss would otherwise fire against
+  an invented number
+
 **Automation**
 - **Take profit, stop loss and trailing stops** per position, checked every 20
   seconds by a watcher that survives restarts — rules live on disk, so a
@@ -400,7 +409,7 @@ npm run check
 Runs three layers:
 
 - `typecheck` — full TypeScript strict-mode pass
-- `smoke` — 144 offline assertions: vault crypto (round-trip, unique IVs, tamper
+- `smoke` — 148 offline assertions: vault crypto (round-trip, unique IVs, tamper
   rejection, dropping a passphrase without losing a key, a key file that is
   wrong or missing being refused loudly, and a vault that opens itself at boot),
   wallet

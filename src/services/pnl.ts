@@ -1,4 +1,5 @@
 import type { PositionRecord } from '../store/db.js';
+import { fmtAmount } from '../util.js';
 
 /**
  * Profit and loss, denominated in SOL.
@@ -30,6 +31,35 @@ export interface PositionPnl {
   netPct: number;
   /** True once sells alone have returned more than the position cost. */
   inProfitOnRealised: boolean;
+}
+
+/**
+ * What one token cost, in SOL, averaged over every buy.
+ *
+ * Derived rather than stored: the SOL spent and the tokens received are both
+ * measured facts, and their ratio is the only entry price that survives buying
+ * the same token five times at five different prices.
+ *
+ * Null when the token count was never recorded — an entry price guessed from a
+ * missing measurement would be worse than none, since a stop-loss fires against
+ * it.
+ */
+export function entryPrice(pos: PositionRecord | undefined): number | null {
+  if (!pos || pos.investedSol <= 0 || pos.tokensBought <= 0) return null;
+  return pos.investedSol / pos.tokensBought;
+}
+
+/** Entry, current, and the move between them, ready to render. */
+export function formatEntry(pos: PositionRecord | undefined, nowSol: number | null): string | null {
+  const entry = entryPrice(pos);
+  if (entry === null) return null;
+
+  const line = `entry <b>${fmtAmount(entry, 9)}</b> SOL`;
+  if (nowSol === null || nowSol <= 0) return line;
+
+  const movePct = ((nowSol - entry) / entry) * 100;
+  const sign = movePct >= 0 ? '+' : '';
+  return `${line} · now <b>${fmtAmount(nowSol, 9)}</b> SOL · ${sign}${movePct.toFixed(1)}%`;
 }
 
 export function positionPnl(pos: PositionRecord, currentValueSol: number): PositionPnl {

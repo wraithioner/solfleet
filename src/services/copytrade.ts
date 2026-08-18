@@ -2,11 +2,11 @@ import { PublicKey } from '@solana/web3.js';
 import { rpc, WSOL_MINT, getMintBalances, LAMPORTS } from '../chains/solana.js';
 import { db, type CopyTarget, type CopyExitMode } from '../store/db.js';
 import { selectWallets } from '../store/wallets.js';
-import { batchPumpTrade } from '../trade/engine.js';
+import { batchPumpTrade, measureTokensGained } from '../trade/engine.js';
 import { retry, errMessage, fmtAmount } from '../util.js';
 import { config } from '../config.js';
-import { assessToken } from './safety.js';
-import { getTokenInfo } from './tokeninfo.js';
+import { assessToken, type SafetyVerdict } from './safety.js';
+import { getTokenInfo, type TokenInfo } from './tokeninfo.js';
 import { log } from '../logger.js';
 import { newRuleId, type Notifier } from './watcher.js';
 
@@ -203,15 +203,18 @@ export function armCopyRules(target: CopyTarget, mint: string, notify?: Notifier
  * can be measured, and the alternative is an unattended buy into a token
  * nothing could be read about.
  */
-async function screenToken(mint: string) {
+async function screenToken(mint: string): Promise<{ verdict: SafetyVerdict; info?: TokenInfo }> {
   const limits = db.settings().copySafety;
   try {
-    return assessToken(await getTokenInfo(mint, 'solana'), limits);
+    const info = await getTokenInfo(mint, 'solana');
+    return { verdict: assessToken(info, limits), info };
   } catch (err) {
     return {
-      safe: false,
-      reasons: [`Could not read the token to check it: ${errMessage(err)}`],
-      notes: [],
+      verdict: {
+        safe: false,
+        reasons: [`Could not read the token to check it: ${errMessage(err)}`],
+        notes: [],
+      },
     };
   }
 }
@@ -335,7 +338,7 @@ async function mirrorBuy(
    * reconsidered on their next buy into it — the answer will not have changed,
    * and re-reading it every time turns one bad token into a stream of alerts.
    */
-  const verdict = await screenToken(move.mint);
+  const { verdict, info } = await screenToken(move.mint);
   if (!verdict.safe) {
     db.updateCopyTarget(target.id, {
       copiedMints: target.copiedMints.includes(move.mint)
@@ -371,6 +374,10 @@ async function mirrorBuy(
   const settings = db.settings();
   log.info(`Copying ${target.label} into ${move.mint} (entry ${already + 1}/${allowed})`);
 
+  // read before the trade so the fill can be measured against it
+  const addresses = wallets.map((w) => w.address);
+  const heldBefore = await getMintBalances(addresses, move.mint).catch(() => undefined);
+
   const sizing =
     target.sizeMode === 'percent'
       ? `${target.sizePercent}% of their ${fmtAmount(theirSol, 3)} SOL`
@@ -398,7 +405,12 @@ async function mirrorBuy(
     });
 
     const fills = summary.results.filter((r) => r.ok && r.signature).length;
-    db.recordBuy(move.mint, perWallet * fills, fills);
+
+    // the token count is the cost basis: without it there is no entry price,
+    // and without an entry price a take-profit or stop-loss cannot fire at all
+    const tokensGained = await measureTokensGained(addresses, move.mint, heldBefore, info?.decimals);
+    db.recordBuy(move.mint, perWallet * fills, fills, tokensGained, info?.symbol);
+
     if (fills > 0) armCopyRules(target, move.mint, notify);
     db.appendTradeLog({
       at: Date.now(),

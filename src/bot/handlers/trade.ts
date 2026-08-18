@@ -5,11 +5,12 @@ import { db, type CopyTarget, type CopyExitMode } from '../../store/db.js';
 import { selectWallets, mainWallet } from '../../store/wallets.js';
 import { getTokenInfo, extractTokenAddress } from '../../services/tokeninfo.js';
 import { getSolPrice } from '../../services/prices.js';
-import { positionPnl, formatPnl } from '../../services/pnl.js';
+import { positionPnl, formatPnl, formatEntry } from '../../services/pnl.js';
 import { getMintBalances, getSolBalance, LAMPORTS } from '../../chains/solana.js';
 import { simulateSequentialBuys, fetchBondingCurve } from '../../trade/curve.js';
 import {
   batchPumpTrade,
+  measureTokensGained,
   batchSweepSol,
   batchSweepToken,
   batchSellAllPositions,
@@ -108,8 +109,15 @@ export async function showTokenCard(ctx: Context, mint: string, replace = false)
           ? (heldTokens * info.priceUsd) / solPriceUsd
           : 0;
       const pnl = positionPnl(record, heldSol);
+
+      // the price paid belongs next to the price now, on the screen where the
+      // buy and sell buttons are — that is where the comparison gets acted on
+      const nowSol = heldTokens > 0 ? heldSol / heldTokens : null;
+      const entryLine = formatEntry(record, nowSol);
+
       text +=
         `\n\n<b>📒 Your position</b>\n` +
+        (entryLine ? `${entryLine}\n` : '') +
         `In ${pnl.investedSol.toFixed(3)} · back ${pnl.realisedSol.toFixed(3)} · held ${heldSol.toFixed(3)} SOL\n` +
         `${formatPnl(pnl)}`;
     }
@@ -330,20 +338,10 @@ async function executeBuy(ctx: Context, mint: string, solPerWallet: number): Pro
     // cost basis: only the wallets that actually filled spent anything
     const fills = summary.results.filter((r) => r.ok && r.signature).length;
 
-    let tokensGained = 0;
-    if (heldBefore) {
-      const heldAfter = await getMintBalances(buyAddresses, mint).catch(() => undefined);
-      if (heldAfter) {
-        let deltaRaw = 0n;
-        for (const [address, after] of heldAfter) deltaRaw += after - (heldBefore.get(address) ?? 0n);
-        if (deltaRaw > 0n) {
-          const info = await getTokenInfo(mint, 'solana').catch(() => null);
-          tokensGained = Number(deltaRaw) / 10 ** (info?.decimals ?? 6);
-        }
-      }
-    }
+    const bought = await getTokenInfo(mint, 'solana').catch(() => null);
+    const tokensGained = await measureTokensGained(buyAddresses, mint, heldBefore, bought?.decimals);
 
-    db.recordBuy(mint, solPerWallet * fills, fills, tokensGained);
+    db.recordBuy(mint, solPerWallet * fills, fills, tokensGained, bought?.symbol);
 
     await render(
       ctx,

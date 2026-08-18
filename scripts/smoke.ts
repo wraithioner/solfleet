@@ -1096,6 +1096,36 @@ assert.equal(spam.boughtHere, false, 'one that just appeared was not');
 assert.equal(listed[0]!.mint, 'BOUGHT_MINT', 'real positions sort above dust whatever it claims to be worth');
 ok('a token that arrived on its own is told apart from one that was bought');
 
+// ── entry price ───────────────────────────────────────────────────────────────
+// The price paid is what every exit decision is measured against, and it is
+// also what a take-profit needs: ruleTriggered refuses to fire against an
+// unknown entry, so a position recorded without its token count cannot be
+// protected by one.
+const { entryPrice, formatEntry } = await import('../src/services/pnl.js');
+
+const withBasis = {
+  mint: 'M', investedSol: 0.05, realisedSol: 0, buyFills: 1, sellFills: 0,
+  tokensBought: 46_125, firstBuyAt: 0, lastTradeAt: 0,
+};
+assert.equal(entryPrice(withBasis), 0.05 / 46_125);
+ok('entry price is the SOL spent over the tokens received');
+
+// averaging in must average the price, not replace it
+const averaged = { ...withBasis, investedSol: 0.15, tokensBought: 100_000 };
+assert.equal(entryPrice(averaged), 0.15 / 100_000, 'three buys give one blended entry');
+ok('buying again blends the entry rather than overwriting it');
+
+assert.equal(entryPrice({ ...withBasis, tokensBought: 0 }), null, 'no token count means no entry price');
+assert.equal(entryPrice(undefined), null);
+assert.equal(formatEntry({ ...withBasis, tokensBought: 0 }, 1), null, 'and nothing is rendered for it');
+ok('an unmeasured position reports no entry rather than inventing one');
+
+const rendered = formatEntry(withBasis, (0.05 / 46_125) * 1.048)!;
+assert.match(rendered, /entry/);
+assert.match(rendered, /\+4\.8%/, 'the move from entry is the number that matters');
+assert.doesNotMatch(formatEntry(withBasis, null)!, /now/, 'an unreadable price shows entry alone, not a fake move');
+ok('entry, current and the move between them render together');
+
 console.log('\n[19] Copy-trade safety gate');
 const { assessToken, DEFAULT_SAFETY } = await import('../src/services/safety.js');
 

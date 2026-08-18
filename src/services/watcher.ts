@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import { db, type AutoRule } from '../store/db.js';
 import { isUnlocked } from '../store/vault.js';
 import { selectWallets } from '../store/wallets.js';
-import { batchPumpTrade } from '../trade/engine.js';
+import { batchPumpTrade, measureTokensGained } from '../trade/engine.js';
 import { getMintBalances } from '../chains/solana.js';
 import { pricesInSol } from './price.js';
 import { errMessage } from '../util.js';
@@ -163,6 +163,10 @@ async function fire(rule: AutoRule, price: number, notify: Notifier): Promise<vo
     const settings = db.settings();
 
     if (rule.kind === 'limit_buy') {
+      // read first, so the fill can be measured and the position gets a basis
+      const addresses = wallets.map((w) => w.address);
+      const heldBefore = await getMintBalances(addresses, rule.mint).catch(() => undefined);
+
       const summary = await batchPumpTrade(wallets, {
         action: 'buy',
         mint: rule.mint,
@@ -174,7 +178,8 @@ async function fire(rule: AutoRule, price: number, notify: Notifier): Promise<vo
       });
 
       const fills = summary.results.filter((r) => r.ok && r.signature).length;
-      db.recordBuy(rule.mint, (rule.buySol ?? 0) * fills, fills);
+      const gained = await measureTokensGained(addresses, rule.mint, heldBefore, undefined);
+      db.recordBuy(rule.mint, (rule.buySol ?? 0) * fills, fills, gained, rule.symbol);
       db.appendTradeLog({
         at: Date.now(),
         action: `limit buy ${rule.buySol} SOL`,
@@ -267,6 +272,9 @@ async function runDueDca(notify: Notifier): Promise<void> {
     });
 
     try {
+      const addresses = wallets.map((w) => w.address);
+      const heldBefore = await getMintBalances(addresses, plan.mint).catch(() => undefined);
+
       const summary = await batchPumpTrade(wallets, {
         action: 'buy',
         mint: plan.mint,
@@ -278,7 +286,8 @@ async function runDueDca(notify: Notifier): Promise<void> {
       });
 
       const fills = summary.results.filter((r) => r.ok && r.signature).length;
-      db.recordBuy(plan.mint, plan.buySol * fills, fills);
+      const gained = await measureTokensGained(addresses, plan.mint, heldBefore, undefined);
+      db.recordBuy(plan.mint, plan.buySol * fills, fills, gained, plan.symbol);
       db.appendTradeLog({
         at: Date.now(),
         action: `DCA ${round}/${plan.roundsTotal}`,

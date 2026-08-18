@@ -10,7 +10,7 @@ import {
 } from '../../store/wallets.js';
 import { isUnlocked, destroyVault, initVaultWithKeyfile } from '../../store/vault.js';
 import { buildPortfolio, listPositions } from '../../services/portfolio.js';
-import { positionPnl, formatPnl } from '../../services/pnl.js';
+import { positionPnl, formatPnl, formatEntry } from '../../services/pnl.js';
 import { getSolBalances, LAMPORTS } from '../../chains/solana.js';
 import { fmtAmount, fmtUsd, errMessage } from '../../util.js';
 import { log } from '../../logger.js';
@@ -142,6 +142,12 @@ export async function showPositions(ctx: Context): Promise<void> {
       const record = db.position(p.mint);
       if (record && record.investedSol > 0) {
         const valueSol = solPrice > 0 ? p.totalUsd / solPrice : 0;
+
+        // the price paid, which is the number every exit decision is made against
+        const nowSol = p.totalAmount > 0 ? valueSol / p.totalAmount : null;
+        const entryLine = formatEntry(record, nowSol);
+        if (entryLine) lines.push(`   ${entryLine}`);
+
         const pnl = positionPnl(record, valueSol);
         lines.push(
           `   in ${pnl.investedSol.toFixed(3)} · back ${pnl.realisedSol.toFixed(3)} · ` +

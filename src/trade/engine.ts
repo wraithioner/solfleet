@@ -36,6 +36,38 @@ function summarise(results: ExecutionResult[], startedAt: number): BatchSummary 
   };
 }
 
+/**
+ * Whole tokens a batch actually acquired, measured from balance deltas.
+ *
+ * This is the cost basis, and without it a position has no entry price — which
+ * is not merely a missing line on a screen. `ruleTriggered` refuses to fire a
+ * take-profit or a stop-loss against an unknown entry, so a position recorded
+ * without its token count cannot be protected by either. Only the manual buy
+ * path measured this; copy trades, limit buys and DCA rounds all recorded what
+ * they spent and nothing about what they got.
+ *
+ * `before` must be read before the trade. A read that fails returns zero rather
+ * than a guess: an entry price invented from a partial measurement is worse
+ * than an absent one, because a stop-loss would then fire against it.
+ */
+export async function measureTokensGained(
+  addresses: string[],
+  mint: string,
+  before: Map<string, bigint> | undefined,
+  decimals: number | undefined,
+): Promise<number> {
+  if (!before || addresses.length === 0) return 0;
+
+  const after = await getMintBalances(addresses, mint).catch(() => undefined);
+  if (!after) return 0;
+
+  let deltaRaw = 0n;
+  for (const [address, held] of after) deltaRaw += held - (before.get(address) ?? 0n);
+  if (deltaRaw <= 0n) return 0;
+
+  return Number(deltaRaw) / 10 ** (decimals ?? 6);
+}
+
 function fail(w: WalletRecord, err: unknown): ExecutionResult {
   // The result carries the reason to the screen, but a batch fired by the
   // watcher has no screen — copy trading reported "❌ 1" and left nothing
