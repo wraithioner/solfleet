@@ -3,9 +3,9 @@ import { config } from './config.js';
 import { log } from './logger.js';
 import { errMessage } from './util.js';
 import { createBot, registerMenu } from './bot/index.js';
-import { autoUnlockIfConfigured, vaultExists, isUnlocked, lockVault } from './store/vault.js';
+import { openAtBoot, lockVault } from './store/vault.js';
 import { flush } from './store/db.js';
-import { allWallets } from './store/wallets.js';
+import { allWallets, hasSealedSecrets } from './store/wallets.js';
 import { startWatcher, stopWatcher } from './services/watcher.js';
 import { db } from './store/db.js';
 
@@ -24,18 +24,22 @@ async function main(): Promise<void> {
 
   warnIfStorageIsEphemeral();
 
-  if (await autoUnlockIfConfigured()) {
-    log.info('Vault unlocked from VAULT_PASSPHRASE.');
-    log.warn('The passphrase is in .env — anyone who can read that file can move your funds.');
-  } else if (vaultExists()) {
-    log.info('Vault present and locked. Send /unlock <passphrase> in Telegram.');
-  } else {
-    log.info('No vault yet. Send /start in Telegram to create one.');
-  }
-
-  if (isUnlocked()) {
-    const wallets = allWallets();
-    log.info(`Loaded ${wallets.length} wallets.`);
+  /*
+   * The vault opens itself. It is stored encrypted, but the key sits beside it
+   * on the volume, so a restart does not lock anyone out — a bot that demanded
+   * a passphrase after every redeploy was worse than useless.
+   */
+  switch (openAtBoot(hasSealedSecrets())) {
+    case 'created':
+      log.info('Vault created. The key is at data/vault.key on this volume — back it up with the wallets.');
+      break;
+    case 'opened':
+      log.info(`Vault open. ${allWallets().length} wallets loaded.`);
+      break;
+    case 'needs-passphrase':
+      log.warn('This vault predates the passphrase removal and still holds sealed keys.');
+      log.warn('Send the passphrase once in Telegram; it converts itself and never asks again.');
+      break;
   }
 
   const bot = createBot();

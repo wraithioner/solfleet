@@ -8,7 +8,7 @@ import {
   exportLegacyKeys,
   forgetLegacyWallets,
 } from '../../store/wallets.js';
-import { isUnlocked, vaultExists, destroyVault } from '../../store/vault.js';
+import { isUnlocked, destroyVault, initVaultWithKeyfile } from '../../store/vault.js';
 import { buildPortfolio, listPositions } from '../../services/portfolio.js';
 import { positionPnl, formatPnl } from '../../services/pnl.js';
 import { getSolBalances, LAMPORTS } from '../../chains/solana.js';
@@ -60,24 +60,16 @@ export async function render(
 }
 
 export async function showHome(ctx: Context): Promise<void> {
-  if (!vaultExists()) {
-    await ctx.reply(
-      [
-        '<b>🔐 First run — set up your vault</b>',
-        '',
-        'Choose a passphrase. It encrypts every private key this bot stores.',
-        'There is no recovery: lose it and the wallets are gone.',
-        '',
-        'Send it now as a normal message. I will delete your message immediately.',
-      ].join('\n'),
-      { parse_mode: 'HTML' },
-    );
-    return;
-  }
-
+  // the vault is created and opened at boot; this is the one case that cannot be
   if (!isUnlocked()) {
     await ctx.reply(
-      ['<b>🔒 Vault is locked</b>', '', 'Send <code>/unlock &lt;passphrase&gt;</code> to continue.'].join('\n'),
+      [
+        '<b>🔑 One last passphrase</b>',
+        '',
+        'This vault was made before passphrases were removed, and its keys are still sealed under yours.',
+        '',
+        'Send it now. Everything gets re-sealed with a key the bot keeps itself, and you will never be asked again.',
+      ].join('\n'),
       { parse_mode: 'HTML' },
     );
     return;
@@ -258,17 +250,21 @@ export async function executeFactoryReset(ctx: Context, text: string): Promise<v
   db.wipe();
   clearSession(ctx.from!.id);
 
+  // A reset that left no vault would leave the bot unusable until a restart,
+  // since nothing else creates one any more. Start the empty one right away.
+  initVaultWithKeyfile();
+
   log.warn(`Factory reset performed. ${had} wallets and the vault were deleted.`);
 
   await ctx.reply(
     [
       '<b>🧨 Factory reset complete</b>',
       '',
-      `Deleted the vault and ${had} wallet${had === 1 ? '' : 's'}.`,
+      `Deleted ${had} wallet${had === 1 ? '' : 's'} and every stored key.`,
       '',
-      'Send /start to set up a new vault from scratch.',
+      'A fresh empty vault is already open — make a wallet and carry on.',
     ].join('\n'),
-    { parse_mode: 'HTML' },
+    { parse_mode: 'HTML', reply_markup: mainMenu() },
   );
 }
 

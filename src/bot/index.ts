@@ -2,14 +2,7 @@ import { Bot, InlineKeyboard, type Context } from 'grammy';
 import { config } from '../config.js';
 import { log } from '../logger.js';
 import { db } from '../store/db.js';
-import {
-  isUnlocked,
-  vaultExists,
-  initVault,
-  unlockVault,
-  lockVault,
-  changePassphrase,
-} from '../store/vault.js';
+import { isUnlocked, unlockAndConvert } from '../store/vault.js';
 import { resealAll, allWallets } from '../store/wallets.js';
 import { errMessage } from '../util.js';
 import { extractTokenAddress } from '../services/tokeninfo.js';
@@ -79,7 +72,6 @@ export async function registerMenu(bot: Bot): Promise<void> {
       { command: 'funds', description: '💸 Fund wallets or sweep back' },
       { command: 'settings', description: '⚙️ Slippage, fees, presets' },
       { command: 'history', description: '📜 Recent operations' },
-      { command: 'lock', description: '🔒 Wipe keys from memory' },
       { command: 'help', description: '❓ How to use this bot' },
     ]);
 
@@ -99,40 +91,6 @@ function registerCommands(bot: Bot): void {
 
   bot.command('menu', async (ctx) => {
     await showHome(ctx);
-  });
-
-  bot.command('unlock', async (ctx) => {
-    const passphrase = ctx.match?.toString().trim();
-
-    // the passphrase is now in the chat log — remove it before doing anything else
-    await deleteMessage(ctx);
-
-    if (!passphrase) {
-      await ctx.reply('Usage: /unlock <passphrase>');
-      return;
-    }
-
-    if (!vaultExists()) {
-      try {
-        await initVault(passphrase);
-        await ctx.reply('🔐 Vault created and unlocked.', { reply_markup: mainMenu() });
-      } catch (err) {
-        await ctx.reply(`❌ ${errMessage(err)}`);
-      }
-      return;
-    }
-
-    try {
-      await unlockVault(passphrase);
-      await ctx.reply('🔓 Vault unlocked.', { reply_markup: mainMenu() });
-    } catch (err) {
-      await ctx.reply(`❌ ${errMessage(err)}`);
-    }
-  });
-
-  bot.command('lock', async (ctx) => {
-    lockVault();
-    await ctx.reply('🔒 Vault locked. Keys are out of memory.');
   });
 
   bot.command('portfolio', async (ctx) => {
@@ -196,7 +154,6 @@ function registerCommands(bot: Bot): void {
         '',
         'Every command is in the <b>Menu</b> button next to the message box.',
         '',
-        '<i>Locked? Just send your passphrase — no command needed.</i>',
       ].join('\n'),
       { parse_mode: 'HTML' },
     );
@@ -217,11 +174,11 @@ function registerCallbacks(bot: Bot): void {
     const data = ctx.callbackQuery.data;
     const [action, ...args] = data.split(':');
 
-    // Every screen except the vault prompts needs an unlocked vault. Factory
-    // reset is the exception: a forgotten passphrase is the likeliest reason to
-    // need it, and it destroys the keys rather than using them.
+    // Only a vault predating the passphrase removal can still be shut. Factory
+    // reset stays reachable: a forgotten passphrase is the likeliest reason to
+    // be here, and it destroys the keys rather than using them.
     if (!isUnlocked() && action !== 'home' && action !== 'factory_reset') {
-      await ctx.answerCallbackQuery({ text: '🔒 Vault is locked. Send /unlock <passphrase>.', show_alert: true });
+      await ctx.answerCallbackQuery({ text: 'Send your old passphrase once to finish opening this vault.', show_alert: true });
       return;
     }
 
@@ -306,11 +263,6 @@ async function routeCallback(ctx: Context, action: string, args: string[]): Prom
       return T.removeCopyTarget(ctx, args[0] ?? '');
     case 'consolidate_menu':
       return T.showConsolidateMenu(ctx);
-
-    case 'lock': {
-      lockVault();
-      return render(ctx, '🔒 <b>Vault locked.</b>\n\nSend <code>/unlock &lt;passphrase&gt;</code> to continue.');
-    }
 
     // confirmations
     case 'confirm': {
@@ -527,10 +479,6 @@ async function routeCallback(ctx: Context, action: string, args: string[]): Prom
         ].join('\n'),
         backButton('settings'),
       );
-    case 'change_passphrase':
-      setPending(userId, { kind: 'change_passphrase', stage: 'current' });
-      return render(ctx, '<b>🔑 Send your current passphrase.</b>', backButton('settings'));
-
     case 'copy_open':
       return T.showCopyTarget(ctx, args[0] ?? '');
 
@@ -570,34 +518,26 @@ function registerText(bot: Bot): void {
     const userId = ctx.from.id;
     const pending = takePending(userId);
 
-    // first run: whatever they send becomes the vault passphrase
-    if (!vaultExists() && !pending) {
-      await deleteMessage(ctx);
-      try {
-        await initVault(text);
-        await ctx.reply('🔐 Vault created and unlocked.', { reply_markup: mainMenu() });
-      } catch (err) {
-        await ctx.reply(`❌ ${errMessage(err)}`);
-      }
-      return;
-    }
-
     if (pending) {
       await handlePending(ctx, pending, text);
       return;
     }
 
-    // Locked: treat whatever was sent as the passphrase rather than making the
-    // operator type "/unlock " in front of it every time. The message is deleted
-    // either way, so this costs nothing and removes the most repeated friction
-    // in the whole bot.
+    /*
+     * The only path left that takes a passphrase: a vault made before they were
+     * removed. Whatever is sent is tried as one, and a success converts the
+     * vault on the spot so this branch is never reached again.
+     */
     if (!isUnlocked()) {
       await deleteMessage(ctx);
       try {
-        await unlockVault(text);
-        await ctx.reply('🔓 Unlocked.', { reply_markup: mainMenu() });
+        await unlockAndConvert(text, resealAll);
+        await ctx.reply('🔓 <b>Done — that was the last time.</b>\n\nThe vault opens itself from now on.', {
+          parse_mode: 'HTML',
+          reply_markup: mainMenu(),
+        });
       } catch {
-        await ctx.reply('🔒 That did not unlock the vault. Send your passphrase again.');
+        await ctx.reply('That did not open the vault. Send the passphrase again.');
       }
       return;
     }
@@ -622,29 +562,15 @@ async function handlePending(
   const userId = ctx.from!.id;
 
   switch (pending.kind) {
-    case 'unlock':
-    case 'create_vault': {
+    // the last passphrase this bot will ever ask for; see the message handler
+    case 'unlock': {
       await deleteMessage(ctx);
       try {
-        if (vaultExists()) await unlockVault(text);
-        else await initVault(text);
-        await ctx.reply('🔓 Unlocked.', { reply_markup: mainMenu() });
-      } catch (err) {
-        await ctx.reply(`❌ ${errMessage(err)}`);
-      }
-      return;
-    }
-
-    case 'change_passphrase': {
-      await deleteMessage(ctx);
-      if (pending.stage === 'current') {
-        setPending(userId, { kind: 'change_passphrase', stage: 'new', current: text });
-        await ctx.reply('Now send the <b>new</b> passphrase.', { parse_mode: 'HTML' });
-        return;
-      }
-      try {
-        await changePassphrase(pending.current, text, resealAll);
-        await ctx.reply('✅ Passphrase changed. Every stored key was re-encrypted under the new one.');
+        await unlockAndConvert(text, resealAll);
+        await ctx.reply('🔓 <b>Done — that was the last time.</b>', {
+          parse_mode: 'HTML',
+          reply_markup: mainMenu(),
+        });
       } catch (err) {
         await ctx.reply(`❌ ${errMessage(err)}`);
       }
@@ -833,11 +759,24 @@ async function applyNumericSetting(
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
+/**
+ * The vault opens itself at boot, so this only ever catches the one case that
+ * cannot: a vault made before passphrases were dropped, whose keys are still
+ * sealed under one and need it once to be moved.
+ */
 async function requireUnlocked(ctx: Context): Promise<boolean> {
   if (isUnlocked()) return true;
-  await ctx.reply('🔒 Vault is locked. Send /unlock <passphrase>.');
+  await ctx.reply(LEGACY_PASSPHRASE_PROMPT, { parse_mode: 'HTML' });
   return false;
 }
+
+const LEGACY_PASSPHRASE_PROMPT = [
+  '<b>🔑 One last passphrase</b>',
+  '',
+  'This vault was made before passphrases were removed, and its keys are still sealed under yours.',
+  '',
+  'Send it now. The bot re-seals everything with a key it keeps itself and never asks again.',
+].join('\n');
 
 /** Remove a message the operator sent that contained a secret. */
 async function deleteMessage(ctx: Context): Promise<void> {

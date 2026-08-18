@@ -22,9 +22,7 @@ export function mainMenu(): InlineKeyboard {
     .row()
     .text('👛 Wallets', 'wallets').text('💸 Move Funds', 'consolidate_menu')
     .row()
-    .text('👥 Copy Trade', 'copy_trade').text('⚙️ Settings', 'settings')
-    .row()
-    .text('🔒 Lock', 'lock');
+    .text('👥 Copy Trade', 'copy_trade').text('⚙️ Settings', 'settings');
 }
 
 export function backButton(to = 'home'): InlineKeyboard {
@@ -387,8 +385,6 @@ export function settingsKeyboard(s: Settings, legacyCount = 0): InlineKeyboard {
     .row()
     .text('🟢 Buy presets', 'set_buy_presets').text('🔴 Sell presets', 'set_sell_presets')
     .row()
-    .text('🔑 Change passphrase', 'change_passphrase')
-    .row();
 
   // only on the installs that actually carry them, so nobody else sees the row
   if (legacyCount > 0) kb.text(`📦 Export legacy keys (${legacyCount})`, 'legacy_keys').row();

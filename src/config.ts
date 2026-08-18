@@ -52,8 +52,12 @@ export const config = {
 
 
   vault: {
-    passphrase: opt('VAULT_PASSPHRASE'),
-    autolockMinutes: num('VAULT_AUTOLOCK_MINUTES', 30),
+    /**
+     * Minutes of inactivity before the key is wiped from memory. Off by
+     * default: with no passphrase there is nothing to type to get it back, so
+     * locking would just break the bot until it restarts.
+     */
+    autolockMinutes: num('VAULT_AUTOLOCK_MINUTES', 0),
   },
 
   trading: {

@@ -31,14 +31,32 @@ const KDF: KdfParams = { N: 2 ** 17, r: 8, p: 1, keyLen: 32 };
 const MAXMEM = 256 * 1024 * 1024;
 const VERIFIER_PLAINTEXT = 'multichain-wallet-bot/vault/v1';
 
+/**
+ * How the master key is obtained.
+ *
+ * `passphrase` stretches something only the operator knows, so the vault file
+ * is useless on its own — but the key cannot survive a restart, and a bot whose
+ * container is redeployed asks for it again every single time.
+ *
+ * `keyfile` keeps a random master key in a file beside the vault. The bot comes
+ * back up unlocked and never prompts. The honest trade: anyone who can read the
+ * volume can read the keys, so this defends a leaked wallets.json and nothing
+ * else.
+ */
+export type VaultMode = 'passphrase' | 'keyfile';
+
 interface VaultFile {
   version: 1;
-  kdf: KdfParams & { algo: 'scrypt'; salt: string };
+  /** Absent on vaults written before keyfile mode existed; those are passphrase. */
+  mode?: VaultMode;
+  /** Passphrase mode only — there is nothing to stretch in keyfile mode. */
+  kdf?: KdfParams & { algo: 'scrypt'; salt: string };
   verifier: string;
   createdAt: number;
 }
 
 const vaultPath = () => path.join(config.dataDir, 'vault.json');
+const keyfilePath = () => path.join(config.dataDir, 'vault.key');
 
 let masterKey: Buffer | null = null;
 let autolockTimer: NodeJS.Timeout | null = null;
@@ -90,6 +108,17 @@ function readVaultFile(): VaultFile {
   return parsed;
 }
 
+/** Which mode the stored vault uses. Vaults predating keyfile mode are passphrase. */
+export function vaultMode(): VaultMode | null {
+  if (!vaultExists()) return null;
+  return readVaultFile().mode ?? 'passphrase';
+}
+
+function requireKdf(file: VaultFile): KdfParams & { algo: 'scrypt'; salt: string } {
+  if (!file.kdf) throw new Error('This vault has no passphrase — it opens from its key file.');
+  return file.kdf;
+}
+
 /** Create a brand new vault. Fails if one already exists — we never overwrite keys. */
 export async function initVault(passphrase: string): Promise<void> {
   if (vaultExists()) throw new Error('A vault already exists. Delete data/vault.json only if you have backups.');
@@ -101,6 +130,7 @@ export async function initVault(passphrase: string): Promise<void> {
 
   const file: VaultFile = {
     version: 1,
+    mode: 'passphrase',
     kdf: { algo: 'scrypt', N: KDF.N, r: KDF.r, p: KDF.p, keyLen: KDF.keyLen, salt: salt.toString('base64') },
     verifier: seal(key, VERIFIER_PLAINTEXT),
     createdAt: Date.now(),
@@ -112,12 +142,141 @@ export async function initVault(passphrase: string): Promise<void> {
   log.info('Vault created and unlocked.');
 }
 
+// ── keyfile mode ──────────────────────────────────────────────────────────────
+
+/**
+ * Create a vault that needs no passphrase.
+ *
+ * The master key is random rather than derived, and stored in `vault.key` at
+ * 0600 alongside the data it protects. That is the whole point and the whole
+ * weakness: the bot can open itself after a restart, and so can anyone holding
+ * a copy of the volume.
+ */
+export function initVaultWithKeyfile(): void {
+  if (vaultExists()) throw new Error('A vault already exists. Delete data/vault.json only if you have backups.');
+
+  fs.mkdirSync(config.dataDir, { recursive: true });
+  const key = crypto.randomBytes(KDF.keyLen);
+
+  const file: VaultFile = {
+    version: 1,
+    mode: 'keyfile',
+    verifier: seal(key, VERIFIER_PLAINTEXT),
+    createdAt: Date.now(),
+  };
+
+  // the key lands first: a vault whose key file is missing is unopenable
+  writeAtomic(keyfilePath(), key.toString('base64'));
+  writeAtomic(vaultPath(), JSON.stringify(file, null, 2));
+
+  masterKey = key;
+  log.info('Vault created without a passphrase. It opens from data/vault.key.');
+}
+
+/**
+ * Load the key file and unlock. Returns false when this vault wants a
+ * passphrase; throws when it wants a key file that is not there, because that
+ * is a missing-file problem the operator can still fix by restoring it — and
+ * silently presenting a locked vault would hide it.
+ */
+export function unlockFromKeyfile(): boolean {
+  if (!vaultExists()) return false;
+  const file = readVaultFile();
+  if ((file.mode ?? 'passphrase') !== 'keyfile') return false;
+
+  if (!fs.existsSync(keyfilePath())) {
+    throw new Error(
+      'This vault opens from data/vault.key and that file is missing. Restore it from a backup — without it the stored keys cannot be decrypted.',
+    );
+  }
+
+  const key = Buffer.from(fs.readFileSync(keyfilePath(), 'utf8').trim(), 'base64');
+  if (key.length !== KDF.keyLen) throw new Error('data/vault.key is corrupt: wrong key length.');
+
+  try {
+    if (open(key, file.verifier).toString('utf8') !== VERIFIER_PLAINTEXT) throw new Error('mismatch');
+  } catch {
+    throw new Error('data/vault.key does not match this vault.');
+  }
+
+  masterKey = key;
+  log.info('Vault opened from its key file.');
+  return true;
+}
+
+/**
+ * Drop the passphrase: re-seal every secret under a fresh random key and write
+ * that key to disk. Requires an unlocked vault, so only somebody who already
+ * knows the passphrase can trade it away.
+ */
+export function removePassphrase(
+  reseal: (decrypt: (blob: string) => string, encrypt: (plain: string) => string) => void,
+): void {
+  const oldKey = requireKey();
+  if (vaultMode() === 'keyfile') throw new Error('This vault already has no passphrase.');
+
+  const newKey = crypto.randomBytes(KDF.keyLen);
+
+  // secrets are re-sealed before the vault file changes, so a crash in the
+  // middle leaves a vault that still opens with the old passphrase
+  reseal(
+    (blob) => open(oldKey, blob).toString('utf8'),
+    (plain) => seal(newKey, plain),
+  );
+
+  const file: VaultFile = {
+    version: 1,
+    mode: 'keyfile',
+    verifier: seal(newKey, VERIFIER_PLAINTEXT),
+    createdAt: readVaultFile().createdAt,
+  };
+
+  writeAtomic(keyfilePath(), newKey.toString('base64'));
+  writeAtomic(vaultPath(), JSON.stringify(file, null, 2));
+
+  oldKey.fill(0);
+  masterKey = newKey;
+  if (autolockTimer) {
+    clearTimeout(autolockTimer);
+    autolockTimer = null;
+  }
+  log.warn('Passphrase removed. The vault now opens from data/vault.key on this volume.');
+}
+
+/**
+ * Convert a passphrase vault that holds nothing worth decrypting.
+ *
+ * A vault created but never used has no secrets sealed under its key, so there
+ * is nothing to re-encrypt and no reason to make the operator produce a
+ * passphrase they only set a moment ago. Returns false when the vault does hold
+ * secrets — those need one real unlock before they can be moved.
+ */
+export function convertEmptyVaultToKeyfile(hasSecrets: boolean): boolean {
+  if (vaultMode() !== 'passphrase' || hasSecrets) return false;
+
+  const key = crypto.randomBytes(KDF.keyLen);
+  const file: VaultFile = {
+    version: 1,
+    mode: 'keyfile',
+    verifier: seal(key, VERIFIER_PLAINTEXT),
+    createdAt: readVaultFile().createdAt,
+  };
+
+  writeAtomic(keyfilePath(), key.toString('base64'));
+  writeAtomic(vaultPath(), JSON.stringify(file, null, 2));
+
+  masterKey = key;
+  log.info('Empty vault converted — no passphrase needed from here on.');
+  return true;
+}
+
 /** Derive the key from a passphrase and hold it in memory. */
 export async function unlockVault(passphrase: string): Promise<void> {
   if (!vaultExists()) throw new Error('No vault yet. Create one first.');
   const file = readVaultFile();
-  const salt = Buffer.from(file.kdf.salt, 'base64');
-  const key = await deriveKey(passphrase, salt, file.kdf);
+  const kdf = requireKdf(file);
+  const salt = Buffer.from(kdf.salt, 'base64');
+  const key = await deriveKey(passphrase, salt, kdf);
 
   try {
     const check = open(key, file.verifier);
@@ -145,43 +304,19 @@ export function isUnlocked(): boolean {
   return masterKey !== null;
 }
 
-/** Change the passphrase. Caller supplies a re-seal callback for stored secrets. */
-export async function changePassphrase(
-  oldPassphrase: string,
-  newPassphrase: string,
+/**
+ * Unlock an old passphrase vault and immediately convert it.
+ *
+ * The only remaining reason to type a passphrase: a vault created before
+ * passphrases were dropped still has its secrets sealed under one, and moving
+ * them needs the key that opens them. This is asked once and then never again.
+ */
+export async function unlockAndConvert(
+  passphrase: string,
   reseal: (decrypt: (blob: string) => string, encrypt: (plain: string) => string) => void,
 ): Promise<void> {
-  if (newPassphrase.length < 8) throw new Error('New passphrase must be at least 8 characters.');
-
-  const file = readVaultFile();
-  const oldKey = await deriveKey(oldPassphrase, Buffer.from(file.kdf.salt, 'base64'), file.kdf);
-  try {
-    open(oldKey, file.verifier);
-  } catch {
-    throw new Error('Current passphrase is wrong.');
-  }
-
-  const newSalt = crypto.randomBytes(32);
-  const newKey = await deriveKey(newPassphrase, newSalt);
-
-  // Re-encrypt every stored secret under the new key before committing the file,
-  // so a crash mid-way cannot orphan the wallets from their vault.
-  reseal(
-    (blob) => open(oldKey, blob).toString('utf8'),
-    (plain) => seal(newKey, plain),
-  );
-
-  const next: VaultFile = {
-    version: 1,
-    kdf: { algo: 'scrypt', N: KDF.N, r: KDF.r, p: KDF.p, keyLen: KDF.keyLen, salt: newSalt.toString('base64') },
-    verifier: seal(newKey, VERIFIER_PLAINTEXT),
-    createdAt: file.createdAt,
-  };
-  writeAtomic(vaultPath(), JSON.stringify(next, null, 2));
-
-  oldKey.fill(0);
-  masterKey = newKey;
-  armAutolock();
+  await unlockVault(passphrase);
+  removePassphrase(reseal);
 }
 
 // ── the two functions the rest of the app actually uses ───────────────────────
@@ -204,7 +339,7 @@ function requireKey(): Buffer {
 
 export class VaultLockedError extends Error {
   constructor() {
-    super('Vault is locked. Send /unlock <passphrase> first.');
+    super('The vault is not open. Send /start.');
     this.name = 'VaultLockedError';
   }
 }
@@ -246,17 +381,24 @@ export function writeAtomic(file: string, contents: string): void {
 export function destroyVault(): void {
   lockVault();
   fs.rmSync(vaultPath(), { force: true });
+  // the key file goes too, or the next vault inherits a stale one
+  fs.rmSync(keyfilePath(), { force: true });
   log.warn('Vault destroyed. Every stored key is now unrecoverable.');
 }
 
-/** Unlock automatically when the operator has accepted the risk of VAULT_PASSPHRASE. */
-export async function autoUnlockIfConfigured(): Promise<boolean> {
-  const pass = config.vault.passphrase;
-  if (!pass) return false;
+/**
+ * Bring the vault up at boot without asking anything.
+ *
+ * Returns what the caller has to tell the operator: nothing at all in the
+ * normal case, and only in the one case that cannot be resolved automatically —
+ * an old vault whose secrets are still sealed under a passphrase.
+ */
+export function openAtBoot(hasSecrets: boolean): 'opened' | 'created' | 'needs-passphrase' {
   if (!vaultExists()) {
-    await initVault(pass);
-    return true;
+    initVaultWithKeyfile();
+    return 'created';
   }
-  await unlockVault(pass);
-  return true;
+  if (unlockFromKeyfile()) return 'opened';
+  if (convertEmptyVaultToKeyfile(hasSecrets)) return 'opened';
+  return 'needs-passphrase';
 }

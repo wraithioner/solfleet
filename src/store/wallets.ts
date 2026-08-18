@@ -305,7 +305,18 @@ function mustFind(id: string): WalletRecord {
   return w;
 }
 
-/** Re-encrypt every secret under a new vault key. Used by passphrase rotation. */
+/**
+ * Whether anything is sealed under the current vault key.
+ *
+ * Asked at boot: a vault with nothing in it can be re-keyed without anyone
+ * producing a passphrase, because there is nothing to decrypt on the way.
+ */
+export function hasSealedSecrets(): boolean {
+  const raw = db.raw();
+  return raw.wallets.length > 0 || Boolean(raw.mnemonic);
+}
+
+/** Re-encrypt every secret under a new vault key. Used when the key changes. */
 export function resealAll(
   decrypt: (blob: string) => string,
   encrypt: (plain: string) => string,

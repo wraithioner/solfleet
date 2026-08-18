@@ -143,11 +143,10 @@ Fill in three things at minimum:
 npm start
 ```
 
-**4. Create your vault**
+**4. Open it**
 
-Send `/start` in Telegram. The first message you send becomes your vault
-passphrase; your message is deleted the instant it's read. Every private key is
-encrypted under it before touching disk.
+Send `/start` in Telegram. There is nothing to set up: the vault is created on
+first boot and opens itself on every boot after that.
 
 ### The RPC endpoint is not optional
 
@@ -203,15 +202,9 @@ sleeping bot stops receiving messages.
 | `OWNER_IDS` | your numeric ID from [@userinfobot](https://t.me/userinfobot) |
 | `SOLANA_RPC_URL` | your Helius / QuickNode endpoint |
 | `DATA_DIR` | `/data` — must match the volume mount path |
-| `VAULT_PASSPHRASE` | leave unset; see below |
 
-**On `VAULT_PASSPHRASE`.** Leave it empty and the vault locks on every restart,
-so you send `/unlock <passphrase>` after each redeploy — the key then exists only
-in memory. Set it, and the bot unlocks itself unattended, but anyone who can read
-your Railway variables owns every wallet. Start without it.
-
-Once deployed, open your bot in Telegram and send `/start`. The first message you
-send after that becomes your vault passphrase.
+Once deployed, open your bot in Telegram and send `/start`. Nothing to unlock —
+the vault comes up with the container.
 
 ---
 
@@ -233,24 +226,24 @@ you can configure.
 | Concern | How it's handled |
 | --- | --- |
 | Keys at rest | AES-256-GCM, one random IV per secret. Tampering fails loudly. |
-| Passphrase | scrypt, N=2¹⁷ — roughly a second per guess, so offline brute force is impractical |
-| Keys in memory | Master key lives in one closure, zeroed on `/lock` and on shutdown |
-| Auto-lock | Locks itself after `VAULT_AUTOLOCK_MINUTES` idle (default 30) |
-| Secrets in chat | Passphrases, private keys and seed phrases are deleted from the chat on receipt; exports self-destruct after 60s |
+| Master key | Random 32 bytes in `data/vault.key` at 0600, held in one closure, zeroed on shutdown |
+| Secrets in chat | Private keys and seed phrases are deleted from the chat on receipt; exports self-destruct after 60s |
 | Logs | A redaction filter strips anything shaped like a private key before it's written |
 | Access | Non-owner updates are dropped without a reply |
 | Destructive actions | Every write operation requires a second confirming tap |
 
-**What this does not protect against:** anyone with read access to your machine
-while the vault is unlocked. The keys are in memory by definition — that's what
-lets the bot sign. Run it somewhere you control.
+**What this does not protect against: anyone who can read the data directory.**
+The key that decrypts the wallets sits in it, so a copy of the volume is a copy
+of the wallets. This is a deliberate trade — a passphrase that had to be re-typed
+after every container restart was worse than useless, and a bot that cannot open
+its own vault cannot run a stop-loss while you sleep. Encryption at rest here
+defends a leaked `wallets.json`, a backup that went somewhere it shouldn't, and
+nothing beyond that. Run it somewhere you control, and don't put more in these
+wallets than you are trading.
 
-Setting `VAULT_PASSPHRASE` in `.env` trades security for unattended restarts:
-anyone who can read that file owns every wallet. Leave it empty unless you
-specifically need it.
-
-**Back up `data/vault.json` and `data/wallets.json` together.** One is useless
-without the other, and there is no recovery path for a lost passphrase.
+**Back up `data/vault.json`, `data/wallets.json` and `data/vault.key` together.**
+Any one of them is useless without the others, and there is no recovery path if
+the key file is lost.
 
 ### Starting over
 
@@ -264,9 +257,8 @@ that should stop a reset that is about to burn real money. Sweep or export first
 Confirming means typing `RESET EVERYTHING` exactly — a button is too easy to
 press by accident.
 
-It works **while the vault is locked**, on purpose: forgetting the passphrase is
-the most likely reason to need it, and the keys are already unreachable at that
-point. Anything those wallets still hold is gone for good.
+A reset creates the replacement vault immediately, so the bot is usable again
+the moment it finishes — there is nothing to set up and nothing to remember.
 
 ### Wallets from the multi-chain version
 
@@ -355,8 +347,10 @@ npm run check
 Runs three layers:
 
 - `typecheck` — full TypeScript strict-mode pass
-- `smoke` — 113 offline assertions: vault crypto (round-trip, unique IVs, tamper
-  rejection, lock/unlock, passphrase rotation re-sealing every key), wallet
+- `smoke` — 119 offline assertions: vault crypto (round-trip, unique IVs, tamper
+  rejection, dropping a passphrase without losing a key, a key file that is
+  wrong or missing being refused loudly, and a vault that opens itself at boot),
+  wallet
   derivation, group and main-wallet invariants, bonding curve maths and batch
   simulation, funding arithmetic (shortfall-only top-ups, transaction packing,
   refusing a plan the main wallet can't afford, skipping wallets that cannot
@@ -386,10 +380,12 @@ tell you which dependency moved.
 | Command | Effect |
 | --- | --- |
 | `/start` | Main menu |
-| `/unlock <passphrase>` | Unlock the vault (your message is deleted) |
-| `/lock` | Wipe keys from memory |
 | `/portfolio` | Balances across every wallet |
+| `/positions` | Open positions and P&L |
 | `/wallets` | Wallet management |
+| `/copy` | Copy trading |
+| `/funds` | Fund wallets or sweep back |
+| `/settings` | Slippage, fees, presets |
 | `/history` | Recent batch operations |
 | `/help` | Command list |
 

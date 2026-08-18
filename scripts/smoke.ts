@@ -13,8 +13,23 @@ import assert from 'node:assert/strict';
 const DATA = './.smoke-data';
 fs.rmSync(DATA, { recursive: true, force: true });
 
-const { initVault, isUnlocked, lockVault, unlockVault, encryptSecret, decryptSecret, changePassphrase } =
-  await import('../src/store/vault.js');
+const {
+  initVault,
+  initVaultWithKeyfile,
+  unlockFromKeyfile,
+  removePassphrase,
+  unlockAndConvert,
+  convertEmptyVaultToKeyfile,
+  vaultMode,
+  openAtBoot,
+  destroyVault,
+  vaultExists,
+  isUnlocked,
+  lockVault,
+  unlockVault,
+  encryptSecret,
+  decryptSecret,
+} = await import('../src/store/vault.js');
 
 let passed = 0;
 const ok = (name: string) => {
@@ -103,19 +118,50 @@ ok('exactly one main wallet');
 assert.throws(() => wallets.importPrivateKey(`0x${'a'.repeat(64)}`), /Solana wallets only/);
 ok('an EVM private key is rejected with a chain-specific message');
 
-console.log('\n[3] Passphrase rotation');
-const beforeAddrs = wallets.allWallets().map((w) => w.address);
-await changePassphrase('correct horse battery staple', 'a much better passphrase', wallets.resealAll);
-const afterKp = wallets.solanaKeypair(wallets.allWallets()[0]!);
-assert.deepEqual(wallets.allWallets().map((w) => w.address), beforeAddrs);
-ok('all keys re-encrypted, addresses unchanged');
+console.log('\n[3] Dropping the passphrase');
 
+/*
+ * The migration that matters: a vault made under a passphrase, holding real
+ * keys, moved onto a key file. If this loses a single secret the wallets are
+ * gone, so it is checked address by address rather than by a success flag.
+ */
+const beforeAddrs = wallets.allWallets().map((w) => w.address);
+assert.equal(vaultMode(), 'passphrase');
+
+removePassphrase(wallets.resealAll);
+assert.equal(vaultMode(), 'keyfile', 'the vault is now opened by its key file');
+assert.deepEqual(wallets.allWallets().map((w) => w.address), beforeAddrs, 'no wallet lost or changed');
+assert.equal(wallets.solanaKeypair(wallets.allWallets()[0]!).publicKey.toBase58(), beforeAddrs[0]);
+ok('every key survives being re-sealed without a passphrase');
+
+// the whole point: a restart must not shut anyone out
 lockVault();
-await unlockVault('a much better passphrase');
+assert.equal(isUnlocked(), false);
+assert.equal(unlockFromKeyfile(), true, 'the key file reopens it with nothing typed');
 assert.equal(wallets.solanaKeypair(sol).publicKey.toBase58(), sol.address);
-ok('new passphrase unlocks the re-sealed vault');
-await assert.rejects(() => unlockVault('correct horse battery staple'));
-ok('old passphrase no longer works');
+ok('the vault reopens itself after a restart');
+
+// and the old passphrase is genuinely dead, not merely unused
+await assert.rejects(() => unlockVault('correct horse battery staple'), /no passphrase/i);
+ok('the old passphrase no longer opens anything');
+
+// a key file that does not belong to this vault must be refused, not half-used
+const goodKey = fs.readFileSync(`${DATA}/vault.key`, 'utf8');
+fs.writeFileSync(`${DATA}/vault.key`, Buffer.alloc(32, 7).toString('base64'));
+lockVault();
+assert.throws(() => unlockFromKeyfile(), /does not match/);
+assert.equal(isUnlocked(), false, 'a wrong key leaves the vault shut rather than open with garbage');
+fs.writeFileSync(`${DATA}/vault.key`, goodKey);
+assert.equal(unlockFromKeyfile(), true);
+ok('a mismatched key file is rejected loudly');
+
+// a missing key file is recoverable from a backup, so say so instead of failing blank
+fs.rmSync(`${DATA}/vault.key`);
+lockVault();
+assert.throws(() => unlockFromKeyfile(), /missing/i);
+ok('a missing key file names the file and says to restore it');
+fs.writeFileSync(`${DATA}/vault.key`, goodKey);
+assert.equal(unlockFromKeyfile(), true);
 
 console.log('\n[4] Bonding curve math');
 const curve = await import('../src/trade/curve.js');
@@ -684,7 +730,6 @@ assert.ok(/Unavailable/i.test(unavailable), 'unknown holders say so explicitly')
 ok('unavailable holder data renders as "unknown", never as silence');
 
 console.log('\n[16] Factory reset');
-const { destroyVault, vaultExists } = await import('../src/store/vault.js');
 const { db } = await import('../src/store/db.js');
 
 assert.equal(vaultExists(), true, 'a vault exists before the reset');
@@ -697,27 +742,27 @@ db.wipe();
 assert.equal(vaultExists(), false, 'the vault file is gone');
 assert.equal(wallets.allWallets().length, 0, 'every wallet is gone');
 assert.equal(db.mnemonic(), undefined, 'the stored seed phrase is gone');
-assert.equal(isUnlocked(), false, 'the reset leaves the vault locked');
+assert.equal(isUnlocked(), false, 'nothing is left open');
 ok('reset destroys the vault, the wallets and the seed phrase');
 
 // files must be gone from disk, not merely emptied in memory
 assert.equal(fs.existsSync(`${DATA}/vault.json`), false);
 assert.equal(fs.existsSync(`${DATA}/wallets.json`), false);
-ok('both files are removed from disk');
+assert.equal(fs.existsSync(`${DATA}/vault.key`), false, 'the key file goes too');
+ok('every file is removed from disk');
 
-// the point of a reset is being able to start over — prove it
-await initVault('a completely fresh start');
-assert.equal(isUnlocked(), true);
+// the point of a reset is being able to start over, with nothing to type
+assert.equal(openAtBoot(false), 'created');
+assert.equal(isUnlocked(), true, 'the replacement vault is open immediately');
 const rebuilt = wallets.generateSolanaWallet('post-reset');
 assert.equal(rebuilt.isMain, true, 'the first wallet after a reset is main again');
 assert.equal(wallets.solanaKeypair(rebuilt).publicKey.toBase58(), rebuilt.address);
-ok('a new vault can be created afterwards, from zero');
+ok('a fresh vault is created and opened with no passphrase');
 
-// and the old passphrase must not open the new vault
-lockVault();
-await assert.rejects(() => unlockVault('a much better passphrase'), /Wrong passphrase/);
-await unlockVault('a completely fresh start');
-ok('the old passphrase is dead; the new one works');
+// a stale key file must never carry over into a new vault
+const freshKey = fs.readFileSync(`${DATA}/vault.key`, 'utf8');
+assert.notEqual(freshKey, goodKey, 'the new vault gets a new key, not the old one');
+ok('a reset does not inherit the previous key');
 
 console.log('\n[17] Legacy wallets from the multi-chain version');
 
@@ -931,6 +976,51 @@ assert.ok(!redact(`key is ${exported}`).includes(exported), 'base58 secret key r
 assert.ok(!redact(`pk 0x${'a'.repeat(64)}`).includes('a'.repeat(64)), 'hex private key redacted');
 assert.ok(redact(`addr ${mint}`).includes(mint), 'public addresses are not redacted');
 ok('logger redacts secrets but keeps addresses readable');
+
+console.log('\n[21] Opening a vault at boot');
+
+/*
+ * What happens on an existing deployment the first time it runs this build.
+ * Two shapes: a vault that was created and never used, which can be re-keyed
+ * with nothing typed, and one holding real keys, which needs the passphrase
+ * once because there is no other way to decrypt what is in it.
+ */
+
+// an untouched passphrase vault converts silently
+destroyVault();
+db.wipe();
+await initVault('a passphrase nobody will need again');
+lockVault();
+assert.equal(vaultMode(), 'passphrase');
+assert.equal(openAtBoot(false), 'opened', 'an empty vault needs nothing typed');
+assert.equal(vaultMode(), 'keyfile');
+assert.equal(isUnlocked(), true);
+ok('a vault with nothing sealed in it re-keys itself at boot');
+
+// one holding keys must not be silently re-keyed — that would orphan them
+destroyVault();
+db.wipe();
+await initVault('the passphrase that still matters');
+const stranded = wallets.generateSolanaWallet('pre-migration');
+lockVault();
+assert.equal(openAtBoot(true), 'needs-passphrase', 'a vault with keys in it asks once');
+assert.equal(isUnlocked(), false, 'and stays shut until it gets one');
+assert.equal(vaultMode(), 'passphrase', 'and nothing was changed underneath it');
+ok('a vault holding keys is never re-keyed without the passphrase');
+
+// and that one passphrase both opens and converts it
+await unlockAndConvert('the passphrase that still matters', wallets.resealAll);
+assert.equal(vaultMode(), 'keyfile');
+assert.equal(wallets.solanaKeypair(wallets.allWallets()[0]!).publicKey.toBase58(), stranded.address);
+lockVault();
+assert.equal(openAtBoot(true), 'opened', 'and from then on it opens by itself');
+ok('one passphrase converts the vault and is never asked for again');
+
+// a wrong one must change nothing at all
+lockVault();
+await assert.rejects(() => unlockAndConvert('not it', wallets.resealAll));
+assert.equal(convertEmptyVaultToKeyfile(true), false, 'and a populated vault refuses the shortcut');
+ok('a failed attempt leaves the vault exactly as it was');
 
 fs.rmSync(DATA, { recursive: true, force: true });
 console.log(`\n✅ ${passed} assertions passed\n`);

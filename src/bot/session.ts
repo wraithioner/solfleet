@@ -8,10 +8,8 @@ import type { Context } from 'grammy';
  */
 
 export type PendingInput =
+  /** Legacy vaults only: one passphrase, then the vault re-keys itself. */
   | { kind: 'unlock' }
-  | { kind: 'create_vault' }
-  | { kind: 'change_passphrase'; stage: 'current'; }
-  | { kind: 'change_passphrase'; stage: 'new'; current: string }
   | { kind: 'import_key' }
   | { kind: 'import_mnemonic' }
   | { kind: 'rename_wallet'; walletId: string }
