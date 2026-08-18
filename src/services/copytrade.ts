@@ -6,7 +6,7 @@ import { batchPumpTrade } from '../trade/engine.js';
 import { retry, errMessage, fmtAmount } from '../util.js';
 import { config } from '../config.js';
 import { log } from '../logger.js';
-import type { Notifier } from './watcher.js';
+import { newRuleId, type Notifier } from './watcher.js';
 
 /**
  * Copy trading: mirror another wallet's entries and exits.
@@ -152,6 +152,44 @@ export function copySellPercent(mode: CopyExitMode, move: TokenMove): number {
   const share = (Math.abs(move.delta) / move.before) * 100;
   // never round a real sell down to nothing, and never past a full exit
   return Math.min(100, Math.max(1, Math.round(share)));
+}
+
+/**
+ * Arm this target's own exits on a position it just opened.
+ *
+ * Only ever adds what is missing. A second entry into the same token must not
+ * stack a second stop-loss on it, and a rule the operator changed by hand on
+ * the token's own screen is theirs — this does not overwrite either.
+ */
+export function armCopyRules(target: CopyTarget, mint: string, notify?: Notifier): void {
+  const existing = db.rulesFor(mint);
+  const armed: string[] = [];
+
+  const add = (kind: 'take_profit' | 'stop_loss', triggerPct: number, sellPercent: number) => {
+    if (existing.some((r) => r.kind === kind && !r.firedAt)) return;
+    db.addRule({
+      id: newRuleId(),
+      mint,
+      kind,
+      triggerPct,
+      sellPercent,
+      enabled: true,
+      createdAt: Date.now(),
+    });
+    armed.push(kind === 'take_profit' ? `TP +${triggerPct}%` : `SL ${triggerPct}%`);
+  };
+
+  if (target.takeProfitPct !== undefined) {
+    add('take_profit', target.takeProfitPct, target.takeProfitSellPct ?? 50);
+  }
+  if (target.stopLossPct !== undefined) {
+    add('stop_loss', -Math.abs(target.stopLossPct), 100);
+  }
+
+  if (armed.length > 0) {
+    log.info(`Armed ${armed.join(' and ')} on ${mint} from ${target.label}.`);
+    void notify?.(`🤖 Armed <b>${armed.join('</b> and <b>')}</b> on this position.`).catch(() => {});
+  }
 }
 
 /** Poll every enabled target once. Called from the watcher tick. */
@@ -303,6 +341,7 @@ async function mirrorBuy(
 
     const fills = summary.results.filter((r) => r.ok && r.signature).length;
     db.recordBuy(move.mint, perWallet * fills, fills);
+    if (fills > 0) armCopyRules(target, move.mint, notify);
     db.appendTradeLog({
       at: Date.now(),
       action: `copy buy ${fmtAmount(perWallet, 4)} SOL`,

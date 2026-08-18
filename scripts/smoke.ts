@@ -933,6 +933,71 @@ assert.match(fixedScreen.last(), /0\.08 SOL per wallet/);
 assert.doesNotMatch(fixedScreen.last(), /of their size/);
 ok('the screen describes whichever sizing is actually in force');
 
+// ── the target's own exits ────────────────────────────────────────────────────
+// Following a trader out means selling seconds after they did, at whatever the
+// price has become. A target of your own does not depend on their timing.
+const firstTp = stubCtx();
+await T.cycleCopyTakeProfit(firstTp.ctx, target.id);
+assert.equal(db.copyTargets()[0]!.takeProfitPct, 50, 'the first tap arms the smallest target');
+
+const tpSteps: (number | undefined)[] = [];
+for (let i = 0; i < 4; i++) {
+  const c = stubCtx();
+  await T.cycleCopyTakeProfit(c.ctx, target.id);
+  tpSteps.push(db.copyTargets()[0]!.takeProfitPct);
+}
+assert.deepEqual(tpSteps, [100, 200, 500, undefined], 'and cycling ends at off, not at zero');
+ok('take profit cycles through its presets and back to off');
+
+const slSteps: (number | undefined)[] = [];
+for (let i = 0; i < 4; i++) {
+  const c = stubCtx();
+  await T.cycleCopyStopLoss(c.ctx, target.id);
+  slSteps.push(db.copyTargets()[0]!.stopLossPct);
+}
+assert.deepEqual(slSteps, [30, 50, 70, undefined]);
+ok('stop loss cycles the same way');
+
+// off must be absent, never zero: a 0% rule fires the moment the price sits still
+assert.equal(T.nextStep([50, 100], 100), undefined);
+assert.equal(T.nextStep([50, 100], undefined), 50);
+assert.equal(T.nextStep([50, 100], 999), 50, 'an unrecognised value restarts rather than sticking');
+ok('"off" is the absence of a rule, not a rule with a zero trigger');
+
+// arming happens on the copy buy, and must not stack on a second entry
+const { armCopyRules } = await import('../src/services/copytrade.js');
+db.updateCopyTarget(target.id, { takeProfitPct: 100, stopLossPct: 40, takeProfitSellPct: 50 });
+const armedTarget = db.copyTargets()[0]!;
+
+armCopyRules(armedTarget, 'MINT_COPIED');
+const firstArm = db.rulesFor('MINT_COPIED');
+assert.equal(firstArm.length, 2, 'a take profit and a stop loss');
+assert.equal(firstArm.find((r) => r.kind === 'take_profit')!.triggerPct, 100);
+assert.equal(firstArm.find((r) => r.kind === 'take_profit')!.sellPercent, 50, 'takes half, lets the rest run');
+assert.equal(firstArm.find((r) => r.kind === 'stop_loss')!.triggerPct, -40, 'a stop is stored as a fall');
+assert.equal(firstArm.find((r) => r.kind === 'stop_loss')!.sellPercent, 100, 'and exits the whole position');
+ok('a copy buy arms the target rules with the right signs and sizes');
+
+armCopyRules(armedTarget, 'MINT_COPIED');
+assert.equal(db.rulesFor('MINT_COPIED').length, 2, 'averaging in does not stack a second stop-loss');
+ok('a second entry into the same token adds nothing');
+
+// a target with nothing set must not quietly arm anything
+db.updateCopyTarget(target.id, { takeProfitPct: undefined, stopLossPct: undefined });
+armCopyRules(db.copyTargets()[0]!, 'MINT_UNARMED');
+assert.equal(db.rulesFor('MINT_UNARMED').length, 0);
+ok('no rules are armed when none are configured');
+
+// ── re-entry ──────────────────────────────────────────────────────────────────
+// Selling a token must not put it back on the menu. copiedMints is the record
+// of "this target already got me into this", and nothing clears it.
+const reentry = db.copyTargets()[0]!;
+db.updateCopyTarget(reentry.id, { copiedMints: ['SOLD_MINT'], entryCounts: { SOLD_MINT: 1 }, entryMode: 'first' });
+const after = db.copyTargets()[0]!;
+assert.ok(after.copiedMints.includes('SOLD_MINT'));
+assert.equal(after.entryCounts?.SOLD_MINT, 1, 'the entry stays counted after a sell');
+ok('a sold token stays on the copied list, so the trader buying back is ignored');
+
 // a target removed in another tab must not throw when its screen is opened
 const gone = stubCtx();
 await T.showCopyTarget(gone.ctx, 'no-such-target');

@@ -146,6 +146,20 @@ export interface CopyTarget {
   /** Cap on copied buys per token in `every` mode. */
   maxEntries: number;
   exitMode: CopyExitMode;
+  /**
+   * Armed automatically on every position this target opens.
+   *
+   * `exitMode` follows the trader out; these leave on their own terms. A copy
+   * lands seconds behind the wallet it follows, so waiting for their exit means
+   * taking it at a worse price than they did — a target of your own is the only
+   * exit that does not depend on somebody else's timing.
+   *
+   * Undefined means no rule is armed, which is not the same as zero.
+   */
+  takeProfitPct?: number;
+  stopLossPct?: number;
+  /** Share of the position a fired take-profit sells. Stops always exit fully. */
+  takeProfitSellPct?: number;
   /** @deprecated Superseded by exitMode; retained so old records still load. */
   copySells?: boolean;
   enabled: boolean;
@@ -236,6 +250,7 @@ function migrateCopyTarget(t: CopyTarget): CopyTarget {
     maxEntries: t.maxEntries ?? 3,
     exitMode: t.exitMode ?? (t.copySells === false ? 'off' : 'proportional'),
     entryCounts: t.entryCounts ?? {},
+    takeProfitSellPct: t.takeProfitSellPct ?? 50,
   };
 }
 

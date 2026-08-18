@@ -491,6 +491,12 @@ async function routeCallback(ctx: Context, action: string, args: string[]): Prom
     case 'copy_exits':
       return T.cycleCopyExits(ctx, args[0] ?? '');
 
+    case 'copy_tp':
+      return T.cycleCopyTakeProfit(ctx, args[0] ?? '');
+
+    case 'copy_sl':
+      return T.cycleCopyStopLoss(ctx, args[0] ?? '');
+
     case 'legacy_keys':
       return showLegacyKeys(ctx);
 

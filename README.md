@@ -51,10 +51,19 @@ at all. Everyone else gets silence, not an error.
 - **Entries** — *first buy only*, or *follow their DCA* up to 3, 5 or 10 entries.
   A trader scaling in over twenty transactions must not be able to decide how
   much of your money goes into a token, so following in is always bounded
-- **Exits** — *mirror the share they sell* (they trim 10%, you trim 10%),
-  *exit fully on any sell* (a trader trimming is often on the way out, and being
-  seconds behind makes a partial follow the worst of both), or *ignore their
-  sells* and let your own take-profit and stop-loss decide
+- **Follow them out** — *mirror the share they sell* (they trim 10%, you trim
+  10%), *exit fully on any sell* (a trader trimming is often on the way out, and
+  being seconds behind makes a partial follow the worst of both), or *ignore
+  their sells* entirely
+- **Your own exits** — a take-profit (+50/100/200/500%) and a stop-loss
+  (-30/50/70%), armed automatically on every position the wallet opens for you
+  and measured from what *you* paid. This is the exit that does not depend on
+  their timing: following someone out means selling seconds after they did, at
+  whatever the price has become by then. The take-profit sells half and lets the
+  rest run; the stop exits completely
+- **A token is entered once and never again.** Not after they sell it, not if
+  they buy back in a week. `copiedMints` records that this wallet already got
+  you into that token and nothing clears it
 - Following a wallet records where it is and starts from there. Their existing
   positions are never retroactively bought
 - **The honest limitation:** the bot polls every 20 seconds, so your copy lands
@@ -347,7 +356,7 @@ npm run check
 Runs three layers:
 
 - `typecheck` — full TypeScript strict-mode pass
-- `smoke` — 119 offline assertions: vault crypto (round-trip, unique IVs, tamper
+- `smoke` — 126 offline assertions: vault crypto (round-trip, unique IVs, tamper
   rejection, dropping a passphrase without losing a key, a key file that is
   wrong or missing being refused loudly, and a vault that opens itself at boot),
   wallet

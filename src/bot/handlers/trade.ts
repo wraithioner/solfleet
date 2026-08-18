@@ -1192,6 +1192,16 @@ export function describeCopyExits(t: CopyTarget): string {
   return t.exitMode === 'all' ? 'exits fully on any sell' : 'mirrors the share they sell';
 }
 
+export function describeCopyTakeProfit(t: CopyTarget): string {
+  if (t.takeProfitPct === undefined) return 'no take profit';
+  return `take profit at +${t.takeProfitPct}%`;
+}
+
+export function describeCopyStopLoss(t: CopyTarget): string {
+  if (t.stopLossPct === undefined) return 'no stop loss';
+  return `stop loss at -${Math.abs(t.stopLossPct)}%`;
+}
+
 export async function showCopyTarget(ctx: Context, id: string): Promise<void> {
   const t = db.copyTargets().find((x) => x.id === id);
   if (!t) {
@@ -1215,14 +1225,21 @@ export async function showCopyTarget(ctx: Context, id: string): Promise<void> {
       ? '<i>They average in, you average in with them, up to the cap.</i>'
       : '<i>Their opening buy is copied. Later buys into the same token are ignored.</i>',
     '',
-    `<b>Exits</b> — ${describeCopyExits(t)}`,
+    `<b>Follow them out</b> — ${describeCopyExits(t)}`,
     t.exitMode === 'proportional'
       ? '<i>They sell 10% of their bag, you sell 10% of yours.</i>'
       : t.exitMode === 'all'
         ? '<i>Any sell of theirs closes your whole position.</i>'
-        : '<i>You hold until your own take-profit or stop-loss fires.</i>',
+        : '<i>Their sells are ignored entirely.</i>',
     '',
-    `<i>${t.copiedMints.length} token${t.copiedMints.length === 1 ? '' : 's'} copied so far.</i>`,
+    `<b>Your own exits</b> — ${describeCopyTakeProfit(t)} · ${describeCopyStopLoss(t)}`,
+    t.takeProfitPct === undefined && t.stopLossPct === undefined
+      ? '<i>Nothing armed. Every position rides on their timing alone.</i>'
+      : `<i>Armed on each position this wallet opens for you, measured from what you paid` +
+        (t.takeProfitPct !== undefined ? `. Take profit sells ${t.takeProfitSellPct ?? 50}% and lets the rest run` : '') +
+        '.</i>',
+    '',
+    `<i>${t.copiedMints.length} token${t.copiedMints.length === 1 ? '' : 's'} copied so far. Once copied, a token is never re-entered.</i>`,
   ];
 
   const kb = new InlineKeyboard()
@@ -1231,6 +1248,10 @@ export async function showCopyTarget(ctx: Context, id: string): Promise<void> {
     .text(`🔁 ${describeCopyEntries(t)}`, `copy_entries:${t.id}`)
     .row()
     .text(`📤 ${describeCopyExits(t)}`, `copy_exits:${t.id}`)
+    .row()
+    .text(`🎯 ${describeCopyTakeProfit(t)}`, `copy_tp:${t.id}`)
+    .row()
+    .text(`🛑 ${describeCopyStopLoss(t)}`, `copy_sl:${t.id}`)
     .row()
     .text(t.enabled ? '⏸ Pause' : '▶️ Resume', `copy_toggle:${t.id}:stay`)
     .text('🗑 Unfollow', `copy_remove:${t.id}`)
@@ -1268,6 +1289,46 @@ export async function cycleCopyExits(ctx: Context, id: string): Promise<void> {
 
   db.updateCopyTarget(id, { exitMode: next });
   await showCopyTarget(ctx, id);
+}
+
+/**
+ * Targets worth offering, and why these.
+ *
+ * A memecoin that works does multiples, so the useful take-profits are whole
+ * multiples rather than the 5% steps a slower market would want. Stops are
+ * shallower than the swings these tokens make on purpose — anything tighter
+ * fires on noise, anything looser is not a stop.
+ */
+const COPY_TP_STEPS = [50, 100, 200, 500];
+const COPY_SL_STEPS = [30, 50, 70];
+
+export async function cycleCopyTakeProfit(ctx: Context, id: string): Promise<void> {
+  const t = db.copyTargets().find((x) => x.id === id);
+  if (!t) return;
+
+  const next = nextStep(COPY_TP_STEPS, t.takeProfitPct);
+  db.updateCopyTarget(id, { takeProfitPct: next });
+  await showCopyTarget(ctx, id);
+}
+
+export async function cycleCopyStopLoss(ctx: Context, id: string): Promise<void> {
+  const t = db.copyTargets().find((x) => x.id === id);
+  if (!t) return;
+
+  const next = nextStep(COPY_SL_STEPS, t.stopLossPct === undefined ? undefined : Math.abs(t.stopLossPct));
+  db.updateCopyTarget(id, { stopLossPct: next });
+  await showCopyTarget(ctx, id);
+}
+
+/**
+ * Walk a list of presets, then back to off. Returning undefined rather than 0
+ * matters: zero would be a rule that fires the instant the price does not move.
+ */
+export function nextStep(steps: number[], current: number | undefined): number | undefined {
+  if (current === undefined) return steps[0];
+  const i = steps.indexOf(current);
+  if (i === -1) return steps[0];
+  return steps[i + 1];
 }
 
 export async function promptCopyResize(ctx: Context, id: string): Promise<void> {
