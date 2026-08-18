@@ -1003,16 +1003,16 @@ ok('the screen describes whichever sizing is actually in force');
 // price has become. A target of your own does not depend on their timing.
 const firstTp = stubCtx();
 await T.cycleCopyTakeProfit(firstTp.ctx, target.id);
-assert.equal(db.copyTargets()[0]!.takeProfitPct, 50, 'the first tap arms the smallest target');
+assert.equal(db.copyTargets()[0]!.takeProfitPct, 20, 'one tap from off arms the smallest target');
 
 const tpSteps: (number | undefined)[] = [];
-for (let i = 0; i < 4; i++) {
+for (let i = 0; i < 5; i++) {
   const c = stubCtx();
   await T.cycleCopyTakeProfit(c.ctx, target.id);
   tpSteps.push(db.copyTargets()[0]!.takeProfitPct);
 }
-assert.deepEqual(tpSteps, [100, 200, 500, undefined], 'and cycling ends at off, not at zero');
-ok('take profit cycles through its presets and back to off');
+assert.deepEqual(tpSteps, [50, 100, 200, 500, undefined], 'and cycling ends at off, not at zero');
+ok('take profit ladders from 20% up in multiples, then back to off');
 
 const slSteps: (number | undefined)[] = [];
 for (let i = 0; i < 4; i++) {

@@ -55,7 +55,7 @@ at all. Everyone else gets silence, not an error.
   10%), *exit fully on any sell* (a trader trimming is often on the way out, and
   being seconds behind makes a partial follow the worst of both), or *ignore
   their sells* entirely
-- **Your own exits** — a take-profit (+50/100/200/500%) and a stop-loss
+- **Your own exits** — a take-profit (+20/50/100/200/500%) and a stop-loss
   (-30/50/70%), armed automatically on every position the wallet opens for you
   and measured from what *you* paid. This is the exit that does not depend on
   their timing: following someone out means selling seconds after they did, at

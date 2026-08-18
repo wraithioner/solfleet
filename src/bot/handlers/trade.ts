@@ -1327,12 +1327,13 @@ export async function cycleCopyExits(ctx: Context, id: string): Promise<void> {
 /**
  * Targets worth offering, and why these.
  *
- * A memecoin that works does multiples, so the useful take-profits are whole
- * multiples rather than the 5% steps a slower market would want. Stops are
- * shallower than the swings these tokens make on purpose — anything tighter
- * fires on noise, anything looser is not a stop.
+ * The ladder starts at 20% for the trade that takes a quick win off a copied
+ * entry, then climbs in multiples, because a memecoin that works does not do
+ * 25% — it does 3x, and a ladder in 5% steps would take a dozen taps to reach
+ * anywhere useful. Stops are shallower than the swings these tokens make on
+ * purpose: anything tighter fires on noise, anything looser is not a stop.
  */
-const COPY_TP_STEPS = [50, 100, 200, 500];
+const COPY_TP_STEPS = [20, 50, 100, 200, 500];
 const COPY_SL_STEPS = [30, 50, 70];
 
 export async function cycleCopyTakeProfit(ctx: Context, id: string): Promise<void> {
