@@ -1204,6 +1204,26 @@ const graduatedThin = { ...clean, isPumpFun: true, curveComplete: true, liquidit
 assert.equal(assessToken(graduatedThin).safe, false);
 ok('liquidity is judged once there is a pool, and not before');
 
+/*
+ * Token-2022 traps. The two authorities are the whole story for a classic SPL
+ * mint and only half of it here: that program lets a deployer attach behaviour
+ * to the mint, so a token can show both authorities revoked and still refuse to
+ * be sold. These are refused whatever the authority setting says.
+ */
+const hooked = { ...clean, token2022: true, traps: ['A transfer hook runs on every trade and can refuse yours'] };
+const hookVerdict = assessToken(hooked);
+assert.equal(hookVerdict.safe, false, 'a transfer hook is refused despite both authorities being revoked');
+assert.match(hookVerdict.reasons[0]!, /transfer hook/i);
+assert.equal(
+  assessToken(hooked, { ...DEFAULT_SAFETY, requireRevokedAuthorities: false }).safe,
+  false,
+  'and turning off the authority check does not turn this off — it is not a preference',
+);
+ok('a Token-2022 transfer hook is caught even with clean authorities');
+
+assert.equal(assessToken({ ...clean, token2022: true, traps: [] }).safe, true, 'Token-2022 alone is not a trap');
+ok('a Token-2022 mint carrying nothing dangerous still passes');
+
 // the limits are limits, not suggestions
 assert.equal(assessToken({ ...clean, top10Pct: 20 }).safe, true, '20 is not over 20');
 assert.equal(assessToken({ ...clean, top10Pct: 20.1 }).safe, false);

@@ -13,6 +13,7 @@ import { tokenId, shortWalletId } from './session.js';
 import type { Settings } from '../store/db.js';
 import type { Portfolio } from '../services/portfolio.js';
 import type { TokenInfo } from '../services/tokeninfo.js';
+import { assessToken, DEFAULT_SAFETY, type SafetyLimits } from '../services/safety.js';
 import type { BatchSummary, WalletRecord } from '../types.js';
 
 /** Telegram HTML mode needs exactly these three escaped. */
@@ -125,7 +126,7 @@ export function portfolioKeyboard(): InlineKeyboard {
 
 // ── token info card ───────────────────────────────────────────────────────────
 
-export function renderTokenCard(info: TokenInfo): string {
+export function renderTokenCard(info: TokenInfo, limits = DEFAULT_SAFETY): string {
   const lines: string[] = [];
   const name = info.name ?? 'Unknown token';
   const symbol = info.symbol ? ` ($${h(info.symbol)})` : '';
@@ -193,10 +194,41 @@ export function renderTokenCard(info: TokenInfo): string {
       info.mintAuthority === undefined ? '❓ unknown' : info.mintAuthority ? '⚠️ ACTIVE' : '✅ revoked';
     const freeze =
       info.freezeAuthority === undefined ? '❓ unknown' : info.freezeAuthority ? '🚨 ACTIVE' : '✅ revoked';
+
+    /*
+     * A verdict, not just the readings.
+     *
+     * The facts were already here and still left the reader to weigh them.
+     * These are the same limits copy trading enforces, so the line answers a
+     * question the operator can act on — "would the bot have bought this
+     * unattended?" — rather than asking them to remember what counts as bad.
+     */
+    const verdict = assessToken(info, limits);
     lines.push('');
-    lines.push('<b>🛡 Safety</b>');
+    lines.push(
+      verdict.safe
+        ? '<b>🛡 Safety</b>   ✅ <b>passes your limits</b>'
+        : `<b>🛡 Safety</b>   🚨 <b>fails ${verdict.reasons.length} check${verdict.reasons.length === 1 ? '' : 's'}</b>`,
+    );
+    for (const reason of verdict.reasons.slice(0, 5)) lines.push(`   🚫 ${h(reason)}`);
+    if (verdict.reasons.length > 5) lines.push(`   <i>…and ${verdict.reasons.length - 5} more</i>`);
+
     lines.push(`   Freeze auth  ${freeze}`);
     lines.push(`   Mint auth    ${mint}`);
+
+    /*
+     * Naming the program matters even when it carries nothing dangerous: a
+     * Token-2022 mint can trap a holder with both authorities revoked, so
+     * "classic SPL" and "Token-2022 with no traps" are different reassurances.
+     * The traps themselves are already listed above as reasons — repeating them
+     * here would say the same thing twice on the same screen.
+     */
+    if (info.token2022) {
+      const traps = info.traps ?? [];
+      lines.push(
+        `   Token-2022   ${traps.length === 0 ? '✅ no transfer traps' : `🚨 ${traps.length} trap${traps.length === 1 ? '' : 's'} (above)`}`,
+      );
+    }
   }
 
   // pump.fun progress bar

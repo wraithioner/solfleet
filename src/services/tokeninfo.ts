@@ -66,6 +66,10 @@ export interface TokenInfo {
   mintAuthority?: string | null;
   /** Set = someone can freeze your account so you cannot sell. */
   freezeAuthority?: string | null;
+  /** Mint belongs to Token-2022, which can attach behaviour to transfers. */
+  token2022?: boolean;
+  /** Token-2022 extensions that can stop or tax a sale. Empty = none found. */
+  traps?: string[];
   holders?: HolderInfo[];
   /** True when the holder query failed — distinct from "no holders". */
   holdersUnavailable?: boolean;
@@ -396,6 +400,8 @@ export async function getTokenInfo(address: string, kind: 'solana' | 'evm'): Pro
       merged.mintAuthority = authorities.mintAuthority;
       merged.freezeAuthority = authorities.freezeAuthority;
       merged.decimals ??= authorities.decimals;
+      merged.token2022 = authorities.token2022;
+      merged.traps = authorities.traps;
     }
 
     // on-chain metadata is the fallback, never the override — an indexed name
@@ -431,6 +437,10 @@ function addWarnings(info: TokenInfo): void {
     info.warnings.push(
       'Mint authority is active — more supply can be created and sold into the pool at any time.',
     );
+  }
+
+  for (const trap of info.traps ?? []) {
+    info.warnings.push(`TOKEN-2022 TRAP — ${trap}.`);
   }
 
   if (info.chain === 'solana' && info.freezeAuthority === undefined) {

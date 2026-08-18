@@ -99,7 +99,9 @@ export async function showTokenCard(ctx: Context, mint: string, replace = false)
     const heldTokens = Number(heldRaw) / 10 ** (info.decimals ?? 6);
     const solPriceUsd = await getSolPrice().catch(() => 0);
 
-    let text = renderTokenCard(info);
+    // judged against the same limits copy trading uses, so the card and the
+    // gate can never disagree about the same token
+    let text = renderTokenCard(info, settings.copySafety);
 
     // what this position has cost and returned, if it was bought through here
     const record = db.position(mint);

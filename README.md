@@ -71,6 +71,18 @@ at all. Everyone else gets silence, not an error.
   against 14 tokens people were actively trading: 2 passed. Every rejection but
   one was concentration — top 10 at 21%, 25%, 29%, 42%, 51%, 78%. Raising the
   top-10 limit to 40% is the single tap that changes this most
+- **Pasting a contract address gives a verdict, not just readings.** The token
+  card is judged against the same limits copy trading enforces, so the card and
+  the gate can never disagree about the same token: it says *passes your limits*
+  or names every check it fails
+- **Token-2022 mints are checked for transfer traps.** The two mint authorities
+  are the whole story for a classic SPL token and only half of it here — that
+  program lets a deployer attach behaviour to the mint itself. A transfer hook
+  runs arbitrary code on every trade and can refuse yours; a transfer fee is the
+  sell tax people associate with EVM honeypots; a permanent delegate can move
+  tokens out of your wallet. A mint carrying any of these can show both
+  authorities revoked and still be a trap, so they are refused regardless of
+  what the authority setting says
 - **A live freeze authority is the Solana honeypot.** There is no sell tax or
   blacklist function here as there is on an EVM chain — a deployer who wants to
   trap holders freezes their token accounts, and a frozen account cannot
@@ -430,7 +442,7 @@ npm run check
 Runs three layers:
 
 - `typecheck` — full TypeScript strict-mode pass
-- `smoke` — 151 offline assertions: vault crypto (round-trip, unique IVs, tamper
+- `smoke` — 153 offline assertions: vault crypto (round-trip, unique IVs, tamper
   rejection, dropping a passphrase without losing a key, a key file that is
   wrong or missing being refused loudly, and a vault that opens itself at boot),
   wallet

@@ -71,6 +71,16 @@ export function assessToken(info: TokenInfo, limits: SafetyLimits = DEFAULT_SAFE
    * and no chart shows it coming. A live freeze authority is the single most
    * reliable signal that a position may be one-way.
    */
+  /*
+   * Token-2022 lets a deployer attach behaviour to the mint itself, so both
+   * authorities can read "revoked" on a token that still cannot be sold. These
+   * are checked regardless of the authority setting — a transfer hook that
+   * refuses your sale is not a matter of policy preference.
+   */
+  for (const trap of info.traps ?? []) {
+    reasons.push(`Token-2022: ${trap}.`);
+  }
+
   if (limits.requireRevokedAuthorities) {
     if (info.freezeAuthority) {
       reasons.push('Freeze authority is live — the deployer can freeze your account and stop you selling.');
