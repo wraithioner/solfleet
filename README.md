@@ -120,6 +120,17 @@ at all. Everyone else gets silence, not an error.
   spends or opens** a position, **red closes or destroys** one, **blue only
   reads**. On a screen where buy and sell sit side by side, that is the
   difference the eye catches before the text
+- **Numbers are written to be read at a glance.** Market caps as magnitudes
+  (`$205.0M`, not `$205,048,692.00`); memecoin prices with the zeros counted in
+  a subscript (`$0.0₅233`, not `2.3300e-6`) so the significant digits sit where
+  the eye lands; a percentage move carrying its direction as both a sign and a
+  colour, with a move that rounds to zero showing neither
+- **Bars where a ratio is the question.** Buy versus sell pressure, holder
+  concentration, curve progress and batch fill rate are all shares of a whole,
+  and a bar answers "which way is this leaning" before the digits do
+- **A failed batch groups its failures by reason.** Fifty wallets fail the same
+  way; fifty identical error lines is one fact printed fifty times, and it
+  pushes that fact off the screen
 - Screens that show live numbers carry a **🔄 Refresh** and the time they were
   read. The clock is not decoration: a refresh landing on unchanged data would
   otherwise edit a message into itself, which Telegram rejects, making the tap
@@ -419,7 +430,7 @@ npm run check
 Runs three layers:
 
 - `typecheck` — full TypeScript strict-mode pass
-- `smoke` — 148 offline assertions: vault crypto (round-trip, unique IVs, tamper
+- `smoke` — 151 offline assertions: vault crypto (round-trip, unique IVs, tamper
   rejection, dropping a passphrase without losing a key, a key file that is
   wrong or missing being refused loudly, and a vault that opens itself at boot),
   wallet

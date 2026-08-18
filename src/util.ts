@@ -133,6 +133,80 @@ export function fmtUsd(n: number | undefined): string {
   return `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
+/**
+ * Money at a glance: $205.0M rather than $205,048,692.00.
+ *
+ * A market cap is read for its order of magnitude, and eight digits plus a
+ * decimal point are eight digits of noise between the eye and that. Exact
+ * cents still matter below a thousand, where the number is a balance rather
+ * than a scale.
+ */
+export function fmtUsdShort(n: number | undefined): string {
+  if (n === undefined || !Number.isFinite(n)) return '—';
+
+  const abs = Math.abs(n);
+  const sign = n < 0 ? '-' : '';
+
+  if (abs >= 1e9) return `${sign}$${(abs / 1e9).toFixed(2)}B`;
+  if (abs >= 1e6) return `${sign}$${(abs / 1e6).toFixed(1)}M`;
+  if (abs >= 1_000) return `${sign}$${(abs / 1_000).toFixed(1)}K`;
+  return fmtUsd(n);
+}
+
+const SUBSCRIPT = '₀₁₂₃₄₅₆₇₈₉';
+
+/**
+ * A memecoin price a human can read.
+ *
+ * These prices live at 1e-6 and below, where `toExponential` gives
+ * "2.3300e-6" — technically right and useless at a glance, because the reader
+ * has to decode the exponent before they can compare it to anything. The
+ * convention every chart site settled on writes the run of zeros as a
+ * subscript count: $0.0₅233 is five zeros then 233. The digits that carry the
+ * information sit at the end where the eye can reach them.
+ */
+export function fmtPriceUsd(p: number | undefined): string {
+  if (p === undefined || !Number.isFinite(p) || p <= 0) return '—';
+  // trailing zeros are noise: $1.50, not $1.5000
+  const trim = (v: string) => (v.includes('.') ? v.replace(/0+$/, '').replace(/\.$/, '') : v);
+  if (p >= 1) return `$${trim(p.toFixed(p >= 100 ? 2 : 4))}`;
+  if (p >= 0.01) return `$${trim(p.toFixed(4))}`;
+  if (p >= 0.0001) return `$${trim(p.toFixed(6))}`;
+
+  // count the zeros between the point and the first significant digit
+  const exponent = Math.floor(Math.log10(p));
+  const zeros = -exponent - 1;
+  const digits = Math.round(p * 10 ** (exponent === 0 ? 0 : -exponent + 2));
+
+  const marker = String(zeros)
+    .split('')
+    .map((d) => SUBSCRIPT[Number(d)] ?? d)
+    .join('');
+
+  return `$0.0${marker}${digits}`;
+}
+
+/**
+ * A percentage move with its direction shown twice — colour and sign.
+ *
+ * Rounding decides the emoji, so a move that displays as 0.0% never carries a
+ * red or green dot arguing with it.
+ */
+export function fmtChange(pct: number | undefined): string {
+  if (pct === undefined || !Number.isFinite(pct)) return '';
+  const rounded = Number(pct.toFixed(1));
+  if (rounded === 0) return '⚪️ 0.0%';
+  return rounded > 0 ? `🟢 +${rounded.toFixed(1)}%` : `🔴 ${rounded.toFixed(1)}%`;
+}
+
+/** A count like 2442 as 2.4K, for places where the magnitude is the point. */
+export function fmtCount(n: number): string {
+  if (!Number.isFinite(n)) return '0';
+  if (Math.abs(n) >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
+  if (Math.abs(n) >= 10_000) return `${(n / 1_000).toFixed(1)}K`;
+  return Math.round(n).toLocaleString('en-US');
+}
+
 export function fmtDuration(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
   return `${(ms / 1000).toFixed(1)}s`;

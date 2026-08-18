@@ -1,5 +1,14 @@
 import { InlineKeyboard } from 'grammy';
-import { fmtAmount, fmtUsd, shortAddr, fmtDuration } from '../util.js';
+import {
+  fmtAmount,
+  fmtUsd,
+  fmtUsdShort,
+  fmtPriceUsd,
+  fmtChange,
+  fmtCount,
+  shortAddr,
+  fmtDuration,
+} from '../util.js';
 import { tokenId, shortWalletId } from './session.js';
 import type { Settings } from '../store/db.js';
 import type { Portfolio } from '../services/portfolio.js';
@@ -47,39 +56,38 @@ export function renderPortfolio(p: Portfolio, group: string | null): string {
   const lines: string[] = [];
 
   lines.push('<b>💼 Portfolio</b>');
-  if (group) lines.push(`<i>filtered to group: ${h(group)}</i>`);
+  if (group) lines.push(`<i>group: ${h(group)}</i>`);
   lines.push('');
 
-  lines.push(`<b>Total value:  ${fmtUsd(p.totals.grandTotalUsd)}</b>`);
+  // the one number the screen exists to show, given the room to be seen
+  lines.push(`<b>${fmtUsd(p.totals.grandTotalUsd)}</b>`);
+  const split = [
+    `${fmtAmount(p.totals.solTotal, 4)} ◎`,
+    p.totals.tokenUsd > 0 ? `${fmtUsd(p.totals.tokenUsd)} in tokens` : '',
+  ].filter(Boolean);
+  lines.push(`<i>${split.join('  ·  ')}</i>`);
   lines.push('');
 
   if (p.mainSolana) {
-    lines.push('<b>★ Main wallet (Solana)</b>');
-    lines.push(`${h(p.mainSolana.label)} · <code>${shortAddr(p.mainSolana.address, 6, 6)}</code>`);
-    lines.push(`${fmtAmount(p.mainSolana.sol, 4)} SOL · ${fmtUsd(p.mainSolana.usd)}`);
+    lines.push(
+      `★ <b>${h(p.mainSolana.label)}</b>  ${fmtAmount(p.mainSolana.sol, 4)} ◎  <i>${fmtUsd(p.mainSolana.usd)}</i>`,
+    );
+    lines.push(`   <code>${shortAddr(p.mainSolana.address, 6, 6)}</code>`);
     lines.push('');
   }
 
   if (p.solana.length > 0) {
     const funded = p.solana.filter((b) => b.native > 0);
-    lines.push(`<b>Solana</b> — ${fmtAmount(p.totals.solTotal, 4)} SOL · ${fmtUsd(p.totals.solUsd)}`);
-    lines.push(`<i>${p.solana.length} wallets, ${funded.length} funded</i>`);
+    lines.push(`<b>👛 Wallets</b>  ${funded.length}/${p.solana.length} funded`);
 
     // showing every wallet blows past Telegram's message limit past ~40 wallets
     for (const b of p.solana.slice(0, 15)) {
-      const star = p.mainSolana?.address === b.address ? '★' : '·';
-      const tokenNote = b.tokens.length > 0 ? ` <i>+${b.tokens.length} tok</i>` : '';
-      lines.push(
-        `${star} ${h(b.label)}  <code>${shortAddr(b.address)}</code>  ${fmtAmount(b.native, 4)}${tokenNote}`,
-      );
+      if (p.mainSolana?.address === b.address) continue; // already shown above
+      const tokenNote = b.tokens.length > 0 ? `  <i>+${b.tokens.length} tok</i>` : '';
+      const sol = fmtAmount(b.native, 4).padStart(8);
+      lines.push(`   <code>${sol} ◎</code>  ${h(b.label)}${tokenNote}`);
     }
-    if (p.solana.length > 15) lines.push(`<i>…and ${p.solana.length - 15} more</i>`);
-    lines.push('');
-  }
-
-  if (p.totals.tokenUsd > 0) {
-    lines.push('');
-    lines.push(`<b>Token positions:</b> ${fmtUsd(p.totals.tokenUsd)}`);
+    if (p.solana.length > 15) lines.push(`   <i>…and ${p.solana.length - 15} more</i>`);
   }
 
   if (p.errors.length > 0) {
@@ -132,24 +140,50 @@ export function renderTokenCard(info: TokenInfo): string {
 
   lines.push('');
 
+  /*
+   * The price is the headline, so it gets the line to itself with both moves
+   * beside it. 1h and 24h together is the difference between "down 8% today"
+   * and "down 8% today and falling right now", which are not the same trade.
+   */
   if (info.priceUsd !== undefined) {
-    const ch24 = info.priceChange24h;
-    const arrow = ch24 === undefined ? '' : ch24 >= 0 ? ' 🟢' : ' 🔴';
-    const chStr = ch24 === undefined ? '' : `  ${ch24 >= 0 ? '+' : ''}${ch24.toFixed(1)}% (24h)${arrow}`;
-    lines.push(`💵 <b>$${formatPrice(info.priceUsd)}</b>${chStr}`);
+    const moves = [
+      info.priceChange1h !== undefined ? `1h ${fmtChange(info.priceChange1h)}` : '',
+      info.priceChange24h !== undefined ? `24h ${fmtChange(info.priceChange24h)}` : '',
+    ].filter(Boolean);
+    lines.push(`💵 <b>${fmtPriceUsd(info.priceUsd)}</b>`);
+    if (moves.length > 0) lines.push(`     ${moves.join('   ')}`);
   }
 
-  if (info.marketCap !== undefined) lines.push(`📊 Market cap: <b>${fmtUsd(info.marketCap)}</b>`);
-  if (info.fdv !== undefined && info.fdv !== info.marketCap) lines.push(`   FDV: ${fmtUsd(info.fdv)}`);
-  if (info.liquidityUsd !== undefined) lines.push(`💧 Liquidity: ${fmtUsd(info.liquidityUsd)}`);
-
+  // aligned labels so the numbers form a column the eye can run down
+  if (info.marketCap !== undefined) {
+    const fdv = info.fdv !== undefined && info.fdv !== info.marketCap ? `  <i>fdv ${fmtUsdShort(info.fdv)}</i>` : '';
+    lines.push(`📊 Mcap      <b>${fmtUsdShort(info.marketCap)}</b>${fdv}`);
+  }
+  if (info.liquidityUsd !== undefined) lines.push(`💧 Liquidity  ${fmtUsdShort(info.liquidityUsd)}`);
   if (info.volume24h !== undefined) {
-    const v1 = info.volume1h !== undefined ? `  (1h: ${fmtUsd(info.volume1h)})` : '';
-    lines.push(`📈 Volume 24h: ${fmtUsd(info.volume24h)}${v1}`);
+    const v1 = info.volume1h !== undefined ? `  <i>1h ${fmtUsdShort(info.volume1h)}</i>` : '';
+    lines.push(`📈 Volume    ${fmtUsdShort(info.volume24h)}${v1}`);
   }
 
+  /*
+   * Buy and sell counts as a bar rather than two numbers.
+   *
+   * "2442 buys / 3331 sells" makes the reader do the division. The bar is the
+   * answer to the question they were going to ask — which side is leaning —
+   * and it reads before the digits do.
+   */
   if (info.buys24h !== undefined && info.sells24h !== undefined) {
-    lines.push(`🔁 Txns 24h: ${info.buys24h} buys / ${info.sells24h} sells`);
+    const total = info.buys24h + info.sells24h;
+    const buyShare = total > 0 ? (info.buys24h / total) * 100 : 50;
+    lines.push(
+      `🔁 ${pressureBar(buyShare)}  <b>${Math.round(buyShare)}%</b> buys` +
+        `  <i>${fmtCount(info.buys24h)} / ${fmtCount(info.sells24h)}</i>`,
+    );
+  }
+
+  // how long this has existed, which is most of the risk on a new launch
+  if (info.pairCreatedAt) {
+    lines.push(`🕐 Age        ${fmtAge(Date.now() - info.pairCreatedAt)}`);
   }
 
   // Authorities, stated either way. Silence here would read as "safe", which is
@@ -160,7 +194,9 @@ export function renderTokenCard(info: TokenInfo): string {
     const freeze =
       info.freezeAuthority === undefined ? '❓ unknown' : info.freezeAuthority ? '🚨 ACTIVE' : '✅ revoked';
     lines.push('');
-    lines.push(`🔒 Mint auth: ${mint}   ·   Freeze auth: ${freeze}`);
+    lines.push('<b>🛡 Safety</b>');
+    lines.push(`   Freeze auth  ${freeze}`);
+    lines.push(`   Mint auth    ${mint}`);
   }
 
   // pump.fun progress bar
@@ -169,9 +205,10 @@ export function renderTokenCard(info: TokenInfo): string {
     if (info.curveComplete) {
       lines.push('🎓 <b>Graduated</b> — trading on the AMM');
     } else if (info.curveProgressPct !== undefined) {
-      lines.push(`🚀 <b>pump.fun</b> curve: ${progressBar(info.curveProgressPct)} ${info.curveProgressPct.toFixed(1)}%`);
+      lines.push('<b>🚀 pump.fun curve</b>');
+      lines.push(`   ${progressBar(info.curveProgressPct)} <b>${info.curveProgressPct.toFixed(1)}%</b> to graduation`);
       if (info.curveMcapSol !== undefined) {
-        lines.push(`   Curve mcap: ${fmtAmount(info.curveMcapSol, 2)} SOL`);
+        lines.push(`   <i>${fmtAmount(info.curveMcapSol, 2)} SOL on the curve</i>`);
       }
     }
 
@@ -195,16 +232,25 @@ export function renderTokenCard(info: TokenInfo): string {
   } else if (info.holders && info.holders.length > 0) {
     lines.push('');
     lines.push('<b>👥 Top holders</b>');
+
+    /*
+     * Concentration as a bar, with the light on it.
+     *
+     * The number alone asks the reader to remember what counts as high. The
+     * bar shows the share of the supply ten wallets could dump at once, and
+     * the light says whether that is a problem — which is the only thing the
+     * figure was ever being read for.
+     */
     if (info.top10Pct !== undefined) {
-      lines.push(`Top 10 hold <b>${info.top10Pct.toFixed(1)}%</b> of supply`);
+      const light = info.top10Pct > 50 ? '🔴' : info.top10Pct > 25 ? '🟠' : '🟢';
+      lines.push(`   ${progressBar(info.top10Pct)} <b>${info.top10Pct.toFixed(1)}%</b> ${light}`);
     }
 
     const shown = info.holders.filter((x) => x.tag !== 'bonding curve').slice(0, 5);
     for (const [i, hold] of shown.entries()) {
-      const tag = hold.tag ? ` <i>(${h(hold.tag)})</i>` : '';
-      lines.push(
-        `${i + 1}. <code>${shortAddr(hold.owner, 4, 4)}</code> — ${hold.pctOfSupply.toFixed(2)}%${tag}`,
-      );
+      const tag = hold.tag ? ` <i>${h(hold.tag)}</i>` : '';
+      const pct = hold.pctOfSupply.toFixed(2).padStart(5);
+      lines.push(`   ${i + 1}. <code>${pct}%</code>  ${shortAddr(hold.owner, 4, 4)}${tag}`);
     }
   }
 
@@ -223,16 +269,36 @@ export function renderTokenCard(info: TokenInfo): string {
   return lines.join('\n');
 }
 
-function formatPrice(p: number): string {
-  if (p >= 1) return p.toFixed(4);
-  if (p >= 0.0001) return p.toFixed(8);
-  // sub-cent memecoin pricing needs the exponent to stay readable
-  return p.toExponential(4);
-}
-
 function progressBar(pct: number, width = 10): string {
   const filled = Math.round((Math.min(100, Math.max(0, pct)) / 100) * width);
   return '█'.repeat(filled) + '░'.repeat(width - filled);
+}
+
+/**
+ * Buy pressure as a two-colour bar: green for the buy share, red for the rest.
+ *
+ * Unlike a progress bar there is no "empty" here — both halves are real, so
+ * both get a colour rather than one being drawn as absence.
+ */
+function pressureBar(buyPct: number, width = 10): string {
+  const green = Math.round((Math.min(100, Math.max(0, buyPct)) / 100) * width);
+  return '🟩'.repeat(green) + '🟥'.repeat(width - green);
+}
+
+/** Coarse age: the question is "minutes or months", never "how many seconds". */
+export function fmtAge(ms: number): string {
+  const minutes = Math.floor(ms / 60_000);
+  if (minutes < 1) return 'seconds';
+  if (minutes < 60) return `${minutes}m`;
+
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ${minutes % 60}m`;
+
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days}d ${hours % 24}h`;
+
+  const months = Math.floor(days / 30);
+  return months < 12 ? `${months}mo` : `${Math.floor(months / 12)}y`;
 }
 
 export function tokenKeyboard(mint: string, settings: Settings, holdsPosition: boolean): InlineKeyboard {
@@ -359,19 +425,43 @@ export function renderBatchSummary(title: string, summary: BatchSummary): string
   const lines: string[] = [`<b>${h(title)}</b>`, ''];
   const elapsed = fmtDuration(summary.finishedAt - summary.startedAt);
 
-  lines.push(`✅ ${summary.succeeded} succeeded   ❌ ${summary.failed} failed   ⏱ ${elapsed}`);
-  lines.push('');
+  const total = summary.succeeded + summary.failed;
+  if (total > 0) {
+    lines.push(`${pressureBar((summary.succeeded / total) * 100)}`);
+  }
+  lines.push(`✅ <b>${summary.succeeded}</b> filled   ❌ <b>${summary.failed}</b> failed   ⏱ ${elapsed}`);
 
-  const shown = summary.results.slice(0, 20);
-  for (const r of shown) {
-    const icon = r.ok ? '✅' : '❌';
-    const link = r.signature ? ` <a href="${SOLSCAN_TX(r.signature)}">tx</a>` : '';
-    const note = r.ok ? (r.detail ? ` — ${h(r.detail)}` : '') : ` — <i>${h(truncate(r.error ?? 'failed', 70))}</i>`;
-    lines.push(`${icon} <b>${h(r.label)}</b>${note}${link}`);
+  /*
+   * Failures first, and grouped.
+   *
+   * Fifty wallets doing the same thing fail the same way, so fifty identical
+   * error lines is one fact printed fifty times — and it pushes the fact off
+   * the screen. What the operator needs is the reason and how many hit it.
+   */
+  const failures = summary.results.filter((r) => !r.ok);
+  if (failures.length > 0) {
+    const byReason = new Map<string, string[]>();
+    for (const r of failures) {
+      const reason = truncate(r.error ?? 'failed', 110);
+      byReason.set(reason, [...(byReason.get(reason) ?? []), r.label]);
+    }
+
+    lines.push('');
+    for (const [reason, labels] of [...byReason].sort((a, b) => b[1].length - a[1].length).slice(0, 4)) {
+      lines.push(`❌ <b>${labels.length}×</b> <i>${h(reason)}</i>`);
+      lines.push(`   <i>${h(labels.slice(0, 4).join(', '))}${labels.length > 4 ? ` +${labels.length - 4}` : ''}</i>`);
+    }
+    if (byReason.size > 4) lines.push(`<i>…and ${byReason.size - 4} other reasons</i>`);
   }
 
-  if (summary.results.length > shown.length) {
-    lines.push(`<i>…and ${summary.results.length - shown.length} more</i>`);
+  const filled = summary.results.filter((r) => r.ok && r.signature);
+  if (filled.length > 0) {
+    lines.push('');
+    for (const r of filled.slice(0, 10)) {
+      const note = r.detail ? `  ${h(r.detail)}` : '';
+      lines.push(`✅ ${h(r.label)}${note}  <a href="${SOLSCAN_TX(r.signature!)}">tx ↗</a>`);
+    }
+    if (filled.length > 10) lines.push(`<i>…and ${filled.length - 10} more fills</i>`);
   }
 
   return lines.join('\n');
@@ -384,21 +474,25 @@ function truncate(s: string, n: number): string {
 // ── settings ──────────────────────────────────────────────────────────────────
 
 export function renderSettings(s: Settings, walletCount: number): string {
+  // grouped by what they affect: how a trade fills, what it costs, what it buys
   return [
     '<b>⚙️ Settings</b>',
     '',
-    `Slippage: <b>${s.slippagePercent}%</b>`,
-    `Priority fee: <b>${s.priorityFeeSol} SOL</b>` +
-      (s.priorityFeeMode === 'auto' ? ` <i>(auto, up to ${s.priorityFeeCeilingSol})</i>` : ' <i>(fixed)</i>'),
-    `Execution mode: <b>${s.executionMode}</b>`,
-    `Jito tip: <b>${s.jitoTipSol} SOL</b> <i>(bundle mode only)</i>`,
-    `Sweep reserve: <b>${s.sweepReserveSol} SOL</b> <i>(left in each wallet)</i>`,
-    `Active group: <b>${s.activeGroup ? h(s.activeGroup) : 'all wallets'}</b>`,
+    '<b>Execution</b>',
+    `   Mode          <b>${s.executionMode}</b>${s.executionMode === 'bundle' ? '  <i>atomic, 5 per bundle</i>' : ''}`,
+    `   Slippage      <b>${s.slippagePercent}%</b>`,
     '',
-    `Quick buys: ${s.quickBuyPresets.join(', ')} SOL`,
-    `Quick sells: ${s.quickSellPresets.join(', ')}%`,
+    '<b>Fees</b>',
+    `   Priority      <b>${s.priorityFeeSol} ◎</b>` +
+      (s.priorityFeeMode === 'auto' ? `  <i>auto, max ${s.priorityFeeCeilingSol}</i>` : '  <i>fixed</i>'),
+    ...(s.executionMode === 'bundle' ? [`   Jito tip      <b>${s.jitoTipSol} ◎</b>`] : []),
+    `   Sweep keeps   <b>${s.sweepReserveSol} ◎</b>  <i>per wallet</i>`,
     '',
-    `Wallets: ${walletCount}`,
+    '<b>Presets</b>',
+    `   🟢 Buy        ${s.quickBuyPresets.join('  ')} ◎`,
+    `   🔴 Sell       ${s.quickSellPresets.join('  ')} %`,
+    '',
+    `👛 <b>${walletCount}</b> wallet${walletCount === 1 ? '' : 's'}   ·   🎯 ${s.activeGroup ? h(s.activeGroup) : 'all'}`,
   ].join('\n');
 }
 

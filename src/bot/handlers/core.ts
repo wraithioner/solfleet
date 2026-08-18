@@ -10,9 +10,9 @@ import {
 } from '../../store/wallets.js';
 import { isUnlocked, destroyVault, initVaultWithKeyfile } from '../../store/vault.js';
 import { buildPortfolio, listPositions } from '../../services/portfolio.js';
-import { positionPnl, formatPnl, formatEntry } from '../../services/pnl.js';
+import { positionPnl, entryPrice } from '../../services/pnl.js';
 import { getSolBalances, LAMPORTS } from '../../chains/solana.js';
-import { fmtAmount, fmtUsd, errMessage } from '../../util.js';
+import { fmtAmount, fmtUsd, fmtPriceUsd, errMessage } from '../../util.js';
 import { log } from '../../logger.js';
 import { tokenId, setPending, clearSession, stageConfirmation } from '../session.js';
 import {
@@ -80,18 +80,29 @@ export async function showHome(ctx: Context): Promise<void> {
   const settings = db.settings();
   const targeted = selectWallets();
 
+  const armed = db.activeRules().length;
+  const following = db.activeCopyTargets().length;
+
+  // what is running unattended belongs on the first screen: a stop-loss you
+  // forgot you armed is indistinguishable from one that is not there
+  const running = [
+    armed > 0 ? `🤖 ${armed} rule${armed === 1 ? '' : 's'}` : '',
+    following > 0 ? `👥 ${following} followed` : '',
+  ].filter(Boolean);
+
   const text = [
-    '<b>⚡ Wallet Command Center</b>',
+    '<b>⚡ Wraith</b>',
     '',
-    `Wallets: <b>${wallets.length}</b>`,
-    `Batch target: <b>${targeted.length}</b> wallets${settings.activeGroup ? ` in <i>${h(settings.activeGroup)}</i>` : ''}`,
-    `Mode: <b>${settings.executionMode}</b> · Slippage <b>${settings.slippagePercent}%</b>`,
+    `👛 <b>${wallets.length}</b> wallet${wallets.length === 1 ? '' : 's'}` +
+      `   ·   🎯 <b>${targeted.length}</b> targeted${settings.activeGroup ? ` <i>(${h(settings.activeGroup)})</i>` : ''}`,
+    `⚙️ ${settings.executionMode}   ·   slippage ${settings.slippagePercent}%`,
+    ...(running.length > 0 ? [`${running.join('   ·   ')} <i>running</i>`] : []),
     '',
     // the boot log says this too, but nobody reads a boot log
     ...(config.solana.isPublicRpc
-      ? ['⚠️ <b>Public RPC.</b> Balance screens will stall or time out.', 'Set <code>SOLANA_RPC_URL</code> to a Helius or QuickNode endpoint.', '']
+      ? ['⚠️ <b>Public RPC</b> — balance screens will stall.', '<i>Set SOLANA_RPC_URL to a private endpoint.</i>', '']
       : []),
-    '<i>Paste any token address to see its stats and trade it.</i>',
+    '<i>Paste a token address to trade it.</i>',
   ].join('\n');
 
   if (ctx.callbackQuery) await render(ctx, text, mainMenu());
@@ -134,38 +145,45 @@ export async function showPositions(ctx: Context): Promise<void> {
     const owned = positions.filter((p) => p.boughtHere);
     const unsolicited = positions.filter((p) => !p.boughtHere);
 
-    const lines = ['<b>🪙 Open positions</b>', ''];
+    const lines = ['<b>🪙 Positions</b>', ''];
     const kb = new InlineKeyboard();
 
     const solPrice = portfolio.totals.solPriceUsd;
 
     if (owned.length === 0) lines.push('<i>Nothing bought through this bot.</i>', '');
 
+    /*
+     * One position, four lines, no number printed twice.
+     *
+     * The old layout said "+4.8%" on its own line and again inside the P&L
+     * line, and spent a line on a token count nobody trades on. What decides
+     * an exit is: what it is worth, how far from where you got in, and what
+     * you have banked — in that order.
+     */
     for (const p of owned.slice(0, 12)) {
-      lines.push(
-        `<b>${h(p.symbol)}</b> — ${fmtAmount(p.totalAmount, 2)} across ${p.walletCount} wallet${p.walletCount === 1 ? '' : 's'}` +
-          (p.totalUsd > 0 ? ` · ${fmtUsd(p.totalUsd)}` : ''),
-      );
-
-      // what it cost versus what it is worth, for positions bought through here
       const record = db.position(p.mint);
+      const valueSol = solPrice > 0 ? p.totalUsd / solPrice : 0;
+      const pnl = record && record.investedSol > 0 ? positionPnl(record, valueSol) : null;
+
+      const light = pnl === null ? '·' : pnl.netSol >= 0 ? '🟢' : '🔴';
+      const move = pnl === null ? '' : `  <b>${pnl.netPct >= 0 ? '+' : ''}${pnl.netPct.toFixed(1)}%</b>`;
+      lines.push(`${light} <b>${h(p.symbol)}</b>  ${fmtUsd(p.totalUsd)}${move}`);
+
       if (record && record.investedSol > 0) {
-        const valueSol = solPrice > 0 ? p.totalUsd / solPrice : 0;
-
-        // the price paid, which is the number every exit decision is made against
         const nowSol = p.totalAmount > 0 ? valueSol / p.totalAmount : null;
-        const entryLine = formatEntry(record, nowSol);
-        if (entryLine) lines.push(`   ${entryLine}`);
+        const entry = entryPrice(record);
+        if (entry !== null) {
+          const arrow = nowSol === null ? '' : ` → ${fmtPriceUsd(nowSol * solPrice)}`;
+          lines.push(`   entry ${fmtPriceUsd(entry * solPrice)}${arrow}`);
+        }
 
-        const pnl = positionPnl(record, valueSol);
+        const banked = pnl!.realisedSol > 0 ? ` · banked ${pnl!.realisedSol.toFixed(3)} ◎` : '';
         lines.push(
-          `   in ${pnl.investedSol.toFixed(3)} · back ${pnl.realisedSol.toFixed(3)} · ` +
-            `held ${valueSol.toFixed(3)} SOL`,
+          `   in ${pnl!.investedSol.toFixed(3)} ◎ · worth ${valueSol.toFixed(3)} ◎${banked}`,
         );
-        lines.push(`   ${formatPnl(pnl)}`);
       }
 
-      lines.push(`<code>${h(p.mint)}</code>`);
+      lines.push(`   <code>${h(p.mint)}</code>`);
       lines.push('');
       kb.text(`${p.symbol} · ${fmtUsd(p.totalUsd)}`, `tokeninfo:${tokenId(p.mint)}`).row();
     }

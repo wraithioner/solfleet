@@ -1126,6 +1126,34 @@ assert.match(rendered, /\+4\.8%/, 'the move from entry is the number that matter
 assert.doesNotMatch(formatEntry(withBasis, null)!, /now/, 'an unreadable price shows entry alone, not a fake move');
 ok('entry, current and the move between them render together');
 
+// ── formatting ────────────────────────────────────────────────────────────────
+// Numbers on these screens are read at a glance while a price is moving, so
+// how they are written is not cosmetic.
+const fmt = await import('../src/util.js');
+
+assert.equal(fmt.fmtUsdShort(205_048_692), '$205.0M');
+assert.equal(fmt.fmtUsdShort(85_252.34), '$85.3K');
+assert.equal(fmt.fmtUsdShort(4.03), '$4.03', 'small balances keep their cents');
+assert.equal(fmt.fmtUsdShort(1_250_000_000), '$1.25B');
+assert.equal(fmt.fmtUsdShort(undefined), '—', 'unknown is a dash, never zero');
+ok('market caps read as magnitudes, balances keep their cents');
+
+// a memecoin price in scientific notation has to be decoded before it can be
+// compared; the subscript counts the zeros so the digits stay at the front
+assert.equal(fmt.fmtPriceUsd(2.33e-6), '$0.0₅233');
+assert.equal(fmt.fmtPriceUsd(4.207e-5), '$0.0₄421');
+assert.equal(fmt.fmtPriceUsd(1.5), '$1.5', 'no trailing zeros');
+assert.equal(fmt.fmtPriceUsd(76.23), '$76.23');
+assert.equal(fmt.fmtPriceUsd(0), '—', 'a zero price is unknown, not free');
+ok('sub-cent prices render as digits, not exponents');
+
+// the dot and the sign must never disagree with each other
+assert.equal(fmt.fmtChange(12.44), '🟢 +12.4%');
+assert.equal(fmt.fmtChange(-8.09), '🔴 -8.1%');
+assert.equal(fmt.fmtChange(0.04), '⚪️ 0.0%', 'a move that displays as zero is not green');
+assert.equal(fmt.fmtChange(-0.02), '⚪️ 0.0%', 'nor red');
+ok('a change rounding to zero shows neither colour');
+
 console.log('\n[19] Copy-trade safety gate');
 const { assessToken, DEFAULT_SAFETY } = await import('../src/services/safety.js');
 
