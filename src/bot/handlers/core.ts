@@ -122,12 +122,17 @@ export async function showPositions(ctx: Context): Promise<void> {
       return;
     }
 
+    const owned = positions.filter((p) => p.boughtHere);
+    const unsolicited = positions.filter((p) => !p.boughtHere);
+
     const lines = ['<b>🪙 Open positions</b>', ''];
     const kb = new InlineKeyboard();
 
     const solPrice = portfolio.totals.solPriceUsd;
 
-    for (const p of positions.slice(0, 12)) {
+    if (owned.length === 0) lines.push('<i>Nothing bought through this bot.</i>', '');
+
+    for (const p of owned.slice(0, 12)) {
       lines.push(
         `<b>${h(p.symbol)}</b> — ${fmtAmount(p.totalAmount, 2)} across ${p.walletCount} wallet${p.walletCount === 1 ? '' : 's'}` +
           (p.totalUsd > 0 ? ` · ${fmtUsd(p.totalUsd)}` : ''),
@@ -150,9 +155,29 @@ export async function showPositions(ctx: Context): Promise<void> {
       kb.text(`${p.symbol} · ${fmtUsd(p.totalUsd)}`, `tokeninfo:${tokenId(p.mint)}`).row();
     }
 
-    if (positions.length > 12) lines.push(`<i>…and ${positions.length - 12} more</i>`);
+    if (owned.length > 12) lines.push(`<i>…and ${owned.length - 12} more</i>`);
 
-    kb.text('🔥 Sell everything', 'sell_all_confirm').row().text('← Menu', 'home');
+    /*
+     * Tokens the bot never bought are listed apart from the ones it did.
+     *
+     * Solana wallets get dusted constantly — worthless tokens are mass-sent to
+     * addresses to bait an interaction — and a token account opened by a
+     * stranger is indistinguishable on chain from one opened by a buy. Mixed
+     * into the same list they read as positions, which is exactly the confusion
+     * the people sending them are counting on.
+     */
+    if (unsolicited.length > 0) {
+      lines.push('');
+      lines.push(`<b>📥 Arrived on their own</b> — ${unsolicited.length} token${unsolicited.length === 1 ? '' : 's'}`);
+      lines.push('<i>Not bought here. Airdropped tokens are usually worthless and sometimes bait; "Sell everything" leaves them alone.</i>');
+      for (const p of unsolicited.slice(0, 5)) {
+        lines.push(`· ${h(p.symbol)} — ${fmtAmount(p.totalAmount, 2)}${p.totalUsd > 0 ? ` · ${fmtUsd(p.totalUsd)}` : ' · no market'}`);
+      }
+      if (unsolicited.length > 5) lines.push(`<i>…and ${unsolicited.length - 5} more</i>`);
+    }
+
+    if (owned.length > 0) kb.text('🔥 Sell everything', 'sell_all_confirm').row();
+    kb.text('← Menu', 'home');
     await render(ctx, lines.join('\n'), kb);
   } catch (err) {
     await render(ctx, `❌ Could not load positions.\n\n<i>${h(errMessage(err))}</i>`, backButton());

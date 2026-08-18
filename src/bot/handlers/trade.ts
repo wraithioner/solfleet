@@ -463,13 +463,24 @@ export async function promptSellEverything(ctx: Context): Promise<void> {
     await render(ctx, '<b>🔥 Selling every position…</b>\n\n<i>Discovering token accounts…</i>');
 
     try {
-      const { mints, summaries } = await batchSellAllPositions(
+      const { mints, summaries, skipped } = await batchSellAllPositions(
         wallets,
         throttledProgress(ctx, 'Selling all positions'),
       );
 
+      const dust =
+        skipped.length > 0
+          ? `\n\n<i>Left ${skipped.length} token${skipped.length === 1 ? '' : 's'} alone — this bot never bought ` +
+            `${skipped.length === 1 ? 'it' : 'them'}, so ${skipped.length === 1 ? 'it is' : 'they are'} almost ` +
+            'certainly airdropped. Sell one from its own screen if you actually want to.</i>'
+          : '';
+
       if (mints.length === 0) {
-        await render(ctx, '<b>🔥 Nothing to sell</b>\n\n<i>No token positions found.</i>', backButton());
+        await render(
+          ctx,
+          `<b>🔥 Nothing to sell</b>\n\n<i>No positions this bot opened.</i>${dust}`,
+          backButton(),
+        );
         return;
       }
 
@@ -487,6 +498,7 @@ export async function promptSellEverything(ctx: Context): Promise<void> {
 
       lines.push('');
       lines.push(`<b>${mints.length} tokens · ✅ ${ok} fills · ❌ ${bad} failures</b>`);
+      if (dust) lines.push(dust);
 
       db.appendTradeLog({
         at: Date.now(),

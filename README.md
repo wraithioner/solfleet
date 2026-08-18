@@ -382,7 +382,7 @@ npm run check
 Runs three layers:
 
 - `typecheck` — full TypeScript strict-mode pass
-- `smoke` — 133 offline assertions: vault crypto (round-trip, unique IVs, tamper
+- `smoke` — 134 offline assertions: vault crypto (round-trip, unique IVs, tamper
   rejection, dropping a passphrase without losing a key, a key file that is
   wrong or missing being refused loudly, and a vault that opens itself at boot),
   wallet

@@ -1069,6 +1069,33 @@ await T.showCopyTarget(gone.ctx, 'no-such-target');
 assert.match(gone.alerts.join(' '), /no longer followed/);
 ok('opening a wallet that was unfollowed says so instead of crashing');
 
+// ── dust vs. positions ────────────────────────────────────────────────────────
+// A wallet that gets dusted with a worthless token looks, on chain, exactly
+// like one that bought something. The cost basis is the only thing that tells
+// them apart, and mixing them up is what the senders are counting on.
+const { listPositions } = await import('../src/services/portfolio.js');
+
+db.recordBuy('BOUGHT_MINT', 0.05, 1);
+const fakePortfolio = {
+  solana: [
+    {
+      tokens: [
+        { mint: 'BOUGHT_MINT', symbol: 'REAL', amount: 1000, usdValue: 12 },
+        { mint: 'DUSTED_MINT', symbol: 'SPAM', amount: 20, usdValue: 0 },
+      ],
+    },
+  ],
+  totals: { solPriceUsd: 100 },
+} as never;
+
+const listed = listPositions(fakePortfolio);
+const real = listed.find((p) => p.mint === 'BOUGHT_MINT')!;
+const spam = listed.find((p) => p.mint === 'DUSTED_MINT')!;
+assert.equal(real.boughtHere, true, 'a token with a cost basis was bought here');
+assert.equal(spam.boughtHere, false, 'one that just appeared was not');
+assert.equal(listed[0]!.mint, 'BOUGHT_MINT', 'real positions sort above dust whatever it claims to be worth');
+ok('a token that arrived on its own is told apart from one that was bought');
+
 console.log('\n[19] Every button has a route');
 
 /*

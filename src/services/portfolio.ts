@@ -3,6 +3,7 @@ import { getSolanaPrices, getSolPrice } from './prices.js';
 import { selectWallets, mainWallet } from '../store/wallets.js';
 import { errMessage, pMap } from '../util.js';
 import { log } from '../logger.js';
+import { db } from '../store/db.js';
 import type { WalletRecord, WalletBalance, TokenBalance } from '../types.js';
 
 /**
@@ -179,12 +180,22 @@ export function aggregateToken(portfolio: Portfolio, mint: string): {
 }
 
 /** Every distinct token position held across the wallet set, largest first. */
+/**
+ * Every token the selected wallets hold, and whether this bot put it there.
+ *
+ * The two are not the same thing and the difference matters. Solana wallets get
+ * dusted constantly: worthless tokens are mass-sent to addresses to bait an
+ * interaction, and a token account opened by a stranger looks exactly like one
+ * opened by a buy. `boughtHere` is the honest distinction — the bot records what
+ * it spends, so anything with no cost basis arrived on its own.
+ */
 export function listPositions(portfolio: Portfolio): Array<{
   mint: string;
   symbol: string;
   totalAmount: number;
   totalUsd: number;
   walletCount: number;
+  boughtHere: boolean;
 }> {
   const map = new Map<string, { symbol: string; totalAmount: number; totalUsd: number; walletCount: number }>();
 
@@ -199,8 +210,13 @@ export function listPositions(portfolio: Portfolio): Array<{
   }
 
   return [...map.entries()]
-    .map(([mint, v]) => ({ mint, ...v }))
-    .sort((a, b) => b.totalUsd - a.totalUsd || b.totalAmount - a.totalAmount);
+    .map(([mint, v]) => ({ mint, ...v, boughtHere: (db.position(mint)?.investedSol ?? 0) > 0 }))
+    .sort(
+      (a, b) =>
+        Number(b.boughtHere) - Number(a.boughtHere) ||
+        b.totalUsd - a.totalUsd ||
+        b.totalAmount - a.totalAmount,
+    );
 }
 
 export type { TokenBalance };

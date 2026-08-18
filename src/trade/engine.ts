@@ -553,7 +553,7 @@ export async function batchSweepToken(
 export async function batchSellAllPositions(
   wallets: WalletRecord[],
   onProgress?: ProgressFn,
-): Promise<{ mints: string[]; summaries: Record<string, BatchSummary> }> {
+): Promise<{ mints: string[]; summaries: Record<string, BatchSummary>; skipped: string[] }> {
   const settings = db.settings();
 
   // discover every distinct mint held across the selected wallets
@@ -568,6 +568,25 @@ export async function batchSellAllPositions(
 
   // wrapped SOL is already SOL — there is nothing to sell it for
   mintSet.delete(WSOL_MINT);
+
+  /*
+   * Tokens this bot never bought are left alone.
+   *
+   * Wallets get dusted with worthless tokens as a matter of routine, and a
+   * "sell everything" that sweeps those up burns a fee per mint trying to route
+   * something with no market — and hands an unknown contract a transaction to
+   * be part of, which is exactly what some of them are sent to achieve. Selling
+   * one is a deliberate act, done from its own screen.
+   */
+  const skipped: string[] = [];
+  for (const mint of [...mintSet]) {
+    if ((db.position(mint)?.investedSol ?? 0) > 0) continue;
+    mintSet.delete(mint);
+    skipped.push(mint);
+  }
+  if (skipped.length > 0) {
+    log.info(`Sell-everything skipped ${skipped.length} token(s) this bot never bought.`);
+  }
 
   const mints = [...mintSet];
   const summaries: Record<string, BatchSummary> = {};
@@ -588,5 +607,5 @@ export async function batchSellAllPositions(
   }
 
   await onProgress?.(mints.length, mints.length);
-  return { mints, summaries };
+  return { mints, summaries, skipped };
 }
