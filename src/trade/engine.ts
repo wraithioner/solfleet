@@ -129,7 +129,9 @@ export async function batchPumpTrade(
       const { funded, unfunded } = partitionByBalance(
         active,
         balances,
-        requiredForBuy(req.amount, req.priorityFeeSol),
+        requiredForBuy(req.amount, req.priorityFeeSol, {
+          jitoTipSol: db.settings().executionMode === 'bundle' ? db.settings().jitoTipSol : 0,
+        }),
       );
 
       active = funded;

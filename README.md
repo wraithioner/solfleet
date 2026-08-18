@@ -71,6 +71,18 @@ at all. Everyone else gets silence, not an error.
   This follows a trader; it does not race one, and nothing on an interval timer
   could
 
+**Fees and rent, so a position can always be closed**
+- A wallet is only sent into a buy if it can afford the *round trip*. The
+  requirement is the trade, its signature and priority fees, the ~0.00204 SOL
+  rent that opening the token account costs, a bundle tip where one applies, and
+  a reserve for the sell — two sells' worth, so one failed attempt does not strand
+  the position. A 0.05 SOL buy therefore needs **0.0522 SOL** in the wallet
+- This is the mistake the check exists to prevent: fund fifty wallets with
+  exactly 0.05 and buy 0.05, and every one of them either fails outright on the
+  rent or fills and is then left holding a token it has no SOL left to sell
+- The funding screen states the real per-wallet figure, and the buy screen states
+  it again alongside how many wallets fall short
+
 **Automation**
 - **Take profit, stop loss and trailing stops** per position, checked every 20
   seconds by a watcher that survives restarts — rules live on disk, so a
@@ -356,7 +368,7 @@ npm run check
 Runs three layers:
 
 - `typecheck` — full TypeScript strict-mode pass
-- `smoke` — 126 offline assertions: vault crypto (round-trip, unique IVs, tamper
+- `smoke` — 131 offline assertions: vault crypto (round-trip, unique IVs, tamper
   rejection, dropping a passphrase without losing a key, a key file that is
   wrong or missing being refused loudly, and a vault that opens itself at boot),
   wallet

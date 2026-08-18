@@ -210,11 +210,12 @@ export async function fundingBalances(addresses: string[]): Promise<Map<string, 
  * Split wallets into those that can cover a spend and those that cannot.
  *
  * A wallet holding less SOL than the trade is about to spend cannot succeed, and
- * firing at it anyway turns an underfunded set into a wall of red rows. The test
- * is deliberately permissive — the amount plus its own transaction fee, with no
- * allowance for the token account rent a first buy may also need — so it only
- * excludes wallets that certainly cannot pay, and leaves marginal cases to fail
- * honestly on chain rather than being second-guessed here.
+ * firing at it anyway turns an underfunded set into a wall of red rows.
+ *
+ * What counts as "enough" is `requiredForBuy`, which is deliberately not just
+ * the trade size: it covers the token account rent the first buy has to pay and
+ * the fee the eventual sell will need. Being slightly strict here costs a wallet
+ * one trade; being loose costs a position that fills and then cannot be closed.
  */
 export function partitionByBalance<T extends { address: string }>(
   wallets: T[],
@@ -236,12 +237,56 @@ export function partitionByBalance<T extends { address: string }>(
   return { funded, unfunded };
 }
 
-/** What one wallet must hold to have any chance of completing a buy. */
-export function requiredForBuy(solPerWallet: number, priorityFeeSol: number): bigint {
+/**
+ * Rent locked up by the SPL token account a first buy has to open.
+ *
+ * 165 bytes at the rent-exempt minimum. It is refunded when the account is
+ * closed, but while the position is held it is spent as far as the wallet is
+ * concerned — and at roughly 400× the base signature fee, leaving it out of a
+ * buy requirement is the difference between a fill and "insufficient lamports".
+ */
+export const ATA_RENT_LAMPORTS = 2_039_280n;
+
+/**
+ * What a wallet must keep back to be able to sell.
+ *
+ * A wallet that spends its last lamport getting into a position cannot sign its
+ * way out of one: the sell needs a signature fee and a priority fee of its own,
+ * and a token you cannot sell is worth nothing however far it runs. Two sells'
+ * worth is reserved rather than one, so a failed attempt — a slippage revert, a
+ * dropped blockhash — still leaves enough to try again.
+ */
+export function exitReserveLamports(priorityFeeSol: number, jitoTipSol = 0): bigint {
+  const perAttempt =
+    BigInt(BASE_FEE_LAMPORTS) +
+    BigInt(Math.floor(priorityFeeSol * LAMPORTS)) +
+    BigInt(Math.floor(jitoTipSol * LAMPORTS));
+  return perAttempt * 2n;
+}
+
+/**
+ * What one wallet must hold to complete a buy *and still be able to exit it*.
+ *
+ * The buy amount is only part of it: the transaction pays a signature and
+ * priority fee, opening the token account costs rent, a bundled send carries a
+ * tip, and the sell that eventually closes the position has to be affordable
+ * from what is left.
+ */
+export function requiredForBuy(
+  solPerWallet: number,
+  priorityFeeSol: number,
+  opts: { jitoTipSol?: number; needsTokenAccount?: boolean } = {},
+): bigint {
+  const tip = opts.jitoTipSol ?? 0;
+  const rent = opts.needsTokenAccount === false ? 0n : ATA_RENT_LAMPORTS;
+
   return (
     BigInt(Math.floor(solPerWallet * LAMPORTS)) +
     BigInt(BASE_FEE_LAMPORTS) +
-    BigInt(Math.floor(priorityFeeSol * LAMPORTS))
+    BigInt(Math.floor(priorityFeeSol * LAMPORTS)) +
+    BigInt(Math.floor(tip * LAMPORTS)) +
+    rent +
+    exitReserveLamports(priorityFeeSol, tip)
   );
 }
 

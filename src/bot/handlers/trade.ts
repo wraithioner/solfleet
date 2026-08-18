@@ -201,10 +201,16 @@ export async function promptBuy(ctx: Context, mint: string, solPerWallet: number
   // of identical failures afterwards
   try {
     const balances = await fundingBalances(wallets.map((w) => w.address));
-    const { unfunded } = partitionByBalance(
-      wallets,
-      balances,
-      requiredForBuy(solPerWallet, settings.priorityFeeSol),
+    // a bundled send carries a tip per transaction, which is money the wallet
+    // needs to hold just as much as the trade itself
+    const needed = requiredForBuy(solPerWallet, settings.priorityFeeSol, {
+      jitoTipSol: settings.executionMode === 'bundle' ? settings.jitoTipSol : 0,
+    });
+    const { unfunded } = partitionByBalance(wallets, balances, needed);
+
+    lines.push(
+      `Each wallet needs <b>${fmtAmount(Number(needed) / LAMPORTS, 4)} SOL</b> ` +
+        `<i>(the buy, fees, token account rent, and enough left to sell)</i>`,
     );
 
     if (unfunded.length > 0) {
@@ -561,6 +567,12 @@ export async function showFundMenu(ctx: Context): Promise<void> {
     balanceLine = '<i>Could not read the main wallet balance.</i>';
   }
 
+  const settings = db.settings();
+  const buyPreset = settings.quickBuyPresets[0] ?? 0.05;
+  const neededPerWallet = requiredForBuy(buyPreset, settings.priorityFeeSol, {
+    jitoTipSol: settings.executionMode === 'bundle' ? settings.jitoTipSol : 0,
+  });
+
   await render(
     ctx,
     [
@@ -571,6 +583,11 @@ export async function showFundMenu(ctx: Context): Promise<void> {
       '',
       '<b>Send each</b> — every wallet receives the same amount, on top of whatever it already has.',
       '<b>Top up each to</b> — every wallet is brought <i>up to</i> the amount. Wallets already there are skipped.',
+      '',
+      // funding a wallet with exactly the buy size is the classic mistake: it
+      // fills, and then there is nothing left to pay for the way out
+      `<i>To buy <b>${buyPreset}</b> SOL a wallet needs <b>${fmtAmount(Number(neededPerWallet) / LAMPORTS, 4)}</b> — ` +
+        'the trade, its fees, the token account rent, and enough kept back to sell.</i>',
       '',
       '<i>Transfers are packed into batched transactions, so fifty wallets cost a handful of fees rather than fifty.</i>',
     ].join('\n'),

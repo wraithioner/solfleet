@@ -415,7 +415,8 @@ assert.throws(
 ok('a plan that would drain the main wallet to zero is rejected when a reserve is set');
 
 // a wallet that cannot pay for the trade is skipped, not fired at
-const { partitionByBalance, requiredForBuy } = await import('../src/trade/fund.js');
+const { partitionByBalance, requiredForBuy, exitReserveLamports, ATA_RENT_LAMPORTS } =
+  await import('../src/trade/fund.js');
 
 const buyers = [
   { address: 'RICH' },
@@ -441,6 +442,54 @@ ok('wallets that cannot cover a buy are separated out, and exact-balance wallets
 // the buy needs its own fee on top of the amount, not just the amount
 assert.ok(need > BigInt(0.5 * LAMPORTS_PER_SOL), 'the requirement includes the transaction fee');
 ok('a buy requirement covers the amount plus its fee');
+
+/*
+ * The two costs that are easy to forget and expensive to forget:
+ *
+ * Opening the token account costs rent — ~400× the signature fee — so a wallet
+ * funded with exactly the trade size cannot even fill. And a wallet that spends
+ * its last lamport getting in cannot sign its way out, which turns a winning
+ * position into an unsellable one.
+ */
+assert.equal(ATA_RENT_LAMPORTS, 2_039_280n, 'the rent-exempt minimum for a 165-byte token account');
+
+const BASE = 5000n;
+const prio = 0.00005;
+const prioLamports = BigInt(0.00005 * LAMPORTS_PER_SOL);
+
+assert.equal(exitReserveLamports(prio), (BASE + prioLamports) * 2n, 'two sells worth, so one can fail');
+assert.ok(exitReserveLamports(prio, 0.001) > exitReserveLamports(prio), 'a bundle tip is part of the exit cost');
+ok('the exit reserve covers two attempts at selling, tip included');
+
+const buy = 0.05;
+const plain = requiredForBuy(buy, prio);
+assert.equal(
+  plain,
+  BigInt(buy * LAMPORTS_PER_SOL) + BASE + prioLamports + ATA_RENT_LAMPORTS + exitReserveLamports(prio),
+  'amount + fee + rent + exit reserve',
+);
+assert.ok(
+  plain > BigInt(buy * LAMPORTS_PER_SOL) + BASE + prioLamports + 2_000_000n,
+  'and it is meaningfully more than the naive amount-plus-fee',
+);
+ok(`a 0.05 SOL buy really needs ${(Number(plain) / LAMPORTS_PER_SOL).toFixed(5)} SOL in the wallet`);
+
+// the exact-change wallet: enough to fill, nothing left to exit
+const fillsButCannotExit = BigInt(buy * LAMPORTS_PER_SOL) + BASE + prioLamports + ATA_RENT_LAMPORTS;
+const stuck = partitionByBalance([{ address: 'STUCK' }], new Map([['STUCK', fillsButCannotExit]]), plain);
+assert.equal(stuck.funded.length, 0, 'a wallet that could fill but not sell is not sent into the trade');
+assert.equal(stuck.unfunded.length, 1);
+ok('a wallet that could buy but not sell is held back, not filled');
+
+// buying more of a token already held skips the rent, which is already paid
+const second = requiredForBuy(buy, prio, { needsTokenAccount: false });
+assert.equal(plain - second, ATA_RENT_LAMPORTS, 'the rent is only charged once per token');
+ok('a follow-up buy is not charged rent it already paid');
+
+// bundle mode pays a tip per transaction, on the way in and on the way out
+const bundled = requiredForBuy(buy, prio, { jitoTipSol: 0.001 });
+assert.ok(bundled > plain + BigInt(0.001 * LAMPORTS_PER_SOL), 'the tip is counted for the buy and the exit');
+ok('bundle mode raises the requirement by its tips');
 
 // a short read must not be mistaken for a set of empty wallets
 const shortRead = partitionByBalance(buyers, new Map([['RICH', BigInt(2 * LAMPORTS_PER_SOL)]]), need);
