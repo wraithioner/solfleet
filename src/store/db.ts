@@ -49,8 +49,33 @@ export interface PositionRecord {
   /** Wallet-fills, not batches. */
   buyFills: number;
   sellFills: number;
+  /** Whole tokens acquired, measured from balance deltas. */
+  tokensBought: number;
   firstBuyAt: number;
   lastTradeAt: number;
+}
+
+/**
+ * A standing instruction the watcher evaluates against live prices.
+ *
+ * Rules are stored rather than held in memory so a redeploy cannot silently
+ * drop a stop-loss the operator is relying on — the one kind of forgetting that
+ * costs money while nobody is looking.
+ */
+export interface AutoRule {
+  id: string;
+  mint: string;
+  symbol?: string;
+  kind: 'take_profit' | 'stop_loss' | 'trailing_stop';
+  /** Percentage from entry that arms the rule. Positive for TP, negative for SL. */
+  triggerPct: number;
+  /** How much of the holding to sell when it fires. */
+  sellPercent: number;
+  /** For trailing stops: the highest price seen since the rule was created. */
+  peakPriceSol?: number;
+  enabled: boolean;
+  createdAt: number;
+  firedAt?: number;
 }
 
 export interface TradeLogEntry {
@@ -71,6 +96,7 @@ interface DbShape {
   mnemonic?: string;
   tradeLog: TradeLogEntry[];
   positions: Record<string, PositionRecord>;
+  rules: AutoRule[];
 }
 
 const defaultSettings = (): Settings => ({
@@ -94,7 +120,7 @@ function load(): DbShape {
   if (cache) return cache;
 
   if (!fs.existsSync(dbPath())) {
-    cache = { version: 1, wallets: [], settings: defaultSettings(), tradeLog: [], positions: {} };
+    cache = { version: 1, wallets: [], settings: defaultSettings(), tradeLog: [], positions: {}, rules: [] };
     return cache;
   }
 
@@ -117,6 +143,7 @@ function load(): DbShape {
     mnemonic: parsed.mnemonic,
     tradeLog: parsed.tradeLog ?? [],
     positions: parsed.positions ?? {},
+    rules: parsed.rules ?? [],
   };
   return cache;
 }
@@ -177,7 +204,7 @@ export const db = {
   },
 
   /** Add a completed buy to the position's cost basis. */
-  recordBuy(mint: string, solSpent: number, fills: number, symbol?: string): void {
+  recordBuy(mint: string, solSpent: number, fills: number, tokensBought = 0, symbol?: string): void {
     if (solSpent <= 0 || fills <= 0) return;
     const d = load();
     const now = Date.now();
@@ -188,12 +215,14 @@ export const db = {
       realisedSol: 0,
       buyFills: 0,
       sellFills: 0,
+      tokensBought: 0,
       firstBuyAt: now,
       lastTradeAt: now,
     };
 
     pos.investedSol += solSpent;
     pos.buyFills += fills;
+    pos.tokensBought += tokensBought;
     pos.lastTradeAt = now;
     if (symbol && !pos.symbol) pos.symbol = symbol;
 
@@ -212,6 +241,7 @@ export const db = {
       realisedSol: 0,
       buyFills: 0,
       sellFills: 0,
+      tokensBought: 0,
       firstBuyAt: now,
       lastTradeAt: now,
     };
@@ -221,6 +251,36 @@ export const db = {
     pos.lastTradeAt = now;
 
     d.positions[mint] = pos;
+    flush();
+  },
+
+  rules(): AutoRule[] {
+    return load().rules;
+  },
+
+  activeRules(): AutoRule[] {
+    return load().rules.filter((r) => r.enabled && !r.firedAt);
+  },
+
+  rulesFor(mint: string): AutoRule[] {
+    return load().rules.filter((r) => r.mint === mint && r.enabled && !r.firedAt);
+  },
+
+  addRule(rule: AutoRule): void {
+    load().rules.push(rule);
+    flush();
+  },
+
+  updateRule(id: string, patch: Partial<AutoRule>): void {
+    const rule = load().rules.find((r) => r.id === id);
+    if (!rule) return;
+    Object.assign(rule, patch);
+    flush();
+  },
+
+  removeRule(id: string): void {
+    const d = load();
+    d.rules = d.rules.filter((r) => r.id !== id);
     flush();
   },
 
@@ -237,6 +297,6 @@ export const db = {
    */
   wipe(): void {
     fs.rmSync(dbPath(), { force: true });
-    cache = { version: 1, wallets: [], settings: defaultSettings(), tradeLog: [], positions: {} };
+    cache = { version: 1, wallets: [], settings: defaultSettings(), tradeLog: [], positions: {}, rules: [] };
   },
 };

@@ -36,6 +36,8 @@ import {
   h,
 } from '../ui.js';
 import { render } from './core.js';
+import { newRuleId, entryPriceSol, describe as describeRule } from '../../services/watcher.js';
+import { priceInSol } from '../../services/price.js';
 import type { TradeRequest } from '../../types.js';
 
 /**
@@ -292,6 +294,11 @@ async function executeBuy(ctx: Context, mint: string, solPerWallet: number): Pro
 
   await render(ctx, `<b>🟢 Buying across ${wallets.length} wallets…</b>`);
 
+  // Tokens received are measured, not quoted: the entry price every auto-sell
+  // rule is measured against comes from what the batch actually acquired.
+  const buyAddresses = wallets.map((w) => w.address);
+  const heldBefore = await getMintBalances(buyAddresses, mint).catch(() => undefined);
+
   try {
     const summary = await batchPumpTrade(
       wallets,
@@ -311,7 +318,21 @@ async function executeBuy(ctx: Context, mint: string, solPerWallet: number): Pro
 
     // cost basis: only the wallets that actually filled spent anything
     const fills = summary.results.filter((r) => r.ok && r.signature).length;
-    db.recordBuy(mint, solPerWallet * fills, fills);
+
+    let tokensGained = 0;
+    if (heldBefore) {
+      const heldAfter = await getMintBalances(buyAddresses, mint).catch(() => undefined);
+      if (heldAfter) {
+        let deltaRaw = 0n;
+        for (const [address, after] of heldAfter) deltaRaw += after - (heldBefore.get(address) ?? 0n);
+        if (deltaRaw > 0n) {
+          const info = await getTokenInfo(mint, 'solana').catch(() => null);
+          tokensGained = Number(deltaRaw) / 10 ** (info?.decimals ?? 6);
+        }
+      }
+    }
+
+    db.recordBuy(mint, solPerWallet * fills, fills, tokensGained);
 
     await render(
       ctx,
@@ -794,3 +815,96 @@ export async function showTradeMenu(ctx: Context): Promise<void> {
 }
 
 export { mintFromId };
+
+
+// ── auto-sell rules ───────────────────────────────────────────────────────────
+
+/** Presets chosen to cover the usual memecoin exits without typing anything. */
+const TP_PRESETS = [50, 100, 200, 500];
+const SL_PRESETS = [-20, -35, -50];
+const TRAIL_PRESETS = [-15, -25, -40];
+
+export async function showAutoSell(ctx: Context, mint: string): Promise<void> {
+  const id = tokenId(mint);
+  const rules = db.rulesFor(mint);
+  const entry = entryPriceSol(mint);
+  const price = await priceInSol(mint).catch(() => null);
+
+  const lines = ['<b>🎯 Auto-sell</b>', ''];
+
+  if (entry === null) {
+    lines.push('<i>No entry price recorded for this token, so take-profit and stop-loss have nothing to measure against.</i>');
+    lines.push('');
+    lines.push('<i>Buy it through the bot first — a trailing stop works regardless, since it tracks the high rather than your entry.</i>');
+  } else {
+    lines.push(`Entry: <b>${entry.toExponential(4)} SOL</b>`);
+    if (price !== null) {
+      const move = ((price - entry) / entry) * 100;
+      lines.push(`Now: <b>${price.toExponential(4)} SOL</b> (${move >= 0 ? '+' : ''}${move.toFixed(1)}%)`);
+    }
+  }
+
+  if (rules.length > 0) {
+    lines.push('');
+    lines.push('<b>Armed:</b>');
+    for (const r of rules) lines.push(`· ${describeRule(r)} → sell ${r.sellPercent}%`);
+  }
+
+  lines.push('');
+  lines.push('<i>Rules are checked every 20 seconds and survive restarts. A rule fires once.</i>');
+
+  const kb = new InlineKeyboard();
+  for (const pct of TP_PRESETS) kb.text(`🎯 +${pct}%`, `rule:tp:${id}:${pct}`);
+  kb.row();
+  for (const pct of SL_PRESETS) kb.text(`🛑 ${pct}%`, `rule:sl:${id}:${pct}`);
+  kb.row();
+  for (const pct of TRAIL_PRESETS) kb.text(`📉 trail ${pct}%`, `rule:trail:${id}:${pct}`);
+  kb.row();
+  if (rules.length > 0) kb.text('🗑 Clear all rules', `rule:clear:${id}:0`).row();
+  kb.text('← Back to token', `tokeninfo:${id}`);
+
+  await render(ctx, lines.join('\n'), kb);
+}
+
+export async function addAutoRule(
+  ctx: Context,
+  mint: string,
+  kind: 'take_profit' | 'stop_loss' | 'trailing_stop',
+  triggerPct: number,
+): Promise<void> {
+  // A take-profit or stop-loss is measured from entry; without one there is
+  // nothing to measure and the rule would never fire correctly.
+  if (kind !== 'trailing_stop' && entryPriceSol(mint) === null) {
+    await ctx.answerCallbackQuery({
+      text: 'No entry price recorded — buy through the bot first, or use a trailing stop.',
+      show_alert: true,
+    });
+    return;
+  }
+
+  const info = await getTokenInfo(mint, 'solana').catch(() => null);
+  const peak = kind === 'trailing_stop' ? ((await priceInSol(mint).catch(() => null)) ?? undefined) : undefined;
+
+  db.addRule({
+    id: newRuleId(),
+    mint,
+    symbol: info?.symbol,
+    kind,
+    triggerPct,
+    // A stop-loss that sells half is a half-measure; exits default to the whole
+    // position, and take-profit to half so the rest can keep running.
+    sellPercent: kind === 'take_profit' ? 50 : 100,
+    peakPriceSol: peak,
+    enabled: true,
+    createdAt: Date.now(),
+  });
+
+  await ctx.answerCallbackQuery({ text: 'Rule armed.' });
+  return showAutoSell(ctx, mint);
+}
+
+export async function clearAutoRules(ctx: Context, mint: string): Promise<void> {
+  for (const r of db.rulesFor(mint)) db.removeRule(r.id);
+  await ctx.answerCallbackQuery({ text: 'Rules cleared.' });
+  return showAutoSell(ctx, mint);
+}

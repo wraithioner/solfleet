@@ -232,6 +232,8 @@ export function tokenKeyboard(mint: string, settings: Settings, holdsPosition: b
   }
 
   kb.row();
+  kb.text('🎯 Auto-sell', `autosell:${id}`);
+  kb.row();
   kb.text('🔄 Refresh', `tokeninfo:${id}`).text('👥 Holders', `holders:${id}`);
   kb.row();
   kb.url('📉 Chart', `https://dexscreener.com/search?q=${mint}`).text('← Menu', 'home');

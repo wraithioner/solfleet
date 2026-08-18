@@ -40,6 +40,19 @@ at all. Everyone else gets silence, not an error.
 - Works on tokens minutes old, before any indexer knows them, by reading Metaplex
   metadata and the bonding curve directly
 
+**Automation**
+- **Take profit, stop loss and trailing stops** per position, checked every 20
+  seconds by a watcher that survives restarts — rules live on disk, so a
+  redeploy cannot silently drop the stop you were relying on
+- A trailing stop tracks the high-water mark rather than your entry, so it works
+  on a token you did not buy through the bot
+- Three rules the design turns on: an **unreadable price never fires a rule**
+  (an RPC hiccup is not a price of zero), a rule **fires once** (marked before
+  the sell is attempted, so a crash cannot replay it), and a **locked vault
+  pauses rather than fails** — you get one message, not a stream of errors
+- Fresh pump.fun tokens are priced off the **bonding curve**, not an aggregator,
+  so a stop-loss works from launch rather than from whenever an indexer catches up
+
 **Trading**
 - Buy a preset or custom SOL amount **from every wallet at once**
 - Sell 25 / 50 / 75 / 100% **from every wallet at once**
@@ -346,6 +359,8 @@ src/
     portfolio.ts       cross-wallet, cross-chain aggregation
     prices.ts          cached USD pricing
     pnl.ts             cost basis and profit/loss, denominated in SOL
+    price.ts           price in SOL: bonding curve first, aggregator second
+    watcher.ts         the loop behind take-profit, stop-loss and trailing stops
     mintauth.ts        mint + freeze authority, the two Solana rug vectors
   bot/                 Telegram layer: routing, screens, session state
 ```

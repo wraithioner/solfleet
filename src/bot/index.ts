@@ -251,6 +251,21 @@ async function routeCallback(ctx: Context, action: string, args: string[]): Prom
       }
       return T.promptSell(ctx, mint, pct);
     }
+    case 'autosell': {
+      const mint = mintFromId(args[0] ?? '');
+      if (!mint) return void ctx.answerCallbackQuery({ text: 'Token reference expired.', show_alert: true });
+      return T.showAutoSell(ctx, mint);
+    }
+    case 'rule': {
+      const [what, tokenRef, pctRaw] = [args[0] ?? '', args[1] ?? '', args[2] ?? '0'];
+      const mint = mintFromId(tokenRef);
+      if (!mint) return void ctx.answerCallbackQuery({ text: 'Token reference expired.', show_alert: true });
+      if (what === 'clear') return T.clearAutoRules(ctx, mint);
+
+      const kind = what === 'tp' ? 'take_profit' : what === 'sl' ? 'stop_loss' : 'trailing_stop';
+      return T.addAutoRule(ctx, mint, kind, Number(pctRaw));
+    }
+
     case 'sell_all_confirm':
       return T.promptSellEverything(ctx);
 

@@ -1,10 +1,13 @@
 import fs from 'node:fs';
 import { config } from './config.js';
 import { log } from './logger.js';
+import { errMessage } from './util.js';
 import { createBot } from './bot/index.js';
 import { autoUnlockIfConfigured, vaultExists, isUnlocked, lockVault } from './store/vault.js';
 import { flush } from './store/db.js';
 import { allWallets } from './store/wallets.js';
+import { startWatcher, stopWatcher } from './services/watcher.js';
+import { db } from './store/db.js';
 
 async function main(): Promise<void> {
   fs.mkdirSync(config.dataDir, { recursive: true });
@@ -37,8 +40,26 @@ async function main(): Promise<void> {
 
   const bot = createBot();
 
+  /*
+   * Standing rules outlive the process, so the watcher restarts with it. Alerts
+   * go to the first owner id: the operator who armed the rule is the one who
+   * needs to know it fired, and there is nowhere else to send it.
+   */
+  const owner = config.ownerIds[0];
+  if (owner !== undefined) {
+    startWatcher(async (text) => {
+      await bot.api.sendMessage(owner, text, { parse_mode: 'HTML' }).catch((err) => {
+        log.warn(`Could not deliver a watcher alert: ${errMessage(err)}`);
+      });
+    });
+
+    const armed = db.activeRules().length;
+    if (armed > 0) log.info(`${armed} auto-sell rule(s) restored and armed.`);
+  }
+
   const shutdown = (signal: string) => {
     log.info(`${signal} received — shutting down.`);
+    stopWatcher();
     // wipe the master key before the process image can be dumped
     lockVault();
     flush();
