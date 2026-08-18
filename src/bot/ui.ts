@@ -148,6 +148,17 @@ export function renderTokenCard(info: TokenInfo): string {
         lines.push(`   Curve mcap: ${fmtAmount(info.curveMcapSol, 2)} SOL`);
       }
     }
+
+    // the launch wallet's remaining stake — the clearest rug signal pump.fun gives
+    if (info.creator) {
+      const stake =
+        info.creatorHoldsPct === undefined
+          ? '❓ unknown'
+          : info.creatorHoldsPct === 0
+            ? '✅ sold out / holds none'
+            : `${info.creatorHoldsPct >= 5 ? '⚠️' : '·'} ${info.creatorHoldsPct.toFixed(2)}% of supply`;
+      lines.push(`👤 Dev <a href="${SOLSCAN_ACC(info.creator)}">${shortAddr(info.creator, 4, 4)}</a> holds: ${stake}`);
+    }
   }
 
   // holder distribution
@@ -348,7 +359,8 @@ export function renderSettings(s: Settings, walletCount: number): string {
     '<b>⚙️ Settings</b>',
     '',
     `Slippage: <b>${s.slippagePercent}%</b>`,
-    `Priority fee: <b>${s.priorityFeeSol} SOL</b>`,
+    `Priority fee: <b>${s.priorityFeeSol} SOL</b>` +
+      (s.priorityFeeMode === 'auto' ? ` <i>(auto, up to ${s.priorityFeeCeilingSol})</i>` : ' <i>(fixed)</i>'),
     `Execution mode: <b>${s.executionMode}</b>`,
     `Jito tip: <b>${s.jitoTipSol} SOL</b> <i>(bundle mode only)</i>`,
     `Sweep reserve: <b>${s.sweepReserveSol} SOL</b> <i>(left in each wallet)</i>`,
@@ -364,6 +376,8 @@ export function renderSettings(s: Settings, walletCount: number): string {
 export function settingsKeyboard(s: Settings): InlineKeyboard {
   return new InlineKeyboard()
     .text('Slippage', 'set_slippage').text('Priority fee', 'set_priority_fee')
+    .row()
+    .text(`Fee mode: ${s.priorityFeeMode}`, 'toggle_fee_mode').text('Fee ceiling', 'set_fee_ceiling')
     .row()
     .text(`Mode: ${s.executionMode}`, 'toggle_mode').text('Jito tip', 'set_jito_tip')
     .row()

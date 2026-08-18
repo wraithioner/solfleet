@@ -1,5 +1,5 @@
 import { PublicKey } from '@solana/web3.js';
-import { rpc } from '../chains/solana.js';
+import { rpc, getMintBalances } from '../chains/solana.js';
 import { endpoints, EVM_LOOKUP_CHAINS } from '../config.js';
 import { fetchJson, errMessage } from '../util.js';
 import { log } from '../logger.js';
@@ -54,6 +54,10 @@ export interface TokenInfo {
   curveComplete?: boolean;
   curveProgressPct?: number;
   curveMcapSol?: number;
+  /** The wallet that launched the coin, from the bonding curve account. */
+  creator?: string;
+  /** How much of the supply the launcher still holds, as a percentage. */
+  creatorHoldsPct?: number;
 
   totalSupply?: number;
   /** Needed to turn a raw balance into a human amount. */
@@ -313,14 +317,34 @@ async function loadCurveData(mint: string): Promise<Partial<TokenInfo>> {
     const mcapSol = curveMarketCapSol(curve);
     const solPrice = await getSolPrice().catch(() => 0);
 
-    return {
+    const out: Partial<TokenInfo> = {
       isPumpFun: true,
       curveComplete: curve.complete,
       curveProgressPct: curveProgress(curve) * 100,
       curveMcapSol: mcapSol,
+      creator: curve.creator,
       // a fresh launch has no DEX pair yet, so the curve is the only mcap there is
       marketCap: solPrice > 0 ? mcapSol * solPrice : undefined,
     };
+
+    // How much of the coin the launcher kept is the most direct rug signal
+    // pump.fun offers, and the curve account names them. A dev sitting on a
+    // large share can end the chart in one transaction.
+    if (curve.creator && curve.tokenTotalSupply > 0n) {
+      try {
+        const held = await getMintBalances([curve.creator], mint);
+        const raw = held.get(curve.creator) ?? 0n;
+        if (raw > 0n) {
+          out.creatorHoldsPct = (Number(raw) / Number(curve.tokenTotalSupply)) * 100;
+        } else {
+          out.creatorHoldsPct = 0;
+        }
+      } catch {
+        /* leave undefined — unknown, which the card states rather than implying zero */
+      }
+    }
+
+    return out;
   } catch {
     return { isPumpFun: false };
   }
@@ -413,6 +437,12 @@ function addWarnings(info: TokenInfo): void {
 
   if (info.volume24h !== undefined && info.liquidityUsd && info.volume24h > info.liquidityUsd * 50) {
     info.warnings.push('Volume is very large relative to liquidity — possible wash trading.');
+  }
+
+  if (info.creatorHoldsPct !== undefined && info.creatorHoldsPct >= 5) {
+    info.warnings.push(
+      `The launch wallet still holds ${info.creatorHoldsPct.toFixed(1)}% of supply — it can sell into you at any time.`,
+    );
   }
 
   if (info.isPumpFun && info.curveComplete) {

@@ -24,6 +24,13 @@ export interface Settings {
   quickSellPresets: number[];
   /** Leave this much SOL behind when sweeping, to cover future fees. */
   sweepReserveSol: number;
+  /**
+   * 'auto' follows what recent blocks actually paid to touch the pump.fun
+   * program; 'fixed' uses priorityFeeSol verbatim.
+   */
+  priorityFeeMode: 'fixed' | 'auto';
+  /** Upper bound for auto mode, so a congestion spike cannot run away. */
+  priorityFeeCeilingSol: number;
 }
 
 /**
@@ -75,6 +82,8 @@ const defaultSettings = (): Settings => ({
   quickBuyPresets: [0.01, 0.05, 0.1, 0.5, 1],
   quickSellPresets: [25, 50, 75, 100],
   sweepReserveSol: 0.002,
+  priorityFeeMode: 'auto',
+  priorityFeeCeilingSol: 0.005,
 });
 
 const dbPath = () => path.join(config.dataDir, 'wallets.json');

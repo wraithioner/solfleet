@@ -391,7 +391,32 @@ assert.equal(parseTokenAccountAmount(Buffer.alloc(165)), 0n);
 assert.equal(parseTokenAccountAmount(Buffer.alloc(8)), 0n, 'a truncated account reads as empty, not a crash');
 ok('empty and truncated accounts read as zero');
 
-console.log('\n[9] Mint authorities');
+console.log('\n[9] Priority fee bidding');
+const { priorityFeeSolFromMicroLamports } = await import('../src/chains/solana.js');
+const clampOpts = { floorSol: 0.00005, ceilingSol: 0.005 };
+
+// a busy chain should raise the bid above the configured floor
+const busy = priorityFeeSolFromMicroLamports(838_139, clampOpts);
+assert.ok(busy > clampOpts.floorSol, 'a congested chain bids above the configured fee');
+assert.ok(busy < clampOpts.ceilingSol, 'and still well under the ceiling');
+ok(`838k microLamports/CU → ${busy.toFixed(6)} SOL, above the ${clampOpts.floorSol} floor`);
+
+// the configured fee is a floor, never something auto mode undercuts
+assert.equal(priorityFeeSolFromMicroLamports(1, clampOpts), clampOpts.floorSol);
+ok('a quiet chain never bids below what the operator configured');
+
+// and a spike cannot run away with the balance
+assert.equal(priorityFeeSolFromMicroLamports(500_000_000, clampOpts), clampOpts.ceilingSol);
+ok('a congestion spike is capped at the ceiling');
+
+// the bid scales with observed cost
+assert.ok(
+  priorityFeeSolFromMicroLamports(2_000_000, clampOpts) > priorityFeeSolFromMicroLamports(1_000_000, clampOpts),
+  'a more expensive market produces a higher bid',
+);
+ok('the bid tracks the observed market rather than a fixed guess');
+
+console.log('\n[10] Mint authorities');
 const { parseMintAccount } = await import('../src/services/mintauth.js');
 
 function mintAccount(opts: { mintAuth?: boolean; freezeAuth?: boolean; decimals?: number }): Buffer {
@@ -432,7 +457,7 @@ ok('a revoked authority is not misread from leftover pubkey bytes');
 assert.equal(parseMintAccount(Buffer.alloc(40)), null, 'a truncated account returns null, not a guess');
 ok('a truncated mint account returns null rather than a false reading');
 
-console.log('\n[10] Position P&L');
+console.log('\n[11] Position P&L');
 const { positionPnl, formatPnl } = await import('../src/services/pnl.js');
 const base = { mint: 'M', investedSol: 0, realisedSol: 0, buyFills: 0, sellFills: 0, firstBuyAt: 0, lastTradeAt: 0 };
 
@@ -462,7 +487,7 @@ assert.equal(airdrop.netPct, 0, 'no invested SOL means no percentage, not Infini
 assert.ok(Number.isFinite(airdrop.netPct));
 ok('a position with no cost basis reports no percentage rather than Infinity');
 
-console.log('\n[11] Token card rendering');
+console.log('\n[12] Token card rendering');
 const { renderTokenCard } = await import('../src/bot/ui.js');
 
 // a token on a chain this bot has no RPC for must still say where it trades
@@ -488,7 +513,7 @@ const unavailable = renderTokenCard({
 assert.ok(/Unavailable/i.test(unavailable), 'unknown holders say so explicitly');
 ok('unavailable holder data renders as "unknown", never as silence');
 
-console.log('\n[12] Factory reset');
+console.log('\n[13] Factory reset');
 const { destroyVault, vaultExists } = await import('../src/store/vault.js');
 const { db } = await import('../src/store/db.js');
 
@@ -524,7 +549,7 @@ await assert.rejects(() => unlockVault('a much better passphrase'), /Wrong passp
 await unlockVault('a completely fresh start');
 ok('the old passphrase is dead; the new one works');
 
-console.log('\n[13] Secret redaction in logs');
+console.log('\n[14] Secret redaction in logs');
 const { redact } = await import('../src/logger.js');
 assert.ok(!redact(`key is ${exported}`).includes(exported), 'base58 secret key redacted');
 assert.ok(!redact(`pk 0x${'a'.repeat(64)}`).includes('a'.repeat(64)), 'hex private key redacted');

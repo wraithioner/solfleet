@@ -410,3 +410,50 @@ export function estimateSweepableSol(lamports: bigint, reserveSol: number, prior
   const net = lamports - cost;
   return net > 0n ? Number(net) / LAMPORTS : 0;
 }
+
+/**
+ * What the network is currently charging to get included.
+ *
+ * A fixed priority fee is wrong twice: too low when the chain is busy, which is
+ * exactly when a pump.fun entry is worth landing, and wasteful when it is quiet.
+ * Solana exposes what recent blocks actually paid for the accounts a transaction
+ * will touch, so the fee can follow the market instead of a guess made days ago.
+ *
+ * The 75th percentile is deliberate — the median gets outbid during the moments
+ * that matter, and the maximum is one desperate bidder rather than the going
+ * rate. Returns null when the sample is empty or the call fails, so the caller
+ * keeps its configured fee rather than defaulting to something reckless.
+ */
+export async function recentPriorityFeeMicroLamports(accounts: string[] = []): Promise<number | null> {
+  try {
+    const keys = accounts.slice(0, 128).map((a) => new PublicKey(a));
+    const samples = await retry(() => rpc().getRecentPrioritizationFees({ lockedWritableAccounts: keys }), {
+      attempts: 2,
+    });
+
+    const fees = samples.map((s) => s.prioritizationFee).filter((f) => f > 0).sort((a, b) => a - b);
+    if (fees.length === 0) return null;
+
+    return fees[Math.min(fees.length - 1, Math.floor(fees.length * 0.75))] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Compute units a pump.fun buy or sell realistically consumes. */
+export const PUMP_TRADE_COMPUTE_UNITS = 250_000;
+
+/**
+ * Turn an observed per-compute-unit price into the whole-SOL figure PumpPortal
+ * expects, clamped so a congestion spike cannot quietly spend a fortune on fees
+ * and a quiet chain cannot drop the bid to nothing.
+ */
+export function priorityFeeSolFromMicroLamports(
+  microLamportsPerCu: number,
+  opts: { floorSol: number; ceilingSol: number; multiplier?: number },
+): number {
+  const scaled = microLamportsPerCu * (opts.multiplier ?? 1.25);
+  const lamports = (scaled * PUMP_TRADE_COMPUTE_UNITS) / 1_000_000;
+  const sol = lamports / LAMPORTS;
+  return Math.min(opts.ceilingSol, Math.max(opts.floorSol, sol));
+}

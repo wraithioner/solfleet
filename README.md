@@ -26,6 +26,9 @@ at all. Everyone else gets silence, not an error.
 - Market cap, FDV, liquidity, 24h volume, buy/sell counts
 - **Top holder distribution** with the bonding curve and your own wallets labelled
 - pump.fun curve progress bar and graduation status
+- **Who launched it and what they still hold** — the pump.fun bonding curve names
+  the creator wallet, so the card shows the dev's remaining stake and warns when
+  it is over 5% of supply
 - **Mint and freeze authority**, stated either way on every card. An active
   freeze authority means the deployer can freeze your token account and stop you
   selling — no chart shows that coming. An active mint authority means supply can
@@ -237,6 +240,25 @@ fails as a unit.
 
 Toggle it in Settings, or set `DEFAULT_EXECUTION_MODE`.
 
+### Priority fees
+
+A fixed priority fee is wrong twice over: too low when the chain is busy, which
+is exactly when an entry is worth landing, and wasteful when it is quiet.
+
+In **auto** mode (the default) the bot samples what recent blocks actually paid
+to touch the pump.fun program and bids the 75th percentile of that, times 1.25.
+The median gets outbid in the moments that matter; the maximum is one desperate
+bidder rather than the going rate.
+
+Your configured `priorityFeeSol` becomes the **floor** — auto mode only ever
+raises the bid — and `priorityFeeCeilingSol` caps it so a congestion spike cannot
+run away with the balance. If the fee market cannot be sampled, your configured
+value stands.
+
+Measured while building this: the network wanted **838,139 microLamports/CU** for
+the pump.fun program, which is **0.00026 SOL** — over 5× the old fixed default of
+0.00005. Trades at the fixed rate were bidding well under the going rate.
+
 ---
 
 ## A note on batch buying
@@ -262,7 +284,7 @@ npm run check
 Runs three layers:
 
 - `typecheck` — full TypeScript strict-mode pass
-- `smoke` — 69 offline assertions: vault crypto (round-trip, unique IVs, tamper
+- `smoke` — 73 offline assertions: vault crypto (round-trip, unique IVs, tamper
   rejection, lock/unlock, passphrase rotation re-sealing every key), wallet
   derivation, group and main-wallet invariants, bonding curve maths and batch
   simulation, funding arithmetic (shortfall-only top-ups, transaction packing,

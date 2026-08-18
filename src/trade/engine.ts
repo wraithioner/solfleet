@@ -13,11 +13,13 @@ import {
   getTokenBalance,
   getMintBalances,
   signatureLanded,
+  recentPriorityFeeMicroLamports,
+  priorityFeeSolFromMicroLamports,
   WSOL_MINT,
 } from '../chains/solana.js';
 import { buildTrade, buildTradeBundle, signTx, toTradeArgs, type TradeArgs } from './pumpportal.js';
 import { sendBundle, waitForBundle } from './jito.js';
-import { detectPool } from './curve.js';
+import { detectPool, PUMP_PROGRAM_ID } from './curve.js';
 import { swapToSol, swapFromSol } from './jupiter.js';
 import { fundingBalances, partitionByBalance, requiredForBuy } from './fund.js';
 import type { WalletRecord, TradeRequest, ExecutionResult, BatchSummary } from '../types.js';
@@ -62,10 +64,19 @@ export async function batchPumpTrade(
   }
 
   // route to the curve or the AMM depending on whether the token graduated
+  const settings = db.settings();
   const req: TradeRequest = {
     ...request,
     pool: request.pool === 'auto' ? await detectPool(request.mint) : request.pool,
+    priorityFeeSol: await resolvePriorityFee(request.mint, request.priorityFeeSol),
   };
+
+  if (req.priorityFeeSol !== request.priorityFeeSol) {
+    log.info(
+      `Priority fee raised to ${req.priorityFeeSol.toFixed(6)} SOL from ${request.priorityFeeSol} ` +
+        `(auto, ceiling ${settings.priorityFeeCeilingSol})`,
+    );
+  }
 
   if (request.action === 'buy' && req.amount > config.safety.maxBuySolPerWallet) {
     throw new Error(
@@ -135,6 +146,27 @@ export async function batchPumpTrade(
       : await parallelTrades(active, req, startedAt, ctx, onProgress);
 
   return summarise([...summary.results, ...idle], startedAt);
+}
+
+/**
+ * Follow the going rate for inclusion, when configured to.
+ *
+ * The configured fee is the floor rather than the answer: auto mode can only
+ * raise the bid, never drop it below what the operator chose, and never above
+ * the ceiling. If the network cannot be sampled the configured value stands —
+ * an unreadable fee market is not a reason to start guessing with real money.
+ */
+async function resolvePriorityFee(mint: string, configuredSol: number): Promise<number> {
+  const settings = db.settings();
+  if (settings.priorityFeeMode !== 'auto') return configuredSol;
+
+  const micro = await recentPriorityFeeMicroLamports([PUMP_PROGRAM_ID.toBase58(), mint]);
+  if (micro === null) return configuredSol;
+
+  return priorityFeeSolFromMicroLamports(micro, {
+    floorSol: configuredSol,
+    ceilingSol: settings.priorityFeeCeilingSol,
+  });
 }
 
 interface TradeContext {

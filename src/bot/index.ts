@@ -335,6 +335,32 @@ async function routeCallback(ctx: Context, action: string, args: string[]): Prom
       setPending(userId, { kind: 'set_reserve' });
       return render(ctx, '<b>Send the SOL to leave in each wallet when sweeping.</b>\n\n<i>e.g. 0.002</i>', backButton('settings'));
 
+    case 'toggle_fee_mode': {
+      const next = db.settings().priorityFeeMode === 'auto' ? 'fixed' : 'auto';
+      db.updateSettings({ priorityFeeMode: next });
+      await ctx.answerCallbackQuery({
+        text:
+          next === 'auto'
+            ? 'Priority fee follows the network, up to your ceiling'
+            : 'Priority fee stays exactly where you set it',
+      });
+      return showSettings(ctx);
+    }
+
+    case 'set_fee_ceiling':
+      setPending(userId, { kind: 'set_fee_ceiling' });
+      return render(
+        ctx,
+        [
+          '<b>Send the most SOL a single trade may pay in priority fees.</b>',
+          '',
+          `Current: <b>${db.settings().priorityFeeCeilingSol} SOL</b>`,
+          '',
+          '<i>Auto mode never bids above this, however busy the chain gets. 0.005 is a sane cap.</i>',
+        ].join('\n'),
+        backButton('settings'),
+      );
+
     case 'set_buy_presets':
       setPending(userId, { kind: 'set_buy_presets' });
       return render(
@@ -401,8 +427,18 @@ function registerText(bot: Bot): void {
       return;
     }
 
+    // Locked: treat whatever was sent as the passphrase rather than making the
+    // operator type "/unlock " in front of it every time. The message is deleted
+    // either way, so this costs nothing and removes the most repeated friction
+    // in the whole bot.
     if (!isUnlocked()) {
-      await ctx.reply('🔒 Vault is locked. Send /unlock <passphrase>.');
+      await deleteMessage(ctx);
+      try {
+        await unlockVault(text);
+        await ctx.reply('🔓 Unlocked.', { reply_markup: mainMenu() });
+      } catch {
+        await ctx.reply('🔒 That did not unlock the vault. Send your passphrase again.');
+      }
       return;
     }
 
@@ -548,6 +584,13 @@ async function handlePending(
       return applyNumericSetting(ctx, text, 0, 1, (v) => {
         db.updateSettings({ sweepReserveSol: v });
         return `Sweep reserve set to ${v} SOL`;
+      });
+
+
+    case 'set_fee_ceiling':
+      return applyNumericSetting(ctx, text, 0.00001, 0.5, (v) => {
+        db.updateSettings({ priorityFeeCeilingSol: v });
+        return `Priority fee ceiling set to ${v} SOL`;
       });
 
     case 'set_buy_presets': {
