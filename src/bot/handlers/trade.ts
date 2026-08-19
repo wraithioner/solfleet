@@ -39,7 +39,7 @@ import {
 import { render } from './core.js';
 import { newRuleId, entryPriceSol, describe as describeRule } from '../../services/watcher.js';
 import { priceInSol } from '../../services/price.js';
-import { describeLimits } from '../../services/safety.js';
+import { describeLimits, formatAge } from '../../services/safety.js';
 import type { TradeRequest } from '../../types.js';
 
 /**
@@ -1370,6 +1370,17 @@ export function nextStep(steps: number[], current: number | undefined): number |
 const TOP10_STEPS = [10, 20, 30, 40, 60, 100];
 const DEV_STEPS = [0, 1, 2, 5, 10, 100];
 const LIQ_STEPS = [0, 1_000, 3_000, 10_000, 25_000];
+/*
+ * Hours, ending in 0 for "not checked".
+ *
+ * The rungs are shaped by what a copied trade actually is. 6h and 24h are for
+ * following launch snipers, where anything older is somebody else's exit; 72h
+ * is the default and the boundary past which a coin stops being a new launch;
+ * a week is for following a trader who buys established names.
+ */
+const AGE_STEPS = [6, 24, 72, 168, 0];
+/** Dollars of volume in the last hour. Live launches clear the top rung easily. */
+const VOL_STEPS = [0, 500, 1_000, 5_000, 25_000];
 
 export async function showCopySafety(ctx: Context): Promise<void> {
   const limits = db.settings().copySafety;
@@ -1380,6 +1391,8 @@ export async function showCopySafety(ctx: Context): Promise<void> {
       '<b>🛡 Copy trade safety</b>',
       '',
       'Checked on every copied buy, before any money moves. A token that fails is skipped and never reconsidered.',
+      '',
+      '<i>Age is measured from the token\'s first market, not the pool it trades in now — a coin that graduates gets a brand-new pool and would otherwise read as minutes old.</i>',
       '',
       ...describeLimits(limits).map((l) => `· ${l}`),
       '',
@@ -1401,6 +1414,17 @@ export async function showCopySafety(ctx: Context): Promise<void> {
         'safety_liq',
       )
       .row()
+      .text(limits.maxAgeHours > 0 ? `🕐 Max age ${formatAge(limits.maxAgeHours)}` : '🕐 Age not checked', 'safety_age')
+      .primary()
+      .row()
+      .text(
+        limits.minVolume1hUsd > 0
+          ? `📈 1h volume min $${limits.minVolume1hUsd.toLocaleString('en-US')}`
+          : '📈 1h volume not checked',
+        'safety_vol',
+      )
+      .primary()
+      .row()
       // reachable from both screens, so it offers both ways back
       .text('← Copy trading', 'copy_trade').text('⚙️ Settings', 'settings'),
   );
@@ -1414,6 +1438,8 @@ export async function cycleSafety(ctx: Context, which: string): Promise<void> {
   else if (which === 'dev') limits.maxDevPct = cycleStep(DEV_STEPS, limits.maxDevPct);
   else if (which === 'liq') limits.minLiquidityUsd = cycleStep(LIQ_STEPS, limits.minLiquidityUsd);
   else if (which === 'auth') limits.requireRevokedAuthorities = !limits.requireRevokedAuthorities;
+  else if (which === 'age') limits.maxAgeHours = cycleStep(AGE_STEPS, limits.maxAgeHours);
+  else if (which === 'vol') limits.minVolume1hUsd = cycleStep(VOL_STEPS, limits.minVolume1hUsd);
 
   db.updateSettings({ copySafety: limits });
   await showCopySafety(ctx);

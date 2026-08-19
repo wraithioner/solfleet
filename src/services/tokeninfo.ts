@@ -151,7 +151,7 @@ function dexChainToChain(chainId: string): Chain | undefined {
 async function fetchPairsOnChain(chainId: string, address: string): Promise<DexPair[]> {
   try {
     const res = await fetchJson<DexPair[] | { pairs?: DexPair[] }>(
-      `${endpoints.dexscreenerByChain}/${chainId}/${address}`,
+      `${endpoints.dexscreenerPairs}/${chainId}/${address}`,
       { timeoutMs: 12_000 },
     );
     const pairs = Array.isArray(res) ? res : (res.pairs ?? []);
@@ -207,6 +207,43 @@ async function loadMarketData(address: string, kind: 'solana' | 'evm'): Promise<
     // the deepest pool is the one whose price and market cap mean anything
     const best = pairs.reduce((a, b) => ((b.liquidity?.usd ?? 0) > (a.liquidity?.usd ?? 0) ? b : a));
 
+    /*
+     * Age comes from the FIRST market, not the deepest one.
+     *
+     * These are usually the same pair and occasionally are not, and the
+     * exception is the case that matters. A pump.fun token graduates into a new
+     * PumpSwap pool, and that pool is minutes old on a coin that launched days
+     * ago — it is also always the deepest, because the curve it replaced is
+     * drained on migration. Read from `best`, a token seen on chain launching
+     * 5.8 days ago reported an age of one hour, and every one of these observed
+     * live was in that direction: 1.2d read as 0.2d, 2.1d as 0.05d.
+     *
+     * A copy-trade age limit built on that number would wave through precisely
+     * the coins it exists to refuse, so it is built on the oldest pair instead.
+     */
+    const firstMarket = pairs.reduce(
+      (a, b) => ((b.pairCreatedAt ?? Infinity) < (a.pairCreatedAt ?? Infinity) ? b : a),
+    );
+
+    /*
+     * Volume is summed across every venue; price and liquidity are not.
+     *
+     * "Is anybody trading this" is a question about the token, and a coin whose
+     * flow moved to a second pool is being traded just as much as before —
+     * reading one pool would call it dead. Checked against BONK, whose deepest
+     * indexed pool showed nothing in the last hour while the token was plainly
+     * still trading elsewhere.
+     *
+     * Price and market cap stay with the deepest pool because they are not
+     * additive, and liquidity stays there too: it stands for what one sale can
+     * actually get out, and adding up five thin pools describes an exit nobody
+     * can take in a single swap.
+     */
+    const sum = (pick: (p: DexPair) => number | undefined): number | undefined => {
+      const seen = pairs.map(pick).filter((n): n is number => typeof n === 'number');
+      return seen.length > 0 ? seen.reduce((a, b) => a + b, 0) : undefined;
+    };
+
     return {
       chain: dexChainToChain(best.chainId),
       // the chain exactly as DexScreener names it, including chains this bot has
@@ -221,11 +258,11 @@ async function loadMarketData(address: string, kind: 'solana' | 'evm'): Promise<
       marketCap: best.marketCap,
       fdv: best.fdv,
       liquidityUsd: best.liquidity?.usd,
-      volume24h: best.volume?.h24,
-      volume1h: best.volume?.h1,
-      buys24h: best.txns?.h24?.buys,
-      sells24h: best.txns?.h24?.sells,
-      pairCreatedAt: best.pairCreatedAt,
+      volume24h: sum((p) => p.volume?.h24),
+      volume1h: sum((p) => p.volume?.h1),
+      buys24h: sum((p) => p.txns?.h24?.buys),
+      sells24h: sum((p) => p.txns?.h24?.sells),
+      pairCreatedAt: firstMarket.pairCreatedAt,
       dex: best.dexId,
       imageUrl: best.info?.imageUrl,
       websites: best.info?.websites?.map((w) => w.url),

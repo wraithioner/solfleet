@@ -22,6 +22,25 @@ export interface SafetyLimits {
   requireRevokedAuthorities: boolean;
   /** Refuse a pool too thin to sell back into. Zero disables the check. */
   minLiquidityUsd: number;
+  /**
+   * Refuse a token whose market is older than this. Zero disables the check.
+   *
+   * Measured from the first market the token ever had, not the pool it trades
+   * in now — see the note on `pairCreatedAt` in tokeninfo.
+   */
+  maxAgeHours: number;
+  /**
+   * Refuse a token nobody has traded in the last hour. Zero disables the check.
+   *
+   * An hour rather than a day, and this is the whole point of the check. Live
+   * pump.fun launches observed on chain did $9k–$416k of volume in their first
+   * hour, so a floor here costs nothing on a fresh coin. Dead ones are only
+   * visible at this resolution: one sampled token showed $67,602 of 24-hour
+   * volume and exactly zero in the last hour, having already been through its
+   * entire life. On the daily figure it looks like one of the most active
+   * tokens on the list.
+   */
+  minVolume1hUsd: number;
 }
 
 export const DEFAULT_SAFETY: SafetyLimits = {
@@ -29,6 +48,8 @@ export const DEFAULT_SAFETY: SafetyLimits = {
   maxDevPct: 1,
   requireRevokedAuthorities: true,
   minLiquidityUsd: 3_000,
+  maxAgeHours: 72,
+  minVolume1hUsd: 1_000,
 };
 
 /**
@@ -39,7 +60,7 @@ export const DEFAULT_SAFETY: SafetyLimits = {
  * version marker lets a genuinely stricter set replace those without
  * overwriting a limit the operator picked deliberately afterwards.
  */
-export const SAFETY_VERSION = 2;
+export const SAFETY_VERSION = 3;
 
 export interface SafetyVerdict {
   safe: boolean;
@@ -123,6 +144,51 @@ export function assessToken(info: TokenInfo, limits: SafetyLimits = DEFAULT_SAFE
     }
   }
 
+  /*
+   * How old the token is, and whether anyone is still trading it.
+   *
+   * These are one idea in two checks. Age alone is blunt — a two-day-old coin
+   * doing real volume is a perfectly good trade — and volume alone lets a coin
+   * that pumps once a week through on the hour it happens to be moving.
+   * Together they describe the only thing that matters: is there a live market
+   * here, or am I buying somebody's exit.
+   */
+  if (limits.maxAgeHours > 0 && info.pairCreatedAt !== undefined) {
+    const ageHours = (Date.now() - info.pairCreatedAt) / 3_600_000;
+    if (ageHours > limits.maxAgeHours) {
+      reasons.push(
+        `First traded ${formatAge(ageHours)} ago, past the ${formatAge(limits.maxAgeHours)} limit.`,
+      );
+    }
+  }
+
+  /*
+   * An unknown age passes, which is the one place this file does not treat
+   * unknown as unsafe, and it is deliberate rather than an oversight.
+   *
+   * Everywhere else the missing fact could be hiding something bad. Here it
+   * cannot: a token with no indexed market has not been trading for days, it
+   * has not been trading at all. The absence points the opposite way — towards
+   * a launch so recent nothing has listed it yet — and refusing on it would
+   * block every genuinely fresh coin, which is the entire reason to copy
+   * somebody. The volume floor below is what covers this case.
+   */
+
+  if (limits.minVolume1hUsd > 0) {
+    if (info.volume1h !== undefined) {
+      if (info.volume1h < limits.minVolume1hUsd) {
+        reasons.push(
+          `Only $${Math.round(info.volume1h).toLocaleString('en-US')} traded in the last hour, under the ` +
+            `$${limits.minVolume1hUsd.toLocaleString('en-US')} floor — no volume, no exit.`,
+        );
+      }
+    } else if (!isOnCurve(info)) {
+      // no market data and no curve to sell back into: nothing says this can be
+      // sold at all, which is exactly the shape of a token that cannot be
+      reasons.push('No trading volume could be read — there may be no live market at all.');
+    }
+  }
+
   // worth knowing, not worth refusing over
   if (info.creatorHoldsPct !== undefined && info.creatorHoldsPct > 5 && info.creatorHoldsPct <= limits.maxDevPct) {
     notes.push(`Launch wallet holds ${info.creatorHoldsPct.toFixed(1)}%.`);
@@ -148,5 +214,19 @@ export function describeLimits(limits: SafetyLimits): string[] {
     limits.minLiquidityUsd > 0
       ? `Liquidity: refuse under <b>$${limits.minLiquidityUsd.toLocaleString('en-US')}</b>`
       : 'Liquidity: <b>not checked</b>',
+    limits.maxAgeHours > 0
+      ? `Age: refuse older than <b>${formatAge(limits.maxAgeHours)}</b>`
+      : 'Age: <b>not checked</b>',
+    limits.minVolume1hUsd > 0
+      ? `1h volume: refuse under <b>$${limits.minVolume1hUsd.toLocaleString('en-US')}</b>`
+      : '1h volume: <b>not checked</b>',
   ];
+}
+
+/** Hours as something readable — "36h" is worse than "1.5 days" at a glance. */
+export function formatAge(hours: number): string {
+  if (hours < 1) return `${Math.round(hours * 60)}m`;
+  if (hours < 48) return `${Math.round(hours)}h`;
+  const days = hours / 24;
+  return `${days % 1 === 0 ? days : days.toFixed(1)} days`;
 }

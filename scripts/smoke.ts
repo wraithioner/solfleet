@@ -1216,6 +1216,8 @@ const clean = {
   address: 'M', chain: 'solana' as const, warnings: [],
   freezeAuthority: null, mintAuthority: null,
   top10Pct: 14, creatorHoldsPct: 0.4, liquidityUsd: 50_000,
+  // a live market: minutes old and being traded right now
+  pairCreatedAt: Date.now() - 20 * 60_000, volume1h: 40_000,
 };
 assert.equal(assessToken(clean).safe, true);
 ok('a clean token passes');
@@ -1237,6 +1239,66 @@ ok('a live freeze authority is refused — that is the Solana honeypot');
 
 assert.equal(assessToken({ ...clean, mintAuthority: 'Someone' }).safe, false);
 ok('a live mint authority is refused');
+
+// ── age and volume ───────────────────────────────────────────────────────────
+
+const HOURS = 3_600_000;
+
+/*
+ * The case this was built for, taken from a token a followed wallet actually
+ * bought: launched 5.8 days ago, still trading hard, and the pool it trades in
+ * was created an hour before the copy fired.
+ */
+const oldButBusy = { ...clean, pairCreatedAt: Date.now() - 138 * HOURS, volume1h: 405_000 };
+const aged = assessToken(oldButBusy);
+assert.equal(aged.safe, false);
+assert.match(aged.reasons.join(' '), /5\.8 days/);
+ok('a 5.8-day-old coin is refused however busy it looks today');
+
+assert.equal(assessToken({ ...clean, pairCreatedAt: Date.now() - 60 * HOURS }).safe, true);
+ok('a 2.5-day-old coin still trading is allowed');
+
+/*
+ * The daily volume figure cannot see this and that is the point: sampled live,
+ * a token with $67,602 of 24-hour volume had done exactly zero in the last
+ * hour. It had already been through its whole life.
+ */
+const dead = { ...clean, volume24h: 67_602, volume1h: 0 };
+const deadVerdict = assessToken(dead);
+assert.equal(deadVerdict.safe, false);
+assert.match(deadVerdict.reasons.join(' '), /no exit/i);
+ok('a token with a big daily volume and a dead hour is refused');
+
+assert.equal(assessToken({ ...clean, volume1h: 9_390 }).safe, true);
+ok('the quietest live launch observed on chain still passes the floor');
+
+// an unreadable market is only forgiven on a bonding curve, which always fills
+assert.equal(assessToken({ ...clean, volume1h: undefined }).safe, false);
+assert.equal(
+  assessToken({ ...clean, volume1h: undefined, isPumpFun: true, curveComplete: false }).safe,
+  true,
+);
+ok('no volume data refuses, unless the token is still on its curve');
+
+/*
+ * The one place unknown is allowed to pass. A token nothing has indexed is not
+ * an old token — it is one that launched moments ago, which is the entire
+ * reason to copy somebody.
+ */
+assert.equal(assessToken({ ...clean, pairCreatedAt: undefined }).safe, true);
+ok('an unknown age passes, because not-indexed means new rather than old');
+
+// and both checks turn off
+const noLimits = { ...DEFAULT_SAFETY, maxAgeHours: 0, minVolume1hUsd: 0 };
+assert.equal(assessToken({ ...oldButBusy, volume1h: 0 }, noLimits).safe, true);
+ok('setting either limit to zero turns it off');
+
+const { formatAge } = await import('../src/services/safety.js');
+assert.equal(formatAge(0.5), '30m');
+assert.equal(formatAge(6), '6h');
+assert.equal(formatAge(72), '3 days');
+assert.equal(formatAge(138), '5.8 days');
+ok('ages read as minutes, hours or days rather than a raw number');
 
 /*
  * Unknown must never read as safe. A rate-limited holder query returns no

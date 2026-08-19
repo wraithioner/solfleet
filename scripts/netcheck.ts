@@ -109,6 +109,56 @@ await check('holder distribution (BONK)', async () => {
   return `${info.holders.length} top accounts, top10 = ${info.top10Pct?.toFixed(1)}%`;
 });
 
+/*
+ * The age a copy-trade limit is judged against, checked against a token whose
+ * two answers differ.
+ *
+ * DexScreener describes a token as a list of pairs, and the deepest of them is
+ * usually the newest — a graduated pump.fun coin gets a fresh pool on
+ * migration, so reading age from the pool it trades in now reports minutes on a
+ * coin that is days old. Every field but this one still comes from the deepest
+ * pair, so a regression here is invisible on the card and only shows up as a
+ * copy trade the age limit should have refused.
+ */
+await check('token age comes from the first market, not the deepest pool', async () => {
+  const { endpoints } = await import('../src/config.js');
+  const res = await fetch(`${endpoints.dexscreenerPairs}/solana/${BONK}`);
+  const body = (await res.json()) as { pairs?: unknown[] } | unknown[];
+  const pairs = (Array.isArray(body) ? body : (body.pairs ?? [])) as Array<{
+    baseToken?: { address?: string };
+    pairCreatedAt?: number;
+    liquidity?: { usd?: number };
+  }>;
+  const mine = pairs.filter((p) => p.baseToken?.address === BONK && p.pairCreatedAt);
+  if (mine.length === 0) throw new Error('no dated pairs returned — the endpoint changed shape');
+
+  const oldest = Math.min(...mine.map((p) => p.pairCreatedAt!));
+  const deepest = mine.reduce((a, b) => ((b.liquidity?.usd ?? 0) > (a.liquidity?.usd ?? 0) ? b : a));
+
+  const info = await getTokenInfo(BONK, 'solana');
+  if (info.pairCreatedAt !== oldest) {
+    throw new Error(`age came from the wrong pair: ${info.pairCreatedAt} vs oldest ${oldest}`);
+  }
+
+  const days = (t: number) => ((Date.now() - t) / 86_400_000).toFixed(1);
+  const gap = deepest.pairCreatedAt !== oldest ? `, deepest pool would say ${days(deepest.pairCreatedAt!)}d` : '';
+  return `${mine.length} pairs, first traded ${days(oldest)}d ago${gap}`;
+});
+
+/*
+ * Volume is summed across venues because the check it feeds asks whether
+ * anybody is trading the token, not whether anybody is trading one pool of it.
+ * Read from a single pair, BONK reported nothing in the last hour.
+ */
+await check('1h volume is totalled across every venue', async () => {
+  const info = await getTokenInfo(BONK, 'solana');
+  if (info.volume1h === undefined) throw new Error('no 1h volume returned');
+  if (info.volume24h !== undefined && info.volume1h > info.volume24h) {
+    throw new Error('an hour cannot hold more volume than the day containing it');
+  }
+  return `1h $${Math.round(info.volume1h).toLocaleString()} of 24h $${Math.round(info.volume24h ?? 0).toLocaleString()}`;
+});
+
 await check('token logo resolution (BONK)', async () => {
   const info = await getTokenInfo(BONK, 'solana');
   if (!info.imageUrl) throw new Error('no image url');

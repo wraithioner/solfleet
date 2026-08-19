@@ -88,9 +88,19 @@ export const endpoints = {
   jupiterSwap: 'https://lite-api.jup.ag/swap/v1/swap',
   jupiterPrice: 'https://lite-api.jup.ag/price/v3',
   dexscreenerTokens: 'https://api.dexscreener.com/latest/dex/tokens',
-  /** Chain-scoped lookup. The unscoped one mixes in forked chains that reuse the
-   *  same contract address, which produces wildly wrong prices. */
-  dexscreenerByChain: 'https://api.dexscreener.com/tokens/v1',
+  /**
+   * Every pair for one token on one chain.
+   *
+   * Chain-scoped because the unscoped lookup mixes in forked chains that reuse
+   * the same contract address, which produces wildly wrong prices. Every pair
+   * because `tokens/v1` returns only one — measured against this endpoint on
+   * the same mints, it answered with a single pool where thirty exist, and the
+   * one it picks is the deepest rather than the first. For a graduated pump.fun
+   * token the deepest pool is the one created at graduation, so a token that
+   * launched five days ago reads as an hour old. Age has to come from the
+   * oldest pair, which means seeing all of them.
+   */
+  dexscreenerPairs: 'https://api.dexscreener.com/token-pairs/v1',
 } as const;
 
 /**

@@ -14,7 +14,7 @@ import type { Settings, ValueMark } from '../store/db.js';
 import { formatAccountPnl, markAgo, formatValueChange, type AccountPnl } from '../services/pnl.js';
 import type { Portfolio } from '../services/portfolio.js';
 import type { TokenInfo } from '../services/tokeninfo.js';
-import { assessToken, DEFAULT_SAFETY, type SafetyLimits } from '../services/safety.js';
+import { assessToken, DEFAULT_SAFETY, formatAge, type SafetyLimits } from '../services/safety.js';
 import type { BatchSummary, WalletRecord } from '../types.js';
 
 /** Telegram HTML mode needs exactly these three escaped. */
@@ -647,6 +647,8 @@ export function renderSettings(s: Settings, walletCount: number): string {
     '<b>Copy trade safety</b>',
     `   Top 10 max    <b>${s.copySafety.maxTop10Pct}%</b>`,
     `   Dev max       <b>${s.copySafety.maxDevPct}%</b>`,
+    `   Max age       <b>${s.copySafety.maxAgeHours > 0 ? formatAge(s.copySafety.maxAgeHours) : 'any'}</b>`,
+    `   1h volume     <b>${s.copySafety.minVolume1hUsd > 0 ? `min $${s.copySafety.minVolume1hUsd.toLocaleString('en-US')}` : 'any'}</b>`,
     '',
     `👛 <b>${walletCount}</b> wallet${walletCount === 1 ? '' : 's'}   ·   🎯 ${s.activeGroup ? h(s.activeGroup) : 'all'}`,
   ].join('\n');

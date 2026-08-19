@@ -322,8 +322,9 @@ function migrateSettings(stored: Partial<Settings> | undefined): Settings {
     merged.copySafety = { ...DEFAULT_SAFETY };
     if (stored?.copySafety) {
       console.warn(
-        `Copy-trade limits tightened to the current defaults: top 10 ≤ ${DEFAULT_SAFETY.maxTop10Pct}%, ` +
-          `launch wallet ≤ ${DEFAULT_SAFETY.maxDevPct}%.`,
+        `Copy-trade limits reset to the current defaults: top 10 ≤ ${DEFAULT_SAFETY.maxTop10Pct}%, ` +
+          `launch wallet ≤ ${DEFAULT_SAFETY.maxDevPct}%, first traded within ` +
+          `${DEFAULT_SAFETY.maxAgeHours}h, at least $${DEFAULT_SAFETY.minVolume1hUsd} of volume in the last hour.`,
       );
     }
   }
