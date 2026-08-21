@@ -10,7 +10,7 @@ import {
   fmtDuration,
 } from '../util.js';
 import { tokenId, shortWalletId } from './session.js';
-import type { Settings, ValueMark } from '../store/db.js';
+import type { Settings, ValueMark, CopyDecision } from '../store/db.js';
 import { formatAccountPnl, markAgo, formatValueChange, type AccountPnl } from '../services/pnl.js';
 import type { Portfolio } from '../services/portfolio.js';
 import type { TokenInfo } from '../services/tokeninfo.js';
@@ -259,6 +259,42 @@ export function pnlKeyboard(): InlineKeyboard {
     .row()
     .text('💼 Portfolio', 'portfolio').primary()
     .text('← Menu', 'home');
+}
+
+/**
+ * Why the bot did not act on a trade you watched it see.
+ *
+ * The question this answers came from watching a followed wallet buy something
+ * and seeing nothing happen — which from the outside is indistinguishable from
+ * the bot being asleep. Every one of these decisions was already being made and
+ * written to a log file nobody can read.
+ */
+export function renderCopyDecisions(entries: CopyDecision[]): string {
+  const lines = ['<b>📋 Recent copy decisions</b>', ''];
+
+  if (entries.length === 0) {
+    lines.push('<i>Nothing skipped recently. Every trade your wallets made was mirrored.</i>');
+    return lines.join('\n');
+  }
+
+  lines.push('<i>Trades the bot saw and chose not to copy, newest first.</i>', '');
+
+  for (const e of entries) {
+    const when = fmtAge(Date.now() - e.at);
+    lines.push(`<b>${h(e.symbol ?? shortAddr(e.mint, 4, 4))}</b>  <i>${when} ago · ${h(e.target)}</i>`);
+    lines.push(`   ${h(e.reason)}`);
+  }
+
+  lines.push('', '<i>A skip is usually the limits working. Copy trading → Safety to change them.</i>');
+  return lines.join('\n');
+}
+
+export function copyDecisionsKeyboard(): InlineKeyboard {
+  return new InlineKeyboard()
+    .text('🔄 Refresh', 'copy_decisions').primary()
+    .text('🛡 Safety', 'copy_safety').primary()
+    .row()
+    .text('← Copy trading', 'copy_trade');
 }
 
 // ── token info card ───────────────────────────────────────────────────────────

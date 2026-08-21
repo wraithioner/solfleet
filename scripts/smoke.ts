@@ -2286,5 +2286,66 @@ const returnsAfter = body.slice(body.indexOf('const screening ='), body.indexOf(
 assert.ok(/\n\s+return;/.test(returnsAfter), 'there are indeed early returns between the two');
 ok('a screen nobody waits for cannot bring the process down');
 
+console.log('\n[41] Why nothing happened');
+
+/*
+ * Reported from use: a followed wallet buys something and nothing appears in
+ * Telegram. The bot was awake and deciding correctly every time — but the
+ * decisions were log lines, which from the outside is indistinguishable from
+ * the bot being asleep.
+ */
+const ctSrc3 = fs.readFileSync('src/services/copytrade.ts', 'utf8');
+const silent = [
+  'refusedMints?.includes',        // already refused once
+  'Copy cap reached',              // entry cap
+  'computed size was zero',        // sizing
+  'without spending SOL',          // airdrop
+  'never copied from them',        // their sell, not our position
+  'found nothing to sell',         // held elsewhere
+];
+for (const marker of silent) {
+  const at = ctSrc3.indexOf(marker);
+  assert.ok(at > 0, `the path still exists: ${marker}`);
+  const window = ctSrc3.slice(at, at + 420);
+  assert.match(window, /noted\(/, `and it is written down: ${marker}`);
+}
+ok(`all ${silent.length} silent skip paths now record a reason`);
+
+db.wipe();
+db.recordCopyDecision({ at: Date.now(), target: 't', mint: 'M', reason: 'first' });
+db.recordCopyDecision({ at: Date.now(), target: 't', mint: 'M', reason: 'second' });
+assert.equal(db.copyDecisions(10)[0]!.reason, 'second', 'newest first, so the last thing that happened reads first');
+ok('the list is ordered the way somebody asking "what just happened" reads it');
+
+for (let i = 0; i < 80; i++) db.recordCopyDecision({ at: Date.now(), target: 't', mint: `M${i}`, reason: 'r' });
+assert.ok(db.copyDecisions(999).length <= 40, 'bounded — a recent history, not an archive');
+ok('it cannot grow without bound in the file holding the keys');
+
+/*
+ * Deliberately a screen and not a stream of messages. Most of these are
+ * non-events, and a notification per dusting airdrop would train the operator
+ * to ignore the notifications that matter.
+ */
+const trSrc = fs.readFileSync('src/bot/handlers/trade.ts', 'utf8');
+assert.match(trSrc, /'📋 Why it skipped', 'copy_decisions'/, 'reachable from the copy screen');
+
+/*
+ * Not all of them are equal, and the split is deliberate. A coin refused by
+ * the safety checks, or one skipped because the position is already open, is
+ * about money and gets a message. A dusting airdrop is not, and messaging
+ * every one would teach the operator to ignore the two that matter.
+ */
+const recordedQuietly = ['without spending SOL', 'Copy cap reached', 'never copied from them'];
+for (const marker of recordedQuietly) {
+  const window = ctSrc3.slice(ctSrc3.indexOf(marker), ctSrc3.indexOf(marker) + 400);
+  assert.ok(!/await notify\(/.test(window), `a non-event is recorded quietly: ${marker}`);
+}
+const worthAMessage = ['Refused to copy', 'already holding'];
+for (const marker of worthAMessage) {
+  const window = ctSrc3.slice(ctSrc3.indexOf(marker), ctSrc3.indexOf(marker) + 900);
+  assert.match(window, /await notify\(/, `a decision about money still messages: ${marker}`);
+}
+ok('non-events are recorded quietly; decisions about money still send a message');
+
 fs.rmSync(DATA, { recursive: true, force: true });
 console.log(`\n✅ ${passed} assertions passed\n`);

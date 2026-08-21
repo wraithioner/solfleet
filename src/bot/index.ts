@@ -505,6 +505,8 @@ async function routeCallback(ctx: Context, action: string, args: string[]): Prom
 
     case 'copy_safety':
       return T.showCopySafety(ctx);
+    case 'copy_decisions':
+      return T.showCopyDecisions(ctx);
 
     case 'safety_top10':
       return T.cycleSafety(ctx, 'top10');

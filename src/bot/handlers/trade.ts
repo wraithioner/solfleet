@@ -36,6 +36,8 @@ import {
   backButton,
   progressBarText,
   h,
+  renderCopyDecisions,
+  copyDecisionsKeyboard,
 } from '../ui.js';
 import { render } from './core.js';
 import { newRuleId, entryPriceSol, describe as describeRule } from '../../services/watcher.js';
@@ -1091,6 +1093,9 @@ export async function showCopyTrade(ctx: Context): Promise<void> {
   const kb = new InlineKeyboard()
     .text('➕ Follow a wallet', 'copy_add').success()
     .text('🛡 Safety', 'copy_safety').primary()
+    .row()
+    // the answer to "they bought something and nothing happened"
+    .text('📋 Why it skipped', 'copy_decisions').primary()
     .row();
   for (const t of targets.slice(0, 8)) {
     kb.text(`⚙️ ${t.label}`, `copy_open:${t.id}`)
@@ -1394,6 +1399,17 @@ const VOL_STEPS = [0, 500, 1_000, 5_000, 25_000];
 const MINT_CAP_STEPS = [0.1, 0.25, 0.5, 1, 2, 0];
 /** Share of supply allowed in wallets the index reads as one person. */
 const INSIDER_STEPS = [10, 20, 30, 50, 0];
+
+/**
+ * The answer to "the trader bought something and nothing happened".
+ *
+ * Kept as a screen rather than a stream of messages: most skips are
+ * non-events, and a notification per dusting airdrop would teach the operator
+ * to ignore the notifications that matter.
+ */
+export async function showCopyDecisions(ctx: Context): Promise<void> {
+  await render(ctx, renderCopyDecisions(db.copyDecisions(10)), copyDecisionsKeyboard());
+}
 
 export async function showCopySafety(ctx: Context): Promise<void> {
   const limits = db.settings().copySafety;

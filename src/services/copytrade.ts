@@ -463,6 +463,7 @@ async function handleSignature(
         log.info(
           `Ignored ${move.mint} from ${current.label}: they received it without spending SOL.`,
         );
+        noted(current, move.mint, 'It was sent to them — they spent no SOL on it');
         continue;
       }
       await mirrorBuy(current, move, theirSol, notify);
@@ -763,6 +764,17 @@ export function roomUnderCap(mint: string, maxSolPerMint: number, holding: boole
   return Math.max(0, maxSolPerMint - openExposureSol(mint, holding));
 }
 
+/**
+ * Write down a decision not to copy, so it can be answered for later.
+ *
+ * These were all log lines, which is to say invisible: from Telegram the
+ * symptom is a followed wallet buying something and nothing happening, which
+ * looks exactly like the bot being asleep.
+ */
+function noted(target: CopyTarget, mint: string, reason: string, symbol?: string): void {
+  db.recordCopyDecision({ at: Date.now(), target: target.label, mint, symbol, reason });
+}
+
 function entriesSoFar(target: CopyTarget, mint: string): number {
   const counted = target.entryCounts?.[mint];
   if (counted !== undefined) return counted;
@@ -788,7 +800,10 @@ async function mirrorBuyLocked(
 ): Promise<void> {
   // a token this target was already refused is not reconsidered: the answer
   // will not have changed, and re-reading it turns one bad coin into a stream
-  if (target.refusedMints?.includes(move.mint)) return;
+  if (target.refusedMints?.includes(move.mint)) {
+    noted(target, move.mint, 'Already refused by the safety checks — not reconsidered');
+    return;
+  }
 
   const already = entriesSoFar(target, move.mint);
 
@@ -802,6 +817,7 @@ async function mirrorBuyLocked(
   if (already >= allowed) {
     if (already === allowed && target.entryMode === 'every') {
       log.info(`Copy cap reached for ${move.mint} from ${target.label} (${allowed} entries).`);
+      noted(target, move.mint, `Already taken ${allowed} entr${allowed === 1 ? 'y' : 'ies'} from them in this coin`);
     }
     return;
   }
@@ -812,6 +828,7 @@ async function mirrorBuyLocked(
   const perWallet = copyBuySol(target, theirSol, wallets.length, config.safety.maxBuySolPerWallet);
   if (perWallet <= 0) {
     log.warn(`Skipped copying ${target.label} into ${move.mint}: computed size was zero.`);
+    noted(target, move.mint, 'Their trade was too small to mirror at your sizing');
     return;
   }
 
@@ -887,6 +904,7 @@ async function mirrorBuyLocked(
       `Skipped copying ${target.label} into ${move.mint}: ` +
         `already holding ${openSol.toFixed(4)} SOL of it.`,
     );
+    noted(target, move.mint, `You already hold ${openSol.toFixed(3)} ◎ of this coin`);
     await notify(
       [
         `🧯 <b>Did not copy ${h(target.label)}</b>`,
@@ -965,6 +983,7 @@ async function mirrorBuyLocked(
     });
 
     log.warn(`Refused to copy ${target.label} into ${move.mint}: ${verdict.reasons.join(' ')}`);
+    noted(target, move.mint, verdict.reasons[0] ?? 'Failed the safety checks', info?.symbol);
     await notify(
       [
         `🛡 <b>Did not copy ${h(target.label)}</b>`,
@@ -1108,6 +1127,7 @@ async function mirrorSellLocked(
    */
   if (!target.copiedMints.includes(move.mint)) {
     log.info(`Ignored ${target.label} selling ${move.mint}: never copied from them.`);
+    noted(target, move.mint, 'They sold a coin you did not copy from them');
     return;
   }
 
@@ -1127,6 +1147,7 @@ async function mirrorSellLocked(
     // the wallets that built this position may sit outside the active group,
     // in which case the exit silently does nothing — say so rather than not
     log.warn(`Copied exit for ${move.mint} found nothing to sell in the selected wallets.`);
+    noted(target, move.mint, 'They sold, but your wallets hold none of it');
     return;
   }
 

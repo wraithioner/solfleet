@@ -283,6 +283,28 @@ export interface BuyEntry {
   freshEntry?: boolean;
 }
 
+/**
+ * A decision not to copy, and why.
+ *
+ * Every one of these already existed as a line in a log file the operator
+ * cannot read. From Telegram the symptom is that a followed wallet bought
+ * something and nothing happened — which is indistinguishable from the bot
+ * being asleep, and is the question it kept being asked.
+ *
+ * Not sent as a message. Most of these are non-events, and a notification per
+ * dusting airdrop would train someone to ignore the notifications that matter.
+ * Written down instead, so the answer is always one tap away.
+ */
+export interface CopyDecision {
+  at: number;
+  /** The followed wallet, as it is labelled. */
+  target: string;
+  mint: string;
+  symbol?: string;
+  /** Short enough to read in a list. */
+  reason: string;
+}
+
 export interface TradeLogEntry {
   at: number;
   action: string;
@@ -305,6 +327,7 @@ interface DbShape {
   copyTargets: CopyTarget[];
   dcaPlans: DcaPlan[];
   valueMarks: ValueMark[];
+  copyDecisions: CopyDecision[];
 }
 
 const defaultSettings = (): Settings => ({
@@ -325,6 +348,7 @@ const defaultSettings = (): Settings => ({
 const dbPath = () => path.join(config.dataDir, 'wallets.json');
 
 /** Slightly under an hour, so an hourly caller is never turned away by seconds. */
+const COPY_DECISION_MAX = 40;
 const VALUE_MARK_INTERVAL_MS = 55 * 60_000;
 const VALUE_MARK_RETENTION_MS = 30 * 24 * 3_600_000;
 
@@ -440,7 +464,7 @@ function load(): DbShape {
   if (cache) return cache;
 
   if (!fs.existsSync(dbPath())) {
-    cache = { version: 1, wallets: [], settings: defaultSettings(), tradeLog: [], positions: {}, rules: [], copyTargets: [], dcaPlans: [], valueMarks: [] };
+    cache = { version: 1, wallets: [], settings: defaultSettings(), tradeLog: [], positions: {}, rules: [], copyTargets: [], dcaPlans: [], valueMarks: [], copyDecisions: [] };
     return cache;
   }
 
@@ -475,6 +499,7 @@ function load(): DbShape {
     copyTargets: (parsed.copyTargets ?? []).map(migrateCopyTarget),
     dcaPlans: parsed.dcaPlans ?? [],
     valueMarks: parsed.valueMarks ?? [],
+    copyDecisions: parsed.copyDecisions ?? [],
   };
   return cache;
 }
@@ -630,6 +655,18 @@ export const db = {
     flush();
   },
 
+  copyDecisions(limit = 12): CopyDecision[] {
+    return load().copyDecisions.slice(0, limit);
+  },
+
+  /** Newest first, and bounded — this is a recent history, not an archive. */
+  recordCopyDecision(entry: CopyDecision): void {
+    const d = load();
+    d.copyDecisions.unshift(entry);
+    if (d.copyDecisions.length > COPY_DECISION_MAX) d.copyDecisions.length = COPY_DECISION_MAX;
+    flush();
+  },
+
   valueMarks(): ValueMark[] {
     return load().valueMarks;
   },
@@ -770,7 +807,7 @@ export const db = {
    */
   wipe(): void {
     fs.rmSync(dbPath(), { force: true });
-    cache = { version: 1, wallets: [], settings: defaultSettings(), tradeLog: [], positions: {}, rules: [], copyTargets: [], dcaPlans: [], valueMarks: [] };
+    cache = { version: 1, wallets: [], settings: defaultSettings(), tradeLog: [], positions: {}, rules: [], copyTargets: [], dcaPlans: [], valueMarks: [], copyDecisions: [] };
   },
 
   /**
