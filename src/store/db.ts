@@ -392,6 +392,50 @@ function migrateSettings(stored: Partial<Settings> | undefined): Settings {
   return merged;
 }
 
+/**
+ * Read the store, and fall back to the copy kept beside it.
+ *
+ * A parse failure here is not a normal error. Every wallet this bot can sign
+ * with lives in this file, so refusing to start is the correct response to not
+ * understanding it — resetting to an empty document would write that emptiness
+ * back over the only copy on the next flush, which turns a bad read into a
+ * permanent loss.
+ *
+ * The backup is written before each replacement, so it is the last document
+ * that parsed. Using it costs whatever changed since; ignoring it costs
+ * everything.
+ */
+function readDocument(): Partial<DbShape> {
+  try {
+    return JSON.parse(fs.readFileSync(dbPath(), 'utf8')) as Partial<DbShape>;
+  } catch (err) {
+    const backup = `${dbPath()}.bak`;
+    if (!fs.existsSync(backup)) throw err;
+
+    // a backup interrupted mid-copy is no better than the file it stands in
+    // for, and reporting the original failure is more use than reporting this
+    let recovered: Partial<DbShape>;
+    try {
+      recovered = JSON.parse(fs.readFileSync(backup, 'utf8')) as Partial<DbShape>;
+    } catch {
+      throw err;
+    }
+    console.warn(
+      `${dbPath()} could not be read (${(err as Error).message}). ` +
+        `Recovered ${recovered.wallets?.length ?? 0} wallet(s) from the backup written beside it. ` +
+        'Anything changed since that backup is gone; the unreadable file has been kept.',
+    );
+    // keep the damaged one for inspection rather than letting the next flush
+    // quietly write over the evidence
+    try {
+      fs.copyFileSync(dbPath(), `${dbPath()}.corrupt`);
+    } catch {
+      /* best effort */
+    }
+    return recovered;
+  }
+}
+
 function load(): DbShape {
   if (cache) return cache;
 
@@ -400,7 +444,7 @@ function load(): DbShape {
     return cache;
   }
 
-  const parsed = JSON.parse(fs.readFileSync(dbPath(), 'utf8')) as Partial<DbShape>;
+  const parsed = readDocument();
 
   /*
    * This bot was multi-chain once, and a wallets.json written then can still

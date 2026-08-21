@@ -2161,5 +2161,42 @@ assert.ok(
 );
 ok('a busy wallet loses its own stalest trade rather than a quiet wallet losing its newest');
 
+console.log('\n[38] The only copy of the keys');
+
+/*
+ * Every wallet this bot can sign with lives in one file. A rename is atomic so
+ * it is never half-written, but atomic is not recoverable — and the container
+ * is killed on every redeploy, which is exactly when a rename that lands
+ * before its contents leaves a file that exists and holds nothing.
+ */
+const vaultSrc = fs.readFileSync('src/store/vault.ts', 'utf8');
+assert.match(vaultSrc, /fs\.fsyncSync\(fd\)/, 'the bytes are flushed, not just handed over');
+assert.match(vaultSrc, /fs\.renameSync\(tmp, file\)/, 'and still swapped in atomically');
+assert.ok(
+  vaultSrc.indexOf('fsyncSync(fd)') < vaultSrc.indexOf('renameSync(tmp, file)'),
+  'in that order, or the sync guarantees nothing',
+);
+ok('the store is flushed to disk before it is swapped into place');
+
+// the previous document is kept, and a damaged one cannot overwrite it
+assert.match(vaultSrc, /\$\{file\}\.bak/, 'the version being replaced is kept');
+assert.ok(
+  vaultSrc.indexOf('renameSync(tmp, file)') < vaultSrc.lastIndexOf('.bak'),
+  'taken after the write lands, so it holds everything rather than trailing by one',
+);
+ok('the backup is a copy of what was just written, not of what it replaced');
+
+/*
+ * And the read side. Resetting to an empty document would write that emptiness
+ * back over the only copy on the next flush — turning a bad read into a
+ * permanent loss.
+ */
+const dbSrc = fs.readFileSync('src/store/db.ts', 'utf8');
+assert.match(dbSrc, /function readDocument/, 'a read failure has a path');
+assert.match(dbSrc, /if \(!fs\.existsSync\(backup\)\) throw err;/, 'with no backup it refuses to start');
+assert.ok(!/catch[\s\S]{0,120}wallets: \[\]/.test(dbSrc), 'and never resets to empty on a parse failure');
+assert.match(dbSrc, /\.corrupt/, 'the damaged file is kept rather than written over');
+ok('an unreadable store recovers from the backup, or refuses to start — never resets');
+
 fs.rmSync(DATA, { recursive: true, force: true });
 console.log(`\n✅ ${passed} assertions passed\n`);

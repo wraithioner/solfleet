@@ -365,9 +365,55 @@ function touchAutolock(): void {
 
 export function writeAtomic(file: string, contents: string): void {
   fs.mkdirSync(path.dirname(file), { recursive: true });
+
+  /*
+   * The bytes on the disk, not the promise of them.
+   *
+   * `writeFileSync` returns once the kernel has the data, which is a different
+   * thing from the data surviving. This container is killed on every redeploy,
+   * and a rename that lands before its contents leaves a file that exists and
+   * holds nothing — with private keys in it, that is not a class of risk worth
+   * carrying for the sake of one syscall.
+   */
   const tmp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, contents, { mode: 0o600 });
+  const fd = fs.openSync(tmp, 'w', 0o600);
+  try {
+    fs.writeFileSync(fd, contents);
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+
   fs.renameSync(tmp, file);
+
+  // and the rename itself, so the directory entry is as durable as the file
+  try {
+    const dir = fs.openSync(path.dirname(file), 'r');
+    try {
+      fs.fsyncSync(dir);
+    } finally {
+      fs.closeSync(dir);
+    }
+  } catch {
+    /* not every filesystem allows syncing a directory handle */
+  }
+
+  /*
+   * A second copy, taken after the write rather than before it.
+   *
+   * This is how the encrypted keys are stored and there is no other copy of
+   * them anywhere, so the question is what the backup contains at the moment
+   * it is needed. Copying the old file before replacing it leaves the backup
+   * one write behind — tested against a truncated store, that recovered one
+   * wallet of two. Copying the new file after it has landed leaves the backup
+   * holding everything, and the only thing at risk is a backup interrupted
+   * mid-copy, which costs nothing because the file it was copying is intact.
+   */
+  try {
+    fs.writeFileSync(`${file}.bak`, contents, { mode: 0o600 });
+  } catch {
+    /* a backup that cannot be taken must not fail the write that succeeded */
+  }
 }
 
 /**
