@@ -36,6 +36,8 @@ export type PendingInput =
 
 export interface SessionState {
   pending?: PendingInput;
+  /** When the prompt was raised, so a forgotten one can expire. */
+  pendingAt?: number;
   /** Callback id -> action, for two-step confirmation of destructive things. */
   confirmations: Map<string, ConfirmAction>;
   lastTokenMint?: string;
@@ -64,15 +66,59 @@ export function session(userId: number): SessionState {
   return s;
 }
 
+/**
+ * How long a half-answered prompt stays waiting for its answer.
+ *
+ * A prompt with no expiry is a trap: tap "custom amount", think better of it,
+ * and an hour later the address you paste is read as the amount you never
+ * gave. Five minutes is longer than anyone spends deciding and short enough
+ * that a forgotten prompt is gone before the next thing is typed.
+ */
+const PENDING_TTL_MS = 5 * 60_000;
+
 export function setPending(userId: number, pending: PendingInput | undefined): void {
-  session(userId).pending = pending;
+  const s = session(userId);
+  s.pending = pending;
+  s.pendingAt = pending ? Date.now() : undefined;
+}
+
+/** Drop a half-answered prompt, because pressing a button answers nothing. */
+export function clearPending(userId: number): void {
+  setPending(userId, undefined);
 }
 
 export function takePending(userId: number): PendingInput | undefined {
   const s = session(userId);
   const p = s.pending;
+  const at = s.pendingAt ?? 0;
   s.pending = undefined;
-  return p;
+  s.pendingAt = undefined;
+
+  if (!p) return undefined;
+  return Date.now() - at <= PENDING_TTL_MS ? p : undefined;
+}
+
+/**
+ * Prompts that are waiting for a number, not for an address.
+ *
+ * Somebody pasting a token address has said what they want more clearly than
+ * the prompt they left open, and `Number('E5ZKT…')` is not a size. The paste
+ * wins and the prompt is dropped.
+ */
+export function expectsANumber(pending: PendingInput): boolean {
+  return [
+    'custom_buy',
+    'custom_sell',
+    'fund_amount',
+    'derive_count',
+    'copy_size',
+    'copy_resize',
+    'set_slippage',
+    'set_priority_fee',
+    'set_jito_tip',
+    'set_reserve',
+    'set_fee_ceiling',
+  ].includes(pending.kind);
 }
 
 /** Register an action behind a confirm button. Expires after five minutes. */

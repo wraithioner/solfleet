@@ -10,6 +10,8 @@ import {
   session,
   setPending,
   takePending,
+  clearPending,
+  expectsANumber,
   takeConfirmation,
   mintFromId,
   walletFromShortId,
@@ -246,6 +248,18 @@ function registerCallbacks(bot: Bot): void {
 
 async function routeCallback(ctx: Context, action: string, args: string[]): Promise<void> {
   const userId = ctx.from!.id;
+
+  /*
+   * Pressing a button answers no question.
+   *
+   * A prompt used to survive every screen change, so tapping "custom amount",
+   * changing your mind and navigating away left something waiting — and the
+   * next thing typed was read as the answer. Paste a token address in that
+   * state and it was consumed as a size, which reads as the bot ignoring you.
+   *
+   * The routes that want an answer set the prompt themselves, after this.
+   */
+  clearPending(userId);
 
   switch (action) {
     // navigation
@@ -562,7 +576,12 @@ function registerText(bot: Bot): void {
     const userId = ctx.from.id;
     const pending = takePending(userId);
 
-    if (pending) {
+    /*
+     * An address beats a stale prompt. Someone pasting a mint has said what
+     * they want more plainly than a half-answered question they left open.
+     */
+    const pasted = extractTokenAddress(text);
+    if (pending && !(pasted && expectsANumber(pending))) {
       await handlePending(ctx, pending, text);
       return;
     }
@@ -587,10 +606,9 @@ function registerText(bot: Bot): void {
     }
 
     // the headline behaviour: paste an address, get the token
-    const token = extractTokenAddress(text);
-    if (token) {
-      session(userId).lastTokenMint = token.address;
-      await T.showTokenCard(ctx, token.address);
+    if (pasted) {
+      session(userId).lastTokenMint = pasted.address;
+      await T.showTokenCard(ctx, pasted.address);
       return;
     }
 

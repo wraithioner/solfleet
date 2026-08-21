@@ -2347,5 +2347,51 @@ for (const marker of worthAMessage) {
 }
 ok('non-events are recorded quietly; decisions about money still send a message');
 
+console.log('\n[42] A prompt nobody answered');
+
+/*
+ * A half-answered prompt had no expiry and nothing cleared it. Tap "custom
+ * amount", think better of it, navigate away — and the prompt sat there. The
+ * next thing typed was read as its answer, so pasting a token address was
+ * consumed as a size and the bot appeared to ignore the paste entirely.
+ */
+const { setPending, takePending, clearPending, expectsANumber } = await import('../src/bot/session.js');
+const USER = 4242;
+
+setPending(USER, { kind: 'custom_buy', mint: 'M' });
+clearPending(USER);
+assert.equal(takePending(USER), undefined, 'navigating away drops the question');
+ok('pressing a button answers nothing, so it clears the prompt');
+
+// and the router does that before any route can set a new one
+const idx = fs.readFileSync('src/bot/index.ts', 'utf8');
+const clearAt = idx.indexOf('clearPending(userId);');
+const switchAt = idx.indexOf('switch (action) {', clearAt);
+const setAt = idx.indexOf('setPending', switchAt);
+assert.ok(clearAt > 0 && clearAt < switchAt && switchAt < setAt, 'cleared first, then the route may set its own');
+ok('the routes that do want an answer still get to ask for one');
+
+/*
+ * An address beats a stale prompt outright. Someone pasting a mint has said
+ * what they want more plainly than a question they left open, and
+ * Number('E5ZKT…') is not a size.
+ */
+assert.equal(expectsANumber({ kind: 'custom_buy', mint: 'M' }), true);
+assert.equal(expectsANumber({ kind: 'copy_size', address: 'A' }), true);
+assert.equal(expectsANumber({ kind: 'rename_wallet', walletId: 'W' }), false, 'a name may look like anything');
+assert.equal(expectsANumber({ kind: 'copy_address' }), false, 'and that one wants an address');
+ok('prompts wanting a number are told apart from prompts wanting text');
+
+assert.match(idx, /if \(pending && !\(pasted && expectsANumber\(pending\)\)\)/, 'the paste wins');
+ok('pasting a token address is never swallowed by a forgotten amount prompt');
+
+// finally, it expires on its own
+assert.match(
+  fs.readFileSync('src/bot/session.ts', 'utf8'),
+  /Date\.now\(\) - at <= PENDING_TTL_MS/,
+  'an old prompt is not answered by whatever arrives next',
+);
+ok('a prompt left long enough expires rather than waiting forever');
+
 fs.rmSync(DATA, { recursive: true, force: true });
 console.log(`\n✅ ${passed} assertions passed\n`);
