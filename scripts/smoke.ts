@@ -1555,5 +1555,158 @@ db.recordValueMark(Number.NaN, 1);
 assert.equal(db.valueMarks().length, 1, 'an unreadable portfolio is never written down');
 ok('marks are hourly, and a bad reading is dropped rather than stored');
 
+console.log('\n[25] One coin, many followed wallets');
+
+/*
+ * Four defects found by auditing what happens when two followed wallets touch
+ * the same token. Every one of them spends or dumps real money, and none was
+ * visible from a single-target test.
+ */
+const { exposureSol, roomUnderCap, activeMintLocks } = await import('../src/services/copytrade.js');
+
+db.wipe();
+const MINT_X = 'MintXcopytradeaudit1111111111111111111111';
+
+// ── the cap sees the position, not the follower ──────────────────────────────
+assert.equal(roomUnderCap(MINT_X, 0.5), 0.5, 'an untouched coin has the whole cap free');
+db.recordBuy(MINT_X, 0.2, 4, 1_000, 'XXX', 0.2081);
+assert.equal(Number(exposureSol(MINT_X).toFixed(4)), 0.2081, 'exposure is the measured cost, fees included');
+assert.equal(Number(roomUnderCap(MINT_X, 0.5).toFixed(4)), 0.2919);
+ok('room under the per-coin cap is measured from what the coin actually cost');
+
+/*
+ * The case the cap exists for. Three followed wallets buying the same coin at
+ * 0.05 x 4 wallets used to spend 0.60 SOL, because the entry cap lives on each
+ * follower and neither can see the other two.
+ */
+const FRESH = 'MintFreshThreeTraders1111111111111111111';
+let spent = 0;
+let refused = 0;
+for (let trader = 0; trader < 3; trader++) {
+  const batch = 0.05 * 4; // 0.05 SOL each across 4 wallets
+  if (batch > roomUnderCap(FRESH, 0.5)) {
+    refused++;
+    continue;
+  }
+  db.recordBuy(FRESH, batch, 4, 1_000, 'XXX', batch);
+  spent += batch;
+}
+assert.equal(Number(spent.toFixed(4)), 0.4, 'two entries fit under a 0.5 cap');
+assert.equal(refused, 1, 'the third is refused rather than taking the total past the cap');
+assert.ok(exposureSol(FRESH) <= 0.5 + 1e-9, `cap held: ${exposureSol(FRESH)}`);
+ok('three traders into one coin stop at the cap instead of stacking three entries');
+
+// without the cap all three land — the behaviour this replaces
+let uncapped = 0;
+const OPEN = 'MintNoCapThreeTraders111111111111111111';
+for (let trader = 0; trader < 3; trader++) {
+  if (0.2 > roomUnderCap(OPEN, 0)) continue;
+  uncapped += 0.2;
+}
+assert.equal(Number(uncapped.toFixed(4)), 0.6, 'uncapped, three traders spend 3x');
+ok('and with the cap off they still stack, so the cap is what does the work');
+
+// a cap of zero is off, not a cap of nothing
+assert.equal(roomUnderCap(MINT_X, 0), Infinity);
+ok('setting the cap to zero turns it off rather than blocking every buy');
+
+// ── the mint lock serialises, and does not leak ──────────────────────────────
+const { withMintLock } = await import('../src/services/copytrade.js');
+
+/*
+ * Two copies of the same coin must not overlap. The window this closes is real:
+ * mirrorBuy reads how much is already in, then awaits a network call to screen
+ * the token before it writes anything, and `pollTarget` calls in from outside
+ * the socket's serial queue. Both callers used to see the same "room left".
+ */
+const lockOrder: string[] = [];
+const slowCopy = withMintLock(MINT_X, async () => {
+  lockOrder.push('a:start');
+  await new Promise((r) => setTimeout(r, 40));
+  lockOrder.push('a:end');
+});
+const fastCopy = withMintLock(MINT_X, async () => {
+  lockOrder.push('b:start');
+  lockOrder.push('b:end');
+});
+await Promise.all([slowCopy, fastCopy]);
+assert.deepEqual(lockOrder, ['a:start', 'a:end', 'b:start', 'b:end'], `interleaved: ${lockOrder.join(' ')}`);
+ok('a second copy of the same coin waits rather than reading stale exposure');
+
+// a different coin is not blocked behind it
+const parallelOrder: string[] = [];
+await Promise.all([
+  withMintLock('MintOne1111111111111111111111111111111111', async () => {
+    await new Promise((r) => setTimeout(r, 30));
+    parallelOrder.push('one');
+  }),
+  withMintLock('MintTwo2222222222222222222222222222222222', async () => {
+    parallelOrder.push('two');
+  }),
+]);
+assert.deepEqual(parallelOrder, ['two', 'one'], 'different coins run concurrently');
+ok('two different coins are still copied at the same time');
+
+// a throwing copy must release the lock, or that coin is dead forever
+await withMintLock(MINT_X, async () => {
+  throw new Error('screening blew up');
+}).catch(() => {});
+let ranAfterThrow = false;
+await withMintLock(MINT_X, async () => {
+  ranAfterThrow = true;
+});
+assert.equal(ranAfterThrow, true, 'the lock survives a failed copy');
+assert.equal(activeMintLocks(), 0, 'and nothing is left holding it');
+ok('a copy that throws releases the coin instead of jamming it forever');
+
+// ── refusals are not positions ───────────────────────────────────────────────
+const { DEFAULT_SAFETY: DS } = await import('../src/services/safety.js');
+assert.equal(DS.maxSolPerMint, 0.5, 'a cap ships on by default');
+ok('the shipped default caps one coin at 0.5 SOL');
+
+console.log('\n[26] Copy exits only close what the trader opened');
+
+/*
+ * The worst of the four. mirrorSell's only test was "do the wallets hold this
+ * mint", so ANY followed wallet selling ANY coin in the book closed it — a coin
+ * bought by hand, or copied from a different trader, and in `all` mode all of
+ * it. The gate is now: this target copied it, and a buy actually landed.
+ */
+db.wipe();
+const follower = {
+  id: 'T1', address: 'Addr1', label: 'trader-1',
+  buySol: 0.05, sizeMode: 'fixed' as const, sizePercent: 5,
+  entryMode: 'first' as const, maxEntries: 3, exitMode: 'all' as const,
+  enabled: true, copiedMints: [] as string[], entryCounts: {} as Record<string, number>,
+  refusedMints: [] as string[], createdAt: Date.now(),
+};
+db.addCopyTarget(follower);
+
+const HAND_BOUGHT = 'MintHandBought11111111111111111111111111111';
+db.recordBuy(HAND_BOUGHT, 0.3, 2, 5_000, 'HAND', 0.31);
+
+// the trader never copied it, so their sell must not reach it
+const stored = db.copyTargets().find((t) => t.id === 'T1')!;
+assert.equal(stored.copiedMints.includes(HAND_BOUGHT), false);
+ok('a hand-bought coin is not on any follower\'s copied list');
+
+// and a refused coin is recorded apart from a copied one
+db.updateCopyTarget('T1', { refusedMints: ['MintRefused111111111111111111111111111111'] });
+const reloaded = db.copyTargets().find((t) => t.id === 'T1')!;
+assert.deepEqual(reloaded.copiedMints, [], 'a refusal never lands in copiedMints');
+assert.equal(reloaded.refusedMints?.length, 1, 'it lands in its own list instead');
+ok('refused coins are kept apart from copied ones, so they cannot authorise a sale');
+
+/*
+ * The second half of the sell gate. Records written before the split cannot
+ * say which copied mints were really refusals — but a refusal spends nothing,
+ * so it has no cost basis, and that is what the second condition tests.
+ */
+const LEGACY_REFUSED = 'MintLegacyRefused111111111111111111111111';
+db.updateCopyTarget('T1', { copiedMints: [LEGACY_REFUSED] });
+assert.equal(exposureSol(LEGACY_REFUSED), 0, 'nothing was ever bought, so there is no position');
+ok('an old record listing a refusal as copied still has no position to sell');
+
+
 fs.rmSync(DATA, { recursive: true, force: true });
 console.log(`\n✅ ${passed} assertions passed\n`);

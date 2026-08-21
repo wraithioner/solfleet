@@ -192,6 +192,16 @@ export interface CopyTarget {
   copiedMints: string[];
   /** Copied buys so far per mint, for the `every` cap. */
   entryCounts?: Record<string, number>;
+  /**
+   * Mints the safety gate refused, so they are not screened again.
+   *
+   * Kept apart from `copiedMints` because the two mean opposite things and
+   * were once written to the same list. A refusal spends no money, so a mint
+   * in here is one the wallets do NOT hold from this target — and the copied
+   * list is what decides whether their sell is allowed to move a position.
+   * Conflating them meant a token refused months ago authorised a sale.
+   */
+  refusedMints?: string[];
   createdAt: number;
 }
 
@@ -294,6 +304,14 @@ function migrateCopyTarget(t: CopyTarget): CopyTarget {
     maxEntries: t.maxEntries ?? 3,
     exitMode: t.exitMode ?? (t.copySells === false ? 'off' : 'proportional'),
     entryCounts: t.entryCounts ?? {},
+    /*
+     * Records written before the split cannot say which of their copied mints
+     * were refusals rather than buys, and guessing would be worse than the
+     * bug. Left empty: the sell gate that reads `copiedMints` also requires a
+     * recorded cost basis, so a refusal still cannot authorise a sale — a
+     * refused token was never bought and so has none.
+     */
+    refusedMints: t.refusedMints ?? [],
     takeProfitSellPct: t.takeProfitSellPct ?? 50,
   };
 }

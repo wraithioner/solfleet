@@ -41,6 +41,21 @@ export interface SafetyLimits {
    * tokens on the list.
    */
   minVolume1hUsd: number;
+  /**
+   * Total SOL that may go into one mint from copy trading. Zero disables it.
+   *
+   * Not a property of the token, so `assessToken` does not read it — it is
+   * enforced at the buy, where the amount is known. It lives here because the
+   * screen an operator opens to bound their risk is this one.
+   *
+   * The limit this closes is not the one the other fields close. Every check
+   * above asks whether a token is worth buying; this asks how much of it you
+   * end up holding, and the answer used to be decided by how many followed
+   * wallets happened to buy the same coin. Three of them meant three full-size
+   * entries, because the per-token entry cap is stored on each followed wallet
+   * and neither can see the other.
+   */
+  maxSolPerMint: number;
 }
 
 export const DEFAULT_SAFETY: SafetyLimits = {
@@ -50,6 +65,7 @@ export const DEFAULT_SAFETY: SafetyLimits = {
   minLiquidityUsd: 3_000,
   maxAgeHours: 72,
   minVolume1hUsd: 1_000,
+  maxSolPerMint: 0.5,
 };
 
 /**
@@ -60,7 +76,7 @@ export const DEFAULT_SAFETY: SafetyLimits = {
  * version marker lets a genuinely stricter set replace those without
  * overwriting a limit the operator picked deliberately afterwards.
  */
-export const SAFETY_VERSION = 3;
+export const SAFETY_VERSION = 4;
 
 export interface SafetyVerdict {
   safe: boolean;
@@ -220,6 +236,9 @@ export function describeLimits(limits: SafetyLimits): string[] {
     limits.minVolume1hUsd > 0
       ? `1h volume: refuse under <b>$${limits.minVolume1hUsd.toLocaleString('en-US')}</b>`
       : '1h volume: <b>not checked</b>',
+    limits.maxSolPerMint > 0
+      ? `Per token: never hold more than <b>${limits.maxSolPerMint} ◎</b> of one coin`
+      : 'Per token: <b>no cap</b>',
   ];
 }
 

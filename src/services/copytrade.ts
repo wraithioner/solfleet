@@ -203,9 +203,13 @@ export function copySellPercent(mode: CopyExitMode, move: TokenMove): number {
 export function armCopyRules(target: CopyTarget, mint: string, notify?: Notifier): void {
   const existing = db.rulesFor(mint);
   const armed: string[] = [];
+  const skipped: string[] = [];
 
   const add = (kind: 'take_profit' | 'stop_loss', triggerPct: number, sellPercent: number) => {
-    if (existing.some((r) => r.kind === kind && !r.firedAt)) return;
+    if (existing.some((r) => r.kind === kind && !r.firedAt)) {
+      skipped.push(kind === 'take_profit' ? `TP +${triggerPct}%` : `SL ${triggerPct}%`);
+      return;
+    }
     db.addRule({
       id: newRuleId(),
       mint,
@@ -228,6 +232,27 @@ export function armCopyRules(target: CopyTarget, mint: string, notify?: Notifier
   if (armed.length > 0) {
     log.info(`Armed ${armed.join(' and ')} on ${mint} from ${target.label}.`);
     void notify?.(`🤖 Armed <b>${armed.join('</b> and <b>')}</b> on this position.`).catch(() => {});
+  }
+
+  /*
+   * A rule already on the mint wins, and the operator is told which of this
+   * target's settings were therefore not used.
+   *
+   * One position takes one set of exits — stacking a second stop-loss on the
+   * same coin would sell it twice. But when two followed wallets are configured
+   * differently the surviving set is a mixture of the two, and it used to
+   * assemble itself in silence. Someone who set a trader to −30% has a right to
+   * know their position is running on somebody else's −50%.
+   */
+  if (skipped.length > 0) {
+    log.info(
+      `${target.label}'s ${skipped.join(' and ')} not armed on ${mint}: ` +
+        'the position already carries a rule of that kind.',
+    );
+    void notify?.(
+      `ℹ️ <b>${target.label}</b>'s ${skipped.join(' and ')} was not added — ` +
+        'this position already has one of each. The existing rules stand.',
+    ).catch(() => {});
   }
 }
 
@@ -522,6 +547,71 @@ export function liveSubscriptionCount(): number {
 }
 
 /** How many copied buys this target has already made into one token. */
+/*
+ * One copied buy per mint at a time, across every followed wallet.
+ *
+ * Two followed wallets buying the same coin are two different transactions, so
+ * nothing upstream collapses them — and both used to read the exposure so far,
+ * both see room under the cap, and both spend. The same is true of one wallet
+ * arriving twice: `pollTarget` calls straight into `handleSignature` outside
+ * the socket's serial queue, and the gap between reading the entry count and
+ * claiming it spans a network round trip.
+ *
+ * Serialising per mint rather than skipping keeps the outcome deterministic. A
+ * second trader's buy is not dropped because it happened to land during the
+ * first; it waits, re-reads what has been spent, and is judged against a cap
+ * that now includes the buy in front of it.
+ */
+const mintLocks = new Map<string, Promise<void>>();
+
+export async function withMintLock<T>(mint: string, fn: () => Promise<T>): Promise<T> {
+  const previous = mintLocks.get(mint) ?? Promise.resolve();
+
+  let release!: () => void;
+  const mine = new Promise<void>((resolve) => (release = resolve));
+
+  // the queue's new tail, kept by identity: the map holds this exact promise
+  // until somebody chains behind it, and comparing against `mine` instead
+  // never matches, so the entry is never removed and the map grows for the
+  // lifetime of the process — one leaked entry per coin ever copied
+  const tail = previous.then(() => mine);
+  mintLocks.set(mint, tail);
+
+  await previous.catch(() => {});
+  try {
+    return await fn();
+  } finally {
+    release();
+    // nobody queued behind me, so the coin is idle and the entry can go
+    if (mintLocks.get(mint) === tail) mintLocks.delete(mint);
+  }
+}
+
+/** Test seam: how many mints are mid-copy. */
+export function activeMintLocks(): number {
+  return mintLocks.size;
+}
+
+/**
+ * SOL already committed to a mint, from every source.
+ *
+ * Measured cost where it exists, which includes the fees and rent a copy pays.
+ * Hand-bought size counts too: the cap is a statement about how much of one
+ * coin the operator is willing to hold, and money spent by tapping a button is
+ * no less spent than money spent automatically.
+ */
+export function exposureSol(mint: string): number {
+  const pos = db.position(mint);
+  if (!pos) return 0;
+  return pos.costSol ?? pos.investedSol;
+}
+
+/** Room left under the per-mint cap. Infinity when the cap is off. */
+export function roomUnderCap(mint: string, maxSolPerMint: number): number {
+  if (maxSolPerMint <= 0) return Infinity;
+  return Math.max(0, maxSolPerMint - exposureSol(mint));
+}
+
 function entriesSoFar(target: CopyTarget, mint: string): number {
   const counted = target.entryCounts?.[mint];
   if (counted !== undefined) return counted;
@@ -535,6 +625,20 @@ async function mirrorBuy(
   theirSol: number,
   notify: Notifier,
 ): Promise<void> {
+  // every decision below reads state that a concurrent copy would change
+  return withMintLock(move.mint, () => mirrorBuyLocked(target, move, theirSol, notify));
+}
+
+async function mirrorBuyLocked(
+  target: CopyTarget,
+  move: TokenMove,
+  theirSol: number,
+  notify: Notifier,
+): Promise<void> {
+  // a token this target was already refused is not reconsidered: the answer
+  // will not have changed, and re-reading it turns one bad coin into a stream
+  if (target.refusedMints?.includes(move.mint)) return;
+
   const already = entriesSoFar(target, move.mint);
 
   /*
@@ -561,6 +665,58 @@ async function mirrorBuy(
   }
 
   /*
+   * How much of this one coin the operator ends up holding.
+   *
+   * The entry cap above is stored on the followed wallet, so it bounds how
+   * often THIS trader can pull you into a token and nothing else. Follow three
+   * wallets that all buy the same coin and you take three full-size entries,
+   * because none of the three records can see the other two. This is the only
+   * check that sees the position rather than the follower.
+   *
+   * The batch is refused whole rather than trimmed to fit. A size the operator
+   * did not choose is worse than a skip they can read: the message says what is
+   * already in, what this would have added, and where the limit is.
+   */
+  const limits = db.settings().copySafety;
+  const room = roomUnderCap(move.mint, limits.maxSolPerMint);
+  const batchSol = perWallet * wallets.length;
+
+  if (batchSol > room) {
+    log.warn(
+      `Skipped copying ${target.label} into ${move.mint}: ` +
+        `${exposureSol(move.mint).toFixed(4)} SOL already in, this adds ${batchSol.toFixed(4)}, ` +
+        `cap is ${limits.maxSolPerMint} SOL.`,
+    );
+    await notify(
+      [
+        `🧯 <b>Did not copy ${target.label}</b>`,
+        `<code>${move.mint}</code>`,
+        '',
+        `Already holding <b>${exposureSol(move.mint).toFixed(4)} ◎</b> of this coin.`,
+        `This copy would add <b>${batchSol.toFixed(4)} ◎</b>, over the <b>${limits.maxSolPerMint} ◎</b> per-token cap.`,
+        '',
+        '<i>Copy trading → Safety → Per token to change it.</i>',
+      ].join('\n'),
+    ).catch(() => {});
+    return;
+  }
+
+  /*
+   * Claim the slot BEFORE the screening call, not after.
+   *
+   * `screenToken` is a network round trip, and two of this target's own
+   * transactions arriving close together — one down the socket, one from the
+   * reconciling poll, which calls in outside the socket's serial queue — could
+   * both read the same entry count while the other was suspended inside it, and
+   * both go on to spend. The mint lock closes that window for good, and writing
+   * the claim first means even a lock that failed cannot produce a double buy.
+   */
+  db.updateCopyTarget(target.id, {
+    entryCounts: { ...(target.entryCounts ?? {}), [move.mint]: already + 1 },
+  });
+  target.entryCounts = { ...(target.entryCounts ?? {}), [move.mint]: already + 1 };
+
+  /*
    * Read the token before buying it.
    *
    * The trader being followed may be the deployer, may be exit liquidity, or
@@ -573,10 +729,15 @@ async function mirrorBuy(
    */
   const { verdict, info } = await screenToken(move.mint);
   if (!verdict.safe) {
+    /*
+     * Recorded as refused, not as copied. Those were once the same list, which
+     * meant a coin the gate had rejected — nothing bought, no money spent —
+     * still counted as a position this target was entitled to sell out of.
+     */
     db.updateCopyTarget(target.id, {
-      copiedMints: target.copiedMints.includes(move.mint)
-        ? target.copiedMints
-        : [...target.copiedMints, move.mint],
+      refusedMints: (target.refusedMints ?? []).includes(move.mint)
+        ? target.refusedMints
+        : [...(target.refusedMints ?? []), move.mint],
       entryCounts: { ...(target.entryCounts ?? {}), [move.mint]: allowed },
     });
 
@@ -594,15 +755,18 @@ async function mirrorBuy(
     return;
   }
 
-  // claim the entry before spending, so a crash mid-buy cannot replay it
+  /*
+   * Now it counts as copied. The slot was claimed before the screening call;
+   * this list means something narrower and is written only here — the wallets
+   * are about to hold this coin because of this trader, which is the fact the
+   * exit path needs and the only one that should let their sell move it.
+   */
   db.updateCopyTarget(target.id, {
     copiedMints: target.copiedMints.includes(move.mint)
       ? target.copiedMints
       : [...target.copiedMints, move.mint],
-    entryCounts: { ...(target.entryCounts ?? {}), [move.mint]: already + 1 },
   });
   if (!target.copiedMints.includes(move.mint)) target.copiedMints.push(move.mint);
-  target.entryCounts = { ...(target.entryCounts ?? {}), [move.mint]: already + 1 };
 
   const settings = db.settings();
   log.info(`Copying ${target.label} into ${move.mint} (entry ${already + 1}/${allowed})`);
@@ -679,12 +843,40 @@ function firstReason(summary: { results: Array<{ ok: boolean; error?: string }> 
 }
 
 async function mirrorSell(target: CopyTarget, move: TokenMove, notify: Notifier): Promise<void> {
+  /*
+   * Only exit what this trader actually put you into.
+   *
+   * Holding the coin used to be the entire test, which made every followed
+   * wallet a trigger for every position in the book. A trader selling a token
+   * they had nothing to do with — one bought by hand, or copied from somebody
+   * else entirely — closed it anyway, and in `all` mode closed all of it. The
+   * trader whose exit this mirrors has to be the trader whose entry opened it.
+   *
+   * Two conditions, because neither is sufficient alone. `copiedMints` says
+   * this target opened it; a recorded cost basis says a buy actually landed,
+   * which covers records written before refusals were kept in their own list
+   * and so cannot distinguish a rejected coin from a bought one.
+   */
+  if (!target.copiedMints.includes(move.mint)) {
+    log.info(`Ignored ${target.label} selling ${move.mint}: never copied from them.`);
+    return;
+  }
+  if (exposureSol(move.mint) <= 0) {
+    log.info(`Ignored ${target.label} selling ${move.mint}: no recorded position to exit.`);
+    return;
+  }
+
   const wallets = selectWallets();
   if (wallets.length === 0) return;
 
   // only act if we actually hold it
   const held = await getMintBalances(wallets.map((w) => w.address), move.mint).catch(() => new Map());
-  if (held.size === 0) return;
+  if (held.size === 0) {
+    // the wallets that built this position may sit outside the active group,
+    // in which case the exit silently does nothing — say so rather than not
+    log.warn(`Copied exit for ${move.mint} found nothing to sell in the selected wallets.`);
+    return;
+  }
 
   const percent = copySellPercent(target.exitMode, move);
   if (percent <= 0) return;

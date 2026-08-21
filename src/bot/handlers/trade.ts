@@ -1272,7 +1272,12 @@ export async function showCopyTarget(ctx: Context, id: string): Promise<void> {
         (t.takeProfitPct !== undefined ? `. Take profit sells ${t.takeProfitSellPct ?? 50}% and lets the rest run` : '') +
         '.</i>',
     '',
-    `<i>${t.copiedMints.length} token${t.copiedMints.length === 1 ? '' : 's'} copied so far. Once copied, a token is never re-entered.</i>`,
+    // the old wording promised something this screen cannot deliver: the cap it
+    // described is stored per followed wallet, so following three of them into
+    // one coin took three entries, and the reader had no way to know
+    `<i>${t.copiedMints.length} token${t.copiedMints.length === 1 ? '' : 's'} copied from this wallet. ` +
+      `It will not re-enter one of them${t.entryMode === 'every' ? ` past ${t.maxEntries} entries` : ''}; ` +
+      `total size per coin is capped in <b>Safety</b>, across every wallet you follow.</i>`,
   ];
 
   const kb = new InlineKeyboard()
@@ -1381,6 +1386,8 @@ const LIQ_STEPS = [0, 1_000, 3_000, 10_000, 25_000];
 const AGE_STEPS = [6, 24, 72, 168, 0];
 /** Dollars of volume in the last hour. Live launches clear the top rung easily. */
 const VOL_STEPS = [0, 500, 1_000, 5_000, 25_000];
+/** Total SOL allowed into one coin, counting every trader and hand buys alike. */
+const MINT_CAP_STEPS = [0.1, 0.25, 0.5, 1, 2, 0];
 
 export async function showCopySafety(ctx: Context): Promise<void> {
   const limits = db.settings().copySafety;
@@ -1393,6 +1400,8 @@ export async function showCopySafety(ctx: Context): Promise<void> {
       'Checked on every copied buy, before any money moves. A token that fails is skipped and never reconsidered.',
       '',
       '<i>Age is measured from the token\'s first market, not the pool it trades in now — a coin that graduates gets a brand-new pool and would otherwise read as minutes old.</i>',
+      '',
+      '<i>The per-coin cap spans every wallet you follow. Without it, three traders buying the same coin means three full-size entries — each one only knows what it bought itself.</i>',
       '',
       ...describeLimits(limits).map((l) => `· ${l}`),
       '',
@@ -1425,6 +1434,12 @@ export async function showCopySafety(ctx: Context): Promise<void> {
       )
       .primary()
       .row()
+      .text(
+        limits.maxSolPerMint > 0 ? `🧯 Max ${limits.maxSolPerMint} ◎ per coin` : '🧯 No cap per coin',
+        'safety_mintcap',
+      )
+      .primary()
+      .row()
       // reachable from both screens, so it offers both ways back
       .text('← Copy trading', 'copy_trade').text('⚙️ Settings', 'settings'),
   );
@@ -1440,6 +1455,7 @@ export async function cycleSafety(ctx: Context, which: string): Promise<void> {
   else if (which === 'auth') limits.requireRevokedAuthorities = !limits.requireRevokedAuthorities;
   else if (which === 'age') limits.maxAgeHours = cycleStep(AGE_STEPS, limits.maxAgeHours);
   else if (which === 'vol') limits.minVolume1hUsd = cycleStep(VOL_STEPS, limits.minVolume1hUsd);
+  else if (which === 'mintcap') limits.maxSolPerMint = cycleStep(MINT_CAP_STEPS, limits.maxSolPerMint);
 
   db.updateSettings({ copySafety: limits });
   await showCopySafety(ctx);

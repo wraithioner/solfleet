@@ -649,6 +649,7 @@ export function renderSettings(s: Settings, walletCount: number): string {
     `   Dev max       <b>${s.copySafety.maxDevPct}%</b>`,
     `   Max age       <b>${s.copySafety.maxAgeHours > 0 ? formatAge(s.copySafety.maxAgeHours) : 'any'}</b>`,
     `   1h volume     <b>${s.copySafety.minVolume1hUsd > 0 ? `min $${s.copySafety.minVolume1hUsd.toLocaleString('en-US')}` : 'any'}</b>`,
+    `   Max per coin  <b>${s.copySafety.maxSolPerMint > 0 ? `${s.copySafety.maxSolPerMint} ◎` : 'no cap'}</b>`,
     '',
     `👛 <b>${walletCount}</b> wallet${walletCount === 1 ? '' : 's'}   ·   🎯 ${s.activeGroup ? h(s.activeGroup) : 'all'}`,
   ].join('\n');
