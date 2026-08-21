@@ -2393,5 +2393,46 @@ assert.match(
 );
 ok('a prompt left long enough expires rather than waiting forever');
 
+console.log('\n[43] Saying what the chain objected to');
+
+/*
+ * A copied buy failed in production with
+ * {"InstructionError":[4,{"Custom":6004}]}, which is true and useless — the
+ * first question on seeing it was what it meant, and the message could not
+ * answer that.
+ *
+ * The codes were read off failed transactions on chain rather than from
+ * documentation. On the token in question, 72 of its failures were slippage:
+ * pump-amm/src/instructions/swap/buy.rs names itself in the logs and calls
+ * 6004 ExceededSlippage.
+ */
+const { explainChainError } = await import('../src/chains/solana.js');
+
+const slippage = explainChainError({ InstructionError: [4, { Custom: 6004 }] });
+assert.match(slippage, /slippage/i, 'the reported one is named');
+assert.match(slippage, /nothing was bought/i, 'and says what it means for the money');
+assert.ok(!slippage.includes('6004'), 'without making the reader decode a number');
+ok('the failure that prompted this reads as a sentence');
+
+assert.match(explainChainError({ InstructionError: [4, { Custom: 6040 }] }), /slippage/i);
+ok('so does the other slippage code seen on the same token');
+
+assert.match(
+  explainChainError({ InstructionError: [0, { Custom: 1 }] }),
+  /not enough SOL/i,
+  'and the one that is simply an empty wallet',
+);
+ok('a wallet with nothing in it says so plainly');
+
+/*
+ * The important half: an unrecognised code keeps its raw form. A
+ * confident-sounding guess about why money did not move would be worse than
+ * the JSON it replaced.
+ */
+const unknown = explainChainError({ InstructionError: [2, { Custom: 4242 }] });
+assert.match(unknown, /4242/, 'the code survives');
+assert.ok(!/slippage|not enough/i.test(unknown), 'and is not dressed up as something known');
+ok('an unrecognised rejection stays raw rather than being guessed at');
+
 fs.rmSync(DATA, { recursive: true, force: true });
 console.log(`\n✅ ${passed} assertions passed\n`);

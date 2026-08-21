@@ -245,6 +245,48 @@ export async function buildAndSign(
   return tx;
 }
 
+/**
+ * Say what the chain actually objected to.
+ *
+ * A rejection arrives as `{"InstructionError":[4,{"Custom":6004}]}`, which is
+ * true and useless — the operator's first question on seeing one was what it
+ * meant, and there is no way to answer that from the message. The codes below
+ * were read off failed transactions on chain rather than from documentation:
+ * the program names itself in its logs, and 6004 on the AMM turned out to be
+ * the slippage limit doing its job.
+ *
+ * An unrecognised code keeps its raw form. A confident-sounding guess about
+ * why money did not move would be worse than the JSON.
+ */
+const CHAIN_ERRORS: Record<number, string> = {
+  // pump-amm/src/instructions/swap/buy.rs — verified on chain
+  6004:
+    'the price moved past your slippage limit between building the trade and it landing. ' +
+    'Nothing was bought and nothing was spent beyond the fee.',
+  6040:
+    'the price moved past your slippage limit before the trade landed — it would have ' +
+    'returned fewer tokens than the limit allows. Nothing was bought.',
+};
+
+export function explainChainError(err: unknown): string {
+  const raw = JSON.stringify(err);
+
+  const custom = /\{"Custom":(\d+)\}/.exec(raw);
+  const code = custom ? Number(custom[1]) : undefined;
+  const known = code !== undefined ? CHAIN_ERRORS[code] : undefined;
+  if (known) return `The chain rejected it: ${known}`;
+
+  // the two that come from Solana itself rather than from a program
+  if (/InsufficientFundsForRent/i.test(raw)) {
+    return 'The chain rejected it: the wallet cannot cover the rent this trade needs. Send it a little more SOL.';
+  }
+  if (/"Custom":1\}/.test(raw) && /InstructionError":\[0/.test(raw)) {
+    return 'The chain rejected it: not enough SOL in the wallet for this trade.';
+  }
+
+  return `Transaction failed on-chain: ${raw}`;
+}
+
 export async function sendAndConfirm(
   tx: VersionedTransaction,
   opts: { skipPreflight?: boolean; timeoutMs?: number } = {},
@@ -297,7 +339,7 @@ export async function confirmSignature(signature: string, timeoutMs = 60_000): P
     const status = value[0];
 
     if (status) {
-      if (status.err) throw new Error(`Transaction failed on-chain: ${JSON.stringify(status.err)}`);
+      if (status.err) throw new Error(explainChainError(status.err));
       if (status.confirmationStatus === 'confirmed' || status.confirmationStatus === 'finalized') return;
     }
 
