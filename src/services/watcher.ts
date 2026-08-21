@@ -6,6 +6,9 @@ import { batchPumpTrade, measureTokensGained, isFreshEntry } from '../trade/engi
 import { getMintBalances } from '../chains/solana.js';
 import { pricesInSol } from './price.js';
 import { errMessage } from '../util.js';
+
+/** Escaped for the Telegram messages this file sends. */
+const h = (t: string): string => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 import { pollCopyTargets, syncSubscriptions, stopSubscriptions } from './copytrade.js';
 import { buildPortfolio } from './portfolio.js';
 import { log } from '../logger.js';
@@ -215,9 +218,97 @@ async function tick(notify: Notifier): Promise<void> {
   }
 }
 
+/**
+ * Attempts allowed after a sell that landed nothing at all.
+ *
+ * Bounded because a token that cannot be sold cannot be sold, and firing at it
+ * every twenty seconds forever burns fees and buries the notification that
+ * says so. Three attempts spans a minute, which covers a congested block or a
+ * moment of thin liquidity without pretending a honeypot will relent.
+ */
+const MAX_FIRE_ATTEMPTS = 3;
+
+/**
+ * How far below the quote a stop is willing to sell.
+ *
+ * A stop-loss is not a price, it is an exit. Selling a memecoin position at
+ * the configured 15% will simply fail when the book cannot absorb it — and
+ * because the rule is marked fired before the attempt, a failure used to
+ * retire the protection permanently. Getting out at a worse price beats
+ * discovering the stop stopped existing at the moment it mattered.
+ */
+const STOP_SLIPPAGE_PCT = 35;
+
+function isExit(rule: AutoRule): boolean {
+  return rule.kind === 'stop_loss' || rule.kind === 'trailing_stop';
+}
+
+function slippageFor(rule: AutoRule, configured: number): number {
+  return isExit(rule) ? Math.max(configured, STOP_SLIPPAGE_PCT) : configured;
+}
+
+/**
+ * What a stop is willing to pay to be included.
+ *
+ * The other half of the same problem. Widening slippage decides whether the
+ * trade can fill; the priority fee decides whether it is in the block at all,
+ * and a stop-loss sitting unconfirmed through a congested minute is the
+ * difference between getting out down 30% and down 80%. A take-profit can
+ * wait — the price it wanted will still be there or it will not. An exit
+ * cannot.
+ *
+ * Bounded by the operator's own ceiling, so this raises the bid rather than
+ * removing the limit they set on it.
+ */
+const EXIT_FEE_MULTIPLIER = 4;
+
+function priorityFeeFor(rule: AutoRule, configured: number, ceiling: number): number {
+  if (!isExit(rule)) return configured;
+  return Math.min(ceiling, configured * EXIT_FEE_MULTIPLIER);
+}
+
+/**
+ * Put a rule back on the board after an attempt that landed nothing.
+ *
+ * The distinction that matters is between "we do not know whether it sold" and
+ * "it definitely did not". A crash is the first and must stay fired. A batch
+ * that came back with every wallet failed is the second, and leaving that
+ * marked fired is how a position ends up with no stop-loss while its owner
+ * believes it has one.
+ */
+async function rearm(rule: AutoRule, reason: string, notify: Notifier): Promise<void> {
+  const attempts = (rule.failedAttempts ?? 0) + 1;
+  const label = rule.symbol ?? rule.mint.slice(0, 8);
+
+  if (attempts >= MAX_FIRE_ATTEMPTS) {
+    db.updateRule(rule.id, { failedAttempts: attempts });
+    log.warn(`${describe(rule)} for ${rule.mint} gave up after ${attempts} attempts: ${reason}`);
+    await notify(
+      [
+        `🚨 <b>${describe(rule)} could not sell — ${label}</b>`,
+        '',
+        `Tried ${attempts} times and nothing landed. <b>This position is no longer protected.</b>`,
+        `<i>${h(reason)}</i>`,
+        '',
+        '<i>Open it from Positions and sell by hand.</i>',
+      ].join('\n'),
+    ).catch(() => {});
+    return;
+  }
+
+  db.updateRule(rule.id, { firedAt: undefined, failedAttempts: attempts });
+  log.warn(`${describe(rule)} for ${rule.mint} landed nothing (attempt ${attempts}); re-armed. ${reason}`);
+  await notify(
+    `⚠️ <b>${describe(rule)} did not go through — ${label}</b>\n\n` +
+      `<i>${h(reason)}</i>\n\nStill armed. Trying again shortly.`,
+  ).catch(() => {});
+}
+
 async function fire(rule: AutoRule, price: number, notify: Notifier): Promise<void> {
   // Marked before the attempt, never after: a crash between here and the sell
-  // must not leave a rule that fires again on the next tick.
+  // must not leave a rule that fires again on the next tick. A batch that comes
+  // back having landed nothing is a different thing entirely, and `rearm` puts
+  // the rule back rather than retiring protection that never ran.
   db.updateRule(rule.id, { firedAt: Date.now() });
 
   const label = rule.symbol ?? rule.mint.slice(0, 8);
@@ -246,6 +337,14 @@ async function fire(rule: AutoRule, price: number, notify: Notifier): Promise<vo
       });
 
       const fills = summary.results.filter((r) => r.ok && r.signature).length;
+
+      // an order that bought nothing has not been filled, and retiring it here
+      // is how a limit buy silently stops existing at the price it was set for
+      if (fills === 0) {
+        await rearm(rule, firstFailure(summary) ?? 'every wallet failed to buy', notify);
+        return;
+      }
+
       const gained = await measureTokensGained(addresses, rule.mint, heldBefore, undefined);
       db.recordBuy(rule.mint, {
         solSpent: (rule.buySol ?? 0) * fills,
@@ -287,8 +386,8 @@ async function fire(rule: AutoRule, price: number, notify: Notifier): Promise<vo
       mint: rule.mint,
       amount: rule.sellPercent,
       denominatedInSol: false,
-      slippagePercent: settings.slippagePercent,
-      priorityFeeSol: settings.priorityFeeSol,
+      slippagePercent: slippageFor(rule, settings.slippagePercent),
+      priorityFeeSol: priorityFeeFor(rule, settings.priorityFeeSol, settings.priorityFeeCeilingSol),
       pool: 'auto',
     });
 
@@ -296,9 +395,17 @@ async function fire(rule: AutoRule, price: number, notify: Notifier): Promise<vo
     // keeps its whole cost and none of its proceeds, and a stop loss that saved
     // most of the money reports as having lost all of it
     const fills = summary.results.filter((r) => r.ok && r.signature).length;
+
+    // nothing landed, so the protection did not run — put it back
+    if (fills === 0) {
+      await rearm(rule, firstFailure(summary) ?? 'every wallet failed to sell', notify);
+      return;
+    }
     if (summary.solReceived !== undefined && fills > 0) {
       db.recordSell(rule.mint, summary.solReceived, fills);
     }
+
+    if (rule.failedAttempts) db.updateRule(rule.id, { failedAttempts: 0 });
 
     db.appendTradeLog({
       at: Date.now(),
@@ -320,10 +427,15 @@ async function fire(rule: AutoRule, price: number, notify: Notifier): Promise<vo
       ].join('\n'),
     );
   } catch (err) {
-    await notify(`❌ <b>${label}</b>: ${describe(rule)} fired but the sell failed.\n\n<i>${errMessage(err)}</i>`).catch(
-      () => {},
-    );
+    // a throw here happens before any transaction is sent — the wallet set,
+    // the balances and the settings are all read first — so nothing landed
+    await rearm(rule, errMessage(err), notify);
   }
+}
+
+/** The first distinct reason the wallets gave, for a message worth reading. */
+function firstFailure(summary: { results: Array<{ ok: boolean; error?: string }> }): string | undefined {
+  return summary.results.find((r) => !r.ok && r.error)?.error?.slice(0, 160);
 }
 
 export function describe(rule: AutoRule): string {
@@ -349,6 +461,14 @@ async function runDueDca(notify: Notifier): Promise<void> {
     const settings = db.settings();
     const round = plan.roundsDone + 1;
 
+    /*
+     * Counted before the buy, so a crash cannot spend the round twice — and
+     * rolled back below when the batch comes back having bought nothing.
+     *
+     * Without the rollback a plan quietly under-invests: ten rounds were
+     * configured, three of them failed on a congested block, and seven were
+     * bought while the plan reports itself complete.
+     */
     db.updateDcaPlan(plan.id, {
       roundsDone: round,
       nextRunAt: Date.now() + plan.intervalMinutes * 60_000,
@@ -369,6 +489,19 @@ async function runDueDca(notify: Notifier): Promise<void> {
       });
 
       const fills = summary.results.filter((r) => r.ok && r.signature).length;
+
+      if (fills === 0) {
+        // put the round back and try it on the next tick rather than the next
+        // interval — a congested block should cost seconds, not an hour
+        db.updateDcaPlan(plan.id, { roundsDone: plan.roundsDone, nextRunAt: Date.now() });
+        log.warn(`DCA round ${round}/${plan.roundsTotal} for ${plan.mint} bought nothing; round returned.`);
+        await notify(
+          `⚠️ <b>DCA round ${round}/${plan.roundsTotal} did not go through</b>\n\n` +
+            `<i>${h(firstFailure(summary) ?? 'every wallet failed to buy')}</i>\n\nThe round has been put back.`,
+        ).catch(() => {});
+        continue;
+      }
+
       const gained = await measureTokensGained(addresses, plan.mint, heldBefore, undefined);
       db.recordBuy(plan.mint, {
         solSpent: plan.buySol * fills,

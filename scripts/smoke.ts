@@ -2005,5 +2005,75 @@ assert.equal(assessToken({ ...safeBase, top10Pct: withoutPool }).safe, true, 'th
 assert.equal(assessToken({ ...safeBase, top10Pct: withPool }).safe, false, 'the counted one does not');
 ok('on the measured token that is 91.3% refused against 19.1% allowed');
 
+console.log('\n[33] Protection that failed is protection that stays armed');
+
+/*
+ * The worst failure mode in the bot, and it was silent. A rule is marked fired
+ * before the sell is attempted so a crash cannot replay it — but a sell that
+ * simply failed was marked the same way, which retired the stop-loss at the
+ * exact moment it was needed and told nobody. The owner keeps believing the
+ * position is protected.
+ *
+ * Guarded structurally: the shape of the code is the thing that has to hold.
+ */
+const watcherSrc = fs.readFileSync('src/services/watcher.ts', 'utf8');
+assert.match(watcherSrc, /async function rearm\(/, 'there is a way back onto the board');
+assert.match(watcherSrc, /firedAt: undefined/, 'and it clears the fired mark');
+assert.match(watcherSrc, /MAX_FIRE_ATTEMPTS/, 'bounded, so a honeypot is not retried forever');
+
+// every branch that trades inside fire() must handle landing nothing
+const fireBody = watcherSrc.slice(watcherSrc.indexOf('async function fire('), watcherSrc.indexOf('function firstFailure'));
+const rearmCalls = (fireBody.match(/await rearm\(/g) ?? []).length;
+assert.ok(rearmCalls >= 3, `every path re-arms: found ${rearmCalls} (sell, limit buy, throw)`);
+ok('a rule whose trade landed nothing is put back rather than retired');
+
+// a stop is an exit, so it is allowed to accept a worse price than a target
+assert.match(watcherSrc, /STOP_SLIPPAGE_PCT/, 'stops carry their own tolerance');
+const stopPct = Number(watcherSrc.match(/const STOP_SLIPPAGE_PCT = (\d+)/)?.[1]);
+assert.ok(stopPct >= 25, `wide enough to actually exit: ${stopPct}%`);
+assert.match(watcherSrc, /kind === 'stop_loss' \|\| rule\.kind === 'trailing_stop'/, 'and only exits use it');
+ok('a stop-loss sells at a tolerance that lets it get out, unlike a take-profit');
+
+// the failure count clears on success, or three bad days would retire a good rule
+assert.match(watcherSrc, /failedAttempts: 0/, 'a landed sell forgets past failures');
+ok('a rule that eventually works stops carrying its failures');
+
+/*
+ * The same shape in the averaging-in plans: the round was counted before the
+ * buy and never given back, so a plan configured for ten rounds could buy
+ * seven and report itself finished.
+ */
+assert.match(watcherSrc, /roundsDone: plan\.roundsDone, nextRunAt: Date\.now\(\)/, 'a failed round is returned');
+ok('a DCA round that bought nothing is put back rather than spent');
+
+console.log('\n[34] A copied entry does not wait like a card does');
+
+/*
+ * Measured against live endpoints, screening a token took 4001ms — pinned
+ * exactly at the on-chain holder timeout, which is to say that query failed
+ * every time and contributed nothing, while the launch index answered in
+ * 116ms with a better figure. Four seconds of that is paid in fill price on
+ * every copied buy.
+ */
+const tiSrc = fs.readFileSync('src/services/tokeninfo.ts', 'utf8');
+const slow = Number(tiSrc.match(/const HOLDER_DEADLINE_MS = (\d+)/)?.[1]);
+const quick = Number(tiSrc.match(/const FAST_HOLDER_DEADLINE_MS = (\d+)/)?.[1]);
+assert.ok(quick > 0 && quick < slow, `the raced path waits less: ${quick}ms vs ${slow}ms`);
+assert.ok(slow - quick >= 2000, `and by enough to matter on a fill: ${slow - quick}ms saved`);
+ok('the copy path is given a shorter deadline than the screen a person reads');
+
+// and it is the copy path that uses it
+const ctSrc = fs.readFileSync('src/services/copytrade.ts', 'utf8');
+assert.match(ctSrc, /getTokenInfo\(mint, 'solana', \{ fast: true \}\)/, 'screenToken takes the fast path');
+ok('the gate that decides a copied buy is the one that takes it');
+
+/*
+ * Shortened, not skipped. The on-chain read still covers the case the index
+ * cannot: an outage there with a responsive RPC. Removing it would make every
+ * copied buy depend on one third party for concentration.
+ */
+assert.match(tiSrc, /loadSolanaHolders\(address, opts\.fast \?/, 'the query still runs, on a shorter leash');
+ok('the slower source is bounded rather than dropped');
+
 fs.rmSync(DATA, { recursive: true, force: true });
 console.log(`\n✅ ${passed} assertions passed\n`);

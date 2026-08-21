@@ -315,6 +315,21 @@ async function loadMarketData(address: string, kind: 'solana' | 'evm'): Promise<
 const HOLDER_DEADLINE_MS = 4000;
 
 /**
+ * How long a copied buy will wait for the same query.
+ *
+ * A card is read by somebody who can wait four seconds. A copied entry is a
+ * race, and four seconds is a materially worse fill on a token doing its first
+ * minutes. Measured against a live endpoint the whole lookup took 4001ms and
+ * the holder query contributed nothing to any of it — it timed out every time,
+ * while the launch index answered in 116ms with a concentration figure that is
+ * better anyway, because it can tell a pool from a whale.
+ *
+ * Kept as a short wait rather than removed, so the on-chain read still covers
+ * the case where the index is unreachable and the RPC is quick.
+ */
+const FAST_HOLDER_DEADLINE_MS = 1200;
+
+/**
  * Programs whose token accounts are a market rather than somebody's position.
  *
  * Excluding the bonding curve was not enough. A pump.fun coin that graduates
@@ -359,9 +374,9 @@ async function poolOwners(owners: string[]): Promise<Set<string>> {
   return pools;
 }
 
-async function loadSolanaHolders(mint: string): Promise<Partial<TokenInfo>> {
+async function loadSolanaHolders(mint: string, deadlineMs = HOLDER_DEADLINE_MS): Promise<Partial<TokenInfo>> {
   const timeout = new Promise<Partial<TokenInfo>>((resolve) =>
-    setTimeout(() => resolve({ holdersUnavailable: true }), HOLDER_DEADLINE_MS).unref?.(),
+    setTimeout(() => resolve({ holdersUnavailable: true }), deadlineMs).unref?.(),
   );
   return Promise.race([readSolanaHolders(mint), timeout]);
 }
@@ -488,7 +503,20 @@ async function loadCurveData(mint: string): Promise<Partial<TokenInfo>> {
 
 // ── assembly ──────────────────────────────────────────────────────────────────
 
-export async function getTokenInfo(address: string, kind: 'solana' | 'evm'): Promise<TokenInfo> {
+export interface TokenInfoOptions {
+  /**
+   * Trade off completeness for speed, for the paths where a human is not
+   * waiting and a fill is. Everything still runs; the slowest query is simply
+   * not allowed to hold up a decision.
+   */
+  fast?: boolean;
+}
+
+export async function getTokenInfo(
+  address: string,
+  kind: 'solana' | 'evm',
+  opts: TokenInfoOptions = {},
+): Promise<TokenInfo> {
   const base: TokenInfo = {
     address,
     chain: kind === 'solana' ? 'solana' : 'ethereum',
@@ -498,7 +526,7 @@ export async function getTokenInfo(address: string, kind: 'solana' | 'evm'): Pro
   if (kind === 'solana') {
     const [market, holders, curve, meta, authorities, rug] = await Promise.all([
       loadMarketData(address, 'solana'),
-      loadSolanaHolders(address),
+      loadSolanaHolders(address, opts.fast ? FAST_HOLDER_DEADLINE_MS : HOLDER_DEADLINE_MS),
       loadCurveData(address),
       getTokenMetadata(address).catch(() => null),
       getMintAuthorities(address),

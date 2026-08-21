@@ -128,6 +128,15 @@ export interface AutoRule {
   enabled: boolean;
   createdAt: number;
   firedAt?: number;
+  /**
+   * Attempts that fired the rule but landed nothing.
+   *
+   * A rule is marked fired before the sell is attempted, so a crash cannot
+   * replay it — but a sell that simply failed used to be marked the same way,
+   * which quietly retired the protection at the moment it was needed. The
+   * count is what lets a failure be retried without retrying forever.
+   */
+  failedAttempts?: number;
 }
 
 /**

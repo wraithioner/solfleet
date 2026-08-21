@@ -268,7 +268,8 @@ export function armCopyRules(target: CopyTarget, mint: string, notify?: Notifier
 async function screenToken(mint: string): Promise<{ verdict: SafetyVerdict; info?: TokenInfo }> {
   const limits = db.settings().copySafety;
   try {
-    const info = await getTokenInfo(mint, 'solana');
+    // a copied entry is a race; the card path can afford to wait, this cannot
+    const info = await getTokenInfo(mint, 'solana', { fast: true });
     return { verdict: assessToken(info, limits), info };
   } catch (err) {
     return {
