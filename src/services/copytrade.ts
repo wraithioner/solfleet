@@ -844,6 +844,24 @@ function firstReason(summary: { results: Array<{ ok: boolean; error?: string }> 
 
 async function mirrorSell(target: CopyTarget, move: TokenMove, notify: Notifier): Promise<void> {
   /*
+   * Behind the same lock the buys queue on.
+   *
+   * A trader who flips a coin inside a minute can have their sell reach us
+   * while our copy of their buy is still in flight, and the state this function
+   * reads to decide — whether the coin was copied, what it cost — is written by
+   * that buy. Unlocked, the exit reads the world as it was before the entry and
+   * concludes there is nothing to close, which leaves the position open on a
+   * trade the trader has already left.
+   */
+  return withMintLock(move.mint, () => mirrorSellLocked(target, move, notify));
+}
+
+async function mirrorSellLocked(
+  target: CopyTarget,
+  move: TokenMove,
+  notify: Notifier,
+): Promise<void> {
+  /*
    * Only exit what this trader actually put you into.
    *
    * Holding the coin used to be the entire test, which made every followed
@@ -861,10 +879,6 @@ async function mirrorSell(target: CopyTarget, move: TokenMove, notify: Notifier)
     log.info(`Ignored ${target.label} selling ${move.mint}: never copied from them.`);
     return;
   }
-  if (exposureSol(move.mint) <= 0) {
-    log.info(`Ignored ${target.label} selling ${move.mint}: no recorded position to exit.`);
-    return;
-  }
 
   const wallets = selectWallets();
   if (wallets.length === 0) return;
@@ -875,6 +889,34 @@ async function mirrorSell(target: CopyTarget, move: TokenMove, notify: Notifier)
     // the wallets that built this position may sit outside the active group,
     // in which case the exit silently does nothing — say so rather than not
     log.warn(`Copied exit for ${move.mint} found nothing to sell in the selected wallets.`);
+    return;
+  }
+
+  /*
+   * Listed as copied, held in the wallets, and yet no cost basis anywhere.
+   *
+   * Two different histories produce this and neither can be told from the
+   * other: a buy that landed on chain while the process died before writing it
+   * down, or a coin refused back when refusals shared a list with copies. The
+   * safe reading is to leave the position alone — an exit taken on a guess
+   * sells something the operator chose to hold — but leaving it alone silently
+   * is how somebody finds out days later. The rules armed on the position still
+   * stand, and so does selling it by hand.
+   */
+  if (exposureSol(move.mint) <= 0) {
+    log.warn(`Copied exit for ${move.mint} skipped: listed as copied but no recorded cost basis.`);
+    await notify(
+      [
+        `⚠️ <b>${target.label} sold a coin you hold, and it was not mirrored</b>`,
+        `<code>${move.mint}</code>`,
+        '',
+        'The wallets hold it, but nothing recorded what it cost — so there is no',
+        'way to tell a copy whose confirmation was lost from a coin this trader',
+        'was refused. It was left alone rather than sold on a guess.',
+        '',
+        '<i>Open it from Positions to sell by hand.</i>',
+      ].join('\n'),
+    ).catch(() => {});
     return;
   }
 
