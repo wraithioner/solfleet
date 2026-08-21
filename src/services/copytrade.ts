@@ -3,7 +3,7 @@ import { rpc, WSOL_MINT, getMintBalances, LAMPORTS } from '../chains/solana.js';
 import { db, type CopyTarget, type CopyExitMode } from '../store/db.js';
 import { selectWallets } from '../store/wallets.js';
 import { batchPumpTrade, measureTokensGained } from '../trade/engine.js';
-import { retry, errMessage, fmtAmount } from '../util.js';
+import { retry, errMessage, fmtAmount, escapeHtml as h } from '../util.js';
 import { config } from '../config.js';
 import { assessToken, type SafetyVerdict } from './safety.js';
 import { getTokenInfo, type TokenInfo } from './tokeninfo.js';
@@ -250,7 +250,7 @@ export function armCopyRules(target: CopyTarget, mint: string, notify?: Notifier
         'the position already carries a rule of that kind.',
     );
     void notify?.(
-      `ℹ️ <b>${target.label}</b>'s ${skipped.join(' and ')} was not added — ` +
+      `ℹ️ <b>${h(target.label)}</b>'s ${skipped.join(' and ')} was not added — ` +
         'this position already has one of each. The existing rules stand.',
     ).catch(() => {});
   }
@@ -307,6 +307,9 @@ const PROCESSED_MAX = 600;
 
 /** Test seam: forget what has been seen, as a fresh process would. */
 export function resetProcessed(): void {
+  claims.socket = 0;
+  claims.poll = 0;
+  warnedSocketQuiet = false;
   processed.clear();
 }
 
@@ -329,8 +332,72 @@ export function claimSignature(signature: string): boolean {
 }
 
 /** Read one of their transactions and mirror whatever it did. */
-async function handleSignature(target: CopyTarget, signature: string, notify: Notifier): Promise<void> {
+/**
+ * Which path got to a transaction first, counted.
+ *
+ * The socket is the mechanism and the poll is the safety net, so in a healthy
+ * system almost every transaction is claimed by the socket and the poll finds
+ * nothing left to do. If that inverts, the socket has stopped delivering — and
+ * nothing about that is visible from the outside, because the poll quietly
+ * covers for it. What the operator sees is copies landing twenty seconds late
+ * for no stated reason, which is exactly the complaint that is impossible to
+ * diagnose without this count.
+ */
+const claims = { socket: 0, poll: 0 };
+let warnedSocketQuiet = false;
+
+export function claimStats(): { socket: number; poll: number } {
+  return { ...claims };
+}
+
+/** A sample large enough that a couple of unlucky races prove nothing. */
+const CLAIM_SAMPLE = 12;
+
+/**
+ * Say so when the safety net is doing the work.
+ *
+ * Once, and only on a real sample. A socket that recovers resets the count, so
+ * a single bad spell does not leave a permanent warning standing.
+ */
+async function checkSocketHealth(notify: Notifier): Promise<void> {
+  const total = claims.socket + claims.poll;
+  if (total < CLAIM_SAMPLE) return;
+
+  const pollShare = claims.poll / total;
+  if (pollShare > 0.6 && !warnedSocketQuiet) {
+    warnedSocketQuiet = true;
+    log.warn(
+      `The live socket is missing most transactions (${claims.poll}/${total} found by the poll instead). ` +
+        'Copies will be up to a tick late.',
+    );
+    await notify(
+      [
+        '🐌 <b>Copy trading has slowed down</b>',
+        '',
+        `The live feed is missing most trades — ${claims.poll} of the last ${total} were found by the ` +
+          'backup check instead, which runs every 20 seconds.',
+        '',
+        '<i>Copies still happen, just later. Usually an RPC problem that clears on its own.</i>',
+      ].join('\n'),
+    ).catch(() => {});
+  } else if (pollShare <= 0.3) {
+    warnedSocketQuiet = false;
+  }
+
+  if (total > 200) {
+    claims.socket = Math.round(claims.socket / 2);
+    claims.poll = Math.round(claims.poll / 2);
+  }
+}
+
+async function handleSignature(
+  target: CopyTarget,
+  signature: string,
+  notify: Notifier,
+  source: 'socket' | 'poll' = 'socket',
+): Promise<void> {
   if (!claimSignature(signature)) return;
+  claims[source]++;
 
   const [tx] = await retry(
     () => rpc().getParsedTransactions([signature], { maxSupportedTransactionVersion: 0 }),
@@ -410,7 +477,7 @@ async function pollTarget(target: CopyTarget, notify: Notifier): Promise<void> {
 
   db.updateCopyTarget(target.id, { lastSignature: newest });
 
-  for (const signature of fresh) await handleSignature(target, signature, notify);
+  for (const signature of fresh) await handleSignature(target, signature, notify, 'poll');
 }
 
 // ── live subscriptions ────────────────────────────────────────────────────────
@@ -469,7 +536,7 @@ function enqueue(item: Queued): void {
       void unsubscribe(item.target.address);
       void item
         .notify(
-          `⚠️ <b>Stopped following ${item.target.label}</b>\n\n` +
+          `⚠️ <b>Stopped following ${h(item.target.label)}</b>\n\n` +
             '<i>That address transacts far faster than a person trades — it looks like a program or an ' +
             'exchange wallet, not a trader. Following it would read nothing useful and rate-limit ' +
             'everything else. Unfollow it and pick a wallet that trades.</i>',
@@ -489,7 +556,7 @@ async function drain(): Promise<void> {
   try {
     while (queue.length > 0) {
       const item = queue.shift()!;
-      await handleSignature(item.target, item.signature, item.notify).catch((err) =>
+      await handleSignature(item.target, item.signature, item.notify, 'socket').catch((err) =>
         log.warn(`Live copy of ${item.target.label} failed: ${errMessage(err)}`),
       );
     }
@@ -506,6 +573,8 @@ async function unsubscribe(address: string): Promise<void> {
 }
 
 export async function syncSubscriptions(notify: Notifier): Promise<void> {
+  await checkSocketHealth(notify);
+
   const targets = db.activeCopyTargets();
   const wanted = new Map(targets.map((t) => [t.address, t]));
 
@@ -734,7 +803,7 @@ async function mirrorBuyLocked(
     );
     await notify(
       [
-        `🧯 <b>Did not copy ${target.label}</b>`,
+        `🧯 <b>Did not copy ${h(target.label)}</b>`,
         `<code>${move.mint}</code>`,
         '',
         `You are already in this coin for <b>${openSol.toFixed(4)} ◎</b>.`,
@@ -757,7 +826,7 @@ async function mirrorBuyLocked(
     );
     await notify(
       [
-        `🧯 <b>Did not copy ${target.label}</b>`,
+        `🧯 <b>Did not copy ${h(target.label)}</b>`,
         `<code>${move.mint}</code>`,
         '',
         `Already holding <b>${openSol.toFixed(4)} ◎</b> of this coin.`,
@@ -812,7 +881,7 @@ async function mirrorBuyLocked(
     log.warn(`Refused to copy ${target.label} into ${move.mint}: ${verdict.reasons.join(' ')}`);
     await notify(
       [
-        `🛡 <b>Did not copy ${target.label}</b>`,
+        `🛡 <b>Did not copy ${h(target.label)}</b>`,
         `<code>${move.mint}</code>`,
         '',
         ...verdict.reasons.map((r) => `· ${r}`),
@@ -850,7 +919,7 @@ async function mirrorBuyLocked(
 
   await notify(
     [
-      `👥 <b>${target.label} bought</b>`,
+      `👥 <b>${h(target.label)} bought</b>`,
       `<code>${move.mint}</code>`,
       '',
       `Entry ${already + 1}/${allowed} · ${sizing}`,
@@ -983,7 +1052,7 @@ async function mirrorSellLocked(
     log.warn(`Copied exit for ${move.mint} skipped: listed as copied but no recorded cost basis.`);
     await notify(
       [
-        `⚠️ <b>${target.label} sold a coin you hold, and it was not mirrored</b>`,
+        `⚠️ <b>${h(target.label)} sold a coin you hold, and it was not mirrored</b>`,
         `<code>${move.mint}</code>`,
         '',
         'The wallets hold it, but nothing recorded what it cost — so there is no',
@@ -1031,7 +1100,7 @@ async function mirrorSellLocked(
     });
 
     await notify(
-      `👥 <b>${target.label} sold ${percent}%</b>\n<code>${move.mint}</code>\n\n` +
+      `👥 <b>${h(target.label)} sold ${percent}%</b>\n<code>${move.mint}</code>\n\n` +
         `Mirrored — ✅ ${summary.succeeded}  ❌ ${summary.failed}${firstReason(summary)}`,
     ).catch(() => {});
   } catch (err) {

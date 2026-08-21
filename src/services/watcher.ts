@@ -5,10 +5,7 @@ import { selectWallets } from '../store/wallets.js';
 import { batchPumpTrade, measureTokensGained, isFreshEntry } from '../trade/engine.js';
 import { getMintBalances } from '../chains/solana.js';
 import { pricesInSol } from './price.js';
-import { errMessage } from '../util.js';
-
-/** Escaped for the Telegram messages this file sends. */
-const h = (t: string): string => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+import { errMessage, escapeHtml as h } from '../util.js';
 import { pollCopyTargets, syncSubscriptions, stopSubscriptions } from './copytrade.js';
 import { buildPortfolio } from './portfolio.js';
 import { log } from '../logger.js';
@@ -278,7 +275,8 @@ function priorityFeeFor(rule: AutoRule, configured: number, ceiling: number): nu
  */
 async function rearm(rule: AutoRule, reason: string, notify: Notifier): Promise<void> {
   const attempts = (rule.failedAttempts ?? 0) + 1;
-  const label = rule.symbol ?? rule.mint.slice(0, 8);
+  // the symbol comes from whoever launched the coin, and goes into HTML
+  const label = h(rule.symbol ?? rule.mint.slice(0, 8));
 
   if (attempts >= MAX_FIRE_ATTEMPTS) {
     db.updateRule(rule.id, { failedAttempts: attempts });
@@ -311,7 +309,7 @@ async function fire(rule: AutoRule, price: number, notify: Notifier): Promise<vo
   // the rule back rather than retiring protection that never ran.
   db.updateRule(rule.id, { firedAt: Date.now() });
 
-  const label = rule.symbol ?? rule.mint.slice(0, 8);
+  const label = h(rule.symbol ?? rule.mint.slice(0, 8));
   const entry = entryPriceSol(rule.mint);
   const movePct = entry && entry > 0 ? ((price - entry) / entry) * 100 : 0;
 
@@ -524,7 +522,7 @@ async function runDueDca(notify: Notifier): Promise<void> {
       const done = round >= plan.roundsTotal;
       await notify(
         [
-          `🔁 <b>DCA round ${round}/${plan.roundsTotal} — ${plan.symbol ?? plan.mint.slice(0, 8)}</b>`,
+          `🔁 <b>DCA round ${round}/${plan.roundsTotal} — ${h(plan.symbol ?? plan.mint.slice(0, 8))}</b>`,
           `Bought ${plan.buySol} SOL × ${wallets.length} wallets`,
           `✅ ${summary.succeeded}   ❌ ${summary.failed}`,
           done ? '\n<i>Plan complete.</i>' : `\n<i>Next round in ${plan.intervalMinutes} minutes.</i>`,

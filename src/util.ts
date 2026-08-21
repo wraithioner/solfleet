@@ -65,6 +65,19 @@ export function isTimeout(err: unknown): boolean {
   return /timed? ?out|aborted due to timeout/i.test(err.message);
 }
 
+/**
+ * Make text safe to put inside a Telegram HTML message.
+ *
+ * Not cosmetic. Token symbols come from whoever launched the coin, and a
+ * symbol containing a `<` makes Telegram reject the whole message as
+ * unparseable — so the alert saying a stop-loss fired on that token is the
+ * one that never arrives. Anything naming a token, a wallet or an error
+ * goes through here.
+ */
+export function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
 export function errMessage(err: unknown): string {
   if (err instanceof Error) return err.message;
   if (typeof err === 'string') return err;

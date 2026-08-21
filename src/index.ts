@@ -51,10 +51,28 @@ async function main(): Promise<void> {
    */
   const owner = config.ownerIds[0];
   if (owner !== undefined) {
+    /*
+     * An alert that cannot be parsed still has to arrive.
+     *
+     * Token symbols are chosen by whoever launched the coin, and one
+     * containing a `<` makes Telegram reject the entire message — so the
+     * alert that a stop-loss fired on that token is precisely the one that
+     * goes missing, and only a log line records it. Everything naming a token
+     * is escaped at the source; this is the layer that does not depend on
+     * remembering to. Formatting is what gets dropped, never the message.
+     */
     startWatcher(async (text) => {
-      await bot.api.sendMessage(owner, text, { parse_mode: 'HTML' }).catch((err) => {
-        log.warn(`Could not deliver a watcher alert: ${errMessage(err)}`);
-      });
+      try {
+        await bot.api.sendMessage(owner, text, { parse_mode: 'HTML' });
+      } catch (err) {
+        const reason = errMessage(err);
+        try {
+          await bot.api.sendMessage(owner, text.replace(/<[^>]+>/g, ''));
+          log.warn(`Alert sent without formatting — Telegram rejected the markup: ${reason}`);
+        } catch (plainErr) {
+          log.warn(`Could not deliver a watcher alert: ${errMessage(plainErr)} (first: ${reason})`);
+        }
+      }
     });
 
     const armed = db.activeRules().length;

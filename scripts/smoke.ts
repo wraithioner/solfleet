@@ -2075,5 +2075,57 @@ ok('the gate that decides a copied buy is the one that takes it');
 assert.match(tiSrc, /loadSolanaHolders\(address, opts\.fast \?/, 'the query still runs, on a shorter leash');
 ok('the slower source is bounded rather than dropped');
 
+console.log('\n[35] An alert that cannot be parsed still arrives');
+
+/*
+ * Token symbols are chosen by whoever launched the coin. One containing a `<`
+ * makes Telegram reject the whole message as unparseable — so the alert saying
+ * a stop-loss fired on that token is precisely the one that goes missing, and
+ * only a log line records it. A malicious symbol silences every notification
+ * about its own token, which is a useful thing for a rug to be able to do.
+ */
+const { escapeHtml } = await import('../src/util.js');
+assert.equal(escapeHtml('<b'), '&lt;b');
+assert.equal(escapeHtml('Cat & Dog'), 'Cat &amp; Dog');
+assert.equal(escapeHtml('</b><script>'), '&lt;/b&gt;&lt;script&gt;');
+ok('token text is escaped before it reaches a message');
+
+const wSrc = fs.readFileSync('src/services/watcher.ts', 'utf8');
+assert.ok(
+  !/const label = rule\.symbol \?\?/.test(wSrc),
+  'no raw symbol survives as a label',
+);
+assert.match(wSrc, /const label = h\(rule\.symbol/, 'every one goes through the escape');
+ok('the watcher escapes the symbols it puts in alerts');
+
+/*
+ * And the layer that does not depend on remembering. Formatting is what gets
+ * dropped when Telegram objects, never the message.
+ */
+const idxSrc = fs.readFileSync('src/index.ts', 'utf8');
+assert.match(idxSrc, /replace\(\/<\[\^>\]\+>\/g, ''\)/, 'a rejected alert is retried as plain text');
+ok('an alert Telegram refuses is resent without markup rather than dropped');
+
+console.log('\n[36] Noticing when the fast path stops being fast');
+
+/*
+ * The socket is the mechanism and the poll is the safety net, so the poll
+ * covering for a dead socket looks like nothing at all from outside — copies
+ * simply start landing twenty seconds late for no stated reason.
+ */
+const { claimStats, claimSignature: claimSig, resetProcessed: resetSeen } =
+  await import('../src/services/copytrade.js');
+resetSeen();
+assert.deepEqual(claimStats(), { socket: 0, poll: 0 }, 'a fresh process starts the count over');
+void claimSig;
+ok('which path reached a transaction first is counted, not assumed');
+
+const cSrc = fs.readFileSync('src/services/copytrade.ts', 'utf8');
+assert.match(cSrc, /handleSignature\(target, signature, notify, 'poll'\)/, 'the poll declares itself');
+assert.match(cSrc, /handleSignature\(item\.target, item\.signature, item\.notify, 'socket'\)/, 'so does the socket');
+assert.match(cSrc, /pollShare > 0\.6/, 'and an inversion is what raises the alarm');
+assert.match(cSrc, /warnedSocketQuiet = false/, 'a recovery clears it rather than leaving it standing');
+ok('a socket that has gone quiet is reported instead of being covered for silently');
+
 fs.rmSync(DATA, { recursive: true, force: true });
 console.log(`\n✅ ${passed} assertions passed\n`);

@@ -1,3 +1,4 @@
+import { pMap } from '../util.js';
 import { fetchBondingCurve, curvePrice } from '../trade/curve.js';
 import { getSolanaPrices, getSolPrice } from './prices.js';
 
@@ -40,23 +41,35 @@ export async function pricesInSol(mints: string[]): Promise<Map<string, number>>
   const out = new Map<string, number>();
   if (mints.length === 0) return out;
 
+  /*
+   * Every curve at once, rather than one after another.
+   *
+   * This runs on the loop that fires stop-losses, and it used to await each
+   * mint's curve account in turn — so with seven rules armed the seventh price
+   * was six round trips stale before anything looked at it, and every tick
+   * carried that delay before a single rule could be evaluated. The reads are
+   * independent; only the ordering was.
+   *
+   * Bounded rather than unbounded: a wallet with thirty rules should not open
+   * thirty simultaneous requests to an endpoint that counts them.
+   */
   const unresolved: string[] = [];
 
-  for (const mint of mints) {
+  await pMap(mints, 8, async (mint) => {
     try {
       const curve = await fetchBondingCurve(mint);
       if (curve && !curve.complete) {
         const price = curvePrice(curve);
         if (price > 0) {
           out.set(mint, price);
-          continue;
+          return;
         }
       }
     } catch {
       /* try the aggregator instead */
     }
     unresolved.push(mint);
-  }
+  });
 
   if (unresolved.length > 0) {
     try {
