@@ -1392,6 +1392,8 @@ const AGE_STEPS = [6, 24, 72, 168, 0];
 const VOL_STEPS = [0, 500, 1_000, 5_000, 25_000];
 /** Total SOL allowed into one coin, counting every trader and hand buys alike. */
 const MINT_CAP_STEPS = [0.1, 0.25, 0.5, 1, 2, 0];
+/** Share of supply allowed in wallets the index reads as one person. */
+const INSIDER_STEPS = [10, 20, 30, 50, 0];
 
 export async function showCopySafety(ctx: Context): Promise<void> {
   const limits = db.settings().copySafety;
@@ -1439,6 +1441,20 @@ export async function showCopySafety(ctx: Context): Promise<void> {
       .primary()
       .row()
       .text(
+        limits.refuseSerialRuggers ? '🧑‍💻 Dev rug history: refuse' : '🧑‍💻 Dev history: not checked',
+        'safety_rugger',
+      )
+      .primary()
+      .row()
+      .text(
+        limits.maxInsiderPct > 0
+          ? `🕸 Connected wallets max ${limits.maxInsiderPct}%`
+          : '🕸 Connected wallets not checked',
+        'safety_insider',
+      )
+      .primary()
+      .row()
+      .text(
         limits.oneEntryPerMint ? '🚫 Already in it: skip' : '➕ Already in it: buy anyway',
         'safety_oneentry',
       )
@@ -1467,6 +1483,8 @@ export async function cycleSafety(ctx: Context, which: string): Promise<void> {
   else if (which === 'vol') limits.minVolume1hUsd = cycleStep(VOL_STEPS, limits.minVolume1hUsd);
   else if (which === 'mintcap') limits.maxSolPerMint = cycleStep(MINT_CAP_STEPS, limits.maxSolPerMint);
   else if (which === 'oneentry') limits.oneEntryPerMint = !limits.oneEntryPerMint;
+  else if (which === 'rugger') limits.refuseSerialRuggers = !limits.refuseSerialRuggers;
+  else if (which === 'insider') limits.maxInsiderPct = cycleStep(INSIDER_STEPS, limits.maxInsiderPct);
 
   db.updateSettings({ copySafety: limits });
   await showCopySafety(ctx);

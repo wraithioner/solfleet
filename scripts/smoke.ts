@@ -1927,5 +1927,83 @@ const legacy = { mint: 'L', investedSol: 2, realisedSol: 0, buyFills: 1, sellFil
 assert.equal(entryPrice(legacy), 2 / 100, 'the lifetime ratio is the fallback, as before');
 ok('a position from before the basis existed keeps the price it always had');
 
+console.log('\n[31] What the token itself cannot tell you');
+
+/*
+ * Two ways of losing money that no reading of a single mint reveals, and which
+ * the shipped limits were blind to.
+ */
+const safeBase = {
+  address: 'M', chain: 'solana' as const, warnings: [],
+  freezeAuthority: null, mintAuthority: null,
+  top10Pct: 14, creatorHoldsPct: 0, liquidityUsd: 50_000,
+  pairCreatedAt: Date.now() - 20 * 60_000, volume1h: 40_000,
+};
+assert.equal(assessToken(safeBase).safe, true, 'the baseline is clean');
+
+/*
+ * The trap the screenshots show: a developer holding nothing, next to supply
+ * bundled across wallets that are one person. Sampled live, two of sixteen
+ * fresh launches were by developers with 50 and 46 prior tokens, both showing
+ * a launch wallet holding zero.
+ */
+const oneHand = { ...safeBase, insiderPct: 41.2, insiderWallets: 14 };
+const bv = assessToken(oneHand);
+assert.equal(bv.safe, false, 'a dev holding 0% does not make a bundled launch safe');
+assert.match(bv.reasons.join(' '), /one person/i);
+ok('supply bundled across connected wallets is refused, whatever the dev wallet shows');
+
+const serial = { ...safeBase, creatorRugHistory: true, creatorPriorTokens: 50 };
+const sv = assessToken(serial);
+assert.equal(sv.safe, false);
+assert.match(sv.reasons.join(' '), /50 tokens/);
+ok('a developer with a history of rugging is refused, and the count is named');
+
+assert.equal(assessToken({ ...safeBase, rugged: true }).safe, false);
+ok('a coin the index has already marked rugged is refused');
+
+// both new limits switch off
+const off = { ...DEFAULT_SAFETY, refuseSerialRuggers: false, maxInsiderPct: 0 };
+assert.equal(assessToken({ ...oneHand, ...serial }, off).safe, true);
+ok('and both can be turned off');
+
+// unknown stays unknown: absent data must not refuse on these two
+assert.equal(assessToken({ ...safeBase, insiderPct: undefined, creatorRugHistory: undefined }).safe, true);
+ok('a token the index has never seen is judged on everything else, not refused outright');
+
+console.log('\n[32] A pool is liquidity, not a whale');
+
+/*
+ * The defect that made the concentration limit refuse almost every graduated
+ * coin. A pump.fun token that graduates keeps its supply in the pool it trades
+ * in, and counting that as concentration put a token whose real top ten held
+ * 19.1% at 91.3% — against a 20% limit, an automatic refusal of a coin that
+ * should have passed.
+ */
+const tokenSrc = fs.readFileSync('src/services/tokeninfo.ts', 'utf8');
+assert.match(tokenSrc, /POOL_PROGRAMS/, 'pool programs are known');
+assert.match(tokenSrc, /pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA/, 'PumpSwap among them');
+assert.match(tokenSrc, /675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8/, 'Raydium among them');
+assert.match(
+  tokenSrc,
+  /h\.tag !== 'bonding curve' && h\.tag !== 'pool'/,
+  'and both kinds of market are excluded from the top ten',
+);
+ok('the top ten excludes the pool a graduated coin trades in, not just its curve');
+
+// the arithmetic that made it matter, as a regression guard
+const holders = [
+  { pct: 72.22, pool: true }, { pct: 3.69, pool: false }, { pct: 2.87, pool: false },
+  { pct: 2.49, pool: false }, { pct: 2.28, pool: false }, { pct: 2.09, pool: false },
+  { pct: 1.86, pool: false }, { pct: 1.38, pool: false }, { pct: 1.28, pool: false },
+  { pct: 1.19, pool: false },
+];
+const withPool = holders.reduce((n, h) => n + h.pct, 0);
+const withoutPool = holders.filter((h) => !h.pool).reduce((n, h) => n + h.pct, 0);
+assert.ok(withPool > 90 && withoutPool < 20, `${withPool.toFixed(1)}% counted vs ${withoutPool.toFixed(1)}% real`);
+assert.equal(assessToken({ ...safeBase, top10Pct: withoutPool }).safe, true, 'the real figure passes');
+assert.equal(assessToken({ ...safeBase, top10Pct: withPool }).safe, false, 'the counted one does not');
+ok('on the measured token that is 91.3% refused against 19.1% allowed');
+
 fs.rmSync(DATA, { recursive: true, force: true });
 console.log(`\n✅ ${passed} assertions passed\n`);

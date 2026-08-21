@@ -101,6 +101,12 @@ export const endpoints = {
    * oldest pair, which means seeing all of them.
    */
   dexscreenerPairs: 'https://api.dexscreener.com/token-pairs/v1',
+  /**
+   * A launch index, used for the three things a single mint cannot tell you:
+   * which of its holders are the pool, which are one person behind many
+   * wallets, and whether its developer has done this before.
+   */
+  rugcheck: 'https://api.rugcheck.xyz/v1/tokens',
 } as const;
 
 /**

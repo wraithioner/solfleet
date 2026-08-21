@@ -522,6 +522,10 @@ async function routeCallback(ctx: Context, action: string, args: string[]): Prom
       return T.cycleSafety(ctx, 'mintcap');
     case 'safety_oneentry':
       return T.cycleSafety(ctx, 'oneentry');
+    case 'safety_rugger':
+      return T.cycleSafety(ctx, 'rugger');
+    case 'safety_insider':
+      return T.cycleSafety(ctx, 'insider');
 
     case 'copy_tp':
       return T.cycleCopyTakeProfit(ctx, args[0] ?? '');

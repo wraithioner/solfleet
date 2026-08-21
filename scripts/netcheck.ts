@@ -105,7 +105,12 @@ await check('holder distribution (BONK)', async () => {
     return 'RPC throttled the query — correctly surfaced as "unknown" (set a private SOLANA_RPC_URL)';
   }
 
-  if (!info.holders || info.holders.length === 0) throw new Error('no holders and no failure flag');
+  // the launch index supplies concentration when our own query is refused, so
+  // an empty list with a figure beside it is covered rather than broken
+  if (!info.holders || info.holders.length === 0) {
+    if (info.top10Pct !== undefined) return `RPC returned none; the launch index gives top10 = ${info.top10Pct.toFixed(1)}%`;
+    throw new Error('no holders and no failure flag');
+  }
   return `${info.holders.length} top accounts, top10 = ${info.top10Pct?.toFixed(1)}%`;
 });
 
@@ -170,6 +175,49 @@ await check('on-chain Metaplex metadata (BONK)', async () => {
   const meta = await getOnChainMetadata(BONK);
   if (!meta?.name) throw new Error('no metadata account');
   return `name="${meta.name}" symbol="${meta.symbol}"`;
+});
+
+/*
+ * The launch index, which answers three questions the chain will not.
+ *
+ * A silent failure here is the dangerous kind: the report comes back null, the
+ * gate loses its view of insider clusters and developer history, and every
+ * token starts looking cleaner than it is. The check exists so that goes
+ * noticed rather than quietly widening what the bot will buy.
+ */
+await check('launch index reachable (BONK)', async () => {
+  const { getRugcheck } = await import('../src/services/rugcheck.js');
+  const report = await getRugcheck(BONK, 8000);
+  if (!report) throw new Error('no report — the safety gate loses insider and dev-history checks');
+  return `score ${report.score} · ${report.totalHolders?.toLocaleString() ?? '?'} holders · ${report.risks.length} risk(s)`;
+});
+
+await check('launch index covers a fresh pump.fun launch', async () => {
+  const { getRugcheck } = await import('../src/services/rugcheck.js');
+  const res = await fetch('https://api.dexscreener.com/token-profiles/latest/v1');
+  const profiles = (await res.json()) as Array<{ chainId: string; tokenAddress: string }>;
+  const fresh = profiles.find((p) => p.chainId === 'solana' && p.tokenAddress.endsWith('pump'));
+  if (!fresh) return 'no pump.fun token in the current feed — skipped';
+
+  const report = await getRugcheck(fresh.tokenAddress, 8000);
+  if (!report) throw new Error(`no report for ${fresh.tokenAddress} — fresh launches are the ones copy trading buys`);
+  return `${fresh.tokenAddress.slice(0, 6)}… score ${report.score}, top10 ${report.top10Pct?.toFixed(1) ?? '?'}%, ${report.insiderWallets ?? 0} insider wallets`;
+});
+
+/*
+ * The concentration figure the copy gate refuses on. A graduated pump.fun coin
+ * keeps most of its supply in the pool it trades in, and counting that as
+ * concentration measured 91.3% on a token whose real top ten held 19.1% —
+ * against a 20% limit, an automatic refusal of a coin that should have passed.
+ */
+await check('a graduated token is judged on holders, not on its own pool', async () => {
+  const { getRugcheck } = await import('../src/services/rugcheck.js');
+  const res = await fetch('https://api.dexscreener.com/token-pairs/v1/solana/' + BONK);
+  void res;
+  const report = await getRugcheck(BONK, 8000);
+  if (!report || report.top10Pct === undefined) throw new Error('no concentration figure');
+  if (report.top10Pct > 99) throw new Error(`top10 of ${report.top10Pct}% — the pool is being counted again`);
+  return `top 10 hold ${report.top10Pct.toFixed(1)}% with pools excluded`;
 });
 
 console.log('\n── Pricing ──');

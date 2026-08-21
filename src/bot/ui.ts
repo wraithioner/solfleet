@@ -263,6 +263,19 @@ export function pnlKeyboard(): InlineKeyboard {
 
 // ── token info card ───────────────────────────────────────────────────────────
 
+/**
+ * Green under the limit, red over, grey when nobody could tell us.
+ *
+ * Grey is its own state on purpose. A missing number is not a passing one, and
+ * showing it as a blank invites the reader to fill it in with the answer they
+ * were hoping for.
+ */
+function judged(value: number | undefined, limit: number, unit = '%', decimals = 1): string {
+  if (value === undefined) return '⚪️ unknown';
+  const light = value > limit ? '🔴' : '🟢';
+  return `${light} <b>${value.toFixed(decimals)}${unit}</b>`;
+}
+
 export function renderTokenCard(info: TokenInfo, limits = DEFAULT_SAFETY): string {
   const lines: string[] = [];
   const name = info.name ?? 'Unknown token';
@@ -322,6 +335,60 @@ export function renderTokenCard(info: TokenInfo, limits = DEFAULT_SAFETY): strin
   // how long this has existed, which is most of the risk on a new launch
   if (info.pairCreatedAt) {
     lines.push(`🕐 Age        ${fmtAge(Date.now() - info.pairCreatedAt)}`);
+  }
+
+  /*
+   * The audit, as a grid rather than a paragraph.
+   *
+   * These six are what somebody decides on, so they are given the shape people
+   * already read them in. Two of them cannot be worked out from the token at
+   * all: the share held by wallets that are really one person, and whether this
+   * developer has launched and abandoned coins before. Both are how a token
+   * that looks clean takes your money.
+   */
+  if (info.chain === 'solana') {
+    const lp =
+      info.lpLockedPct === undefined
+        ? '⚪️ unknown'
+        : info.lpLockedPct >= 99
+          ? '🟢 <b>100%</b>'
+          : `🔴 <b>${info.lpLockedPct.toFixed(0)}%</b>`;
+
+    const history =
+      info.creatorRugHistory === true
+        ? '🚨 <b>has rugged before</b>'
+        : info.creatorPriorTokens === undefined
+          ? '⚪️ unknown'
+          : info.creatorPriorTokens === 0
+            ? '🟢 first token'
+            : `${info.creatorPriorTokens > 5 ? '⚠️' : '·'} <b>${info.creatorPriorTokens}</b> launched before`;
+
+    lines.push('');
+    lines.push('<b>🔍 Audit</b>');
+    if (info.holderCount !== undefined) {
+      lines.push(`   👥 Holders    <b>${fmtCount(info.holderCount)}</b>`);
+    }
+    lines.push(`   🏆 Top 10     ${judged(info.top10Pct, limits.maxTop10Pct)}`);
+    lines.push(`   🧑‍💻 Dev holds  ${judged(info.creatorHoldsPct, limits.maxDevPct, '%', 2)}`);
+
+    /*
+     * The line no reading of the token itself can produce.
+     *
+     * Supply spread across wallets funded from one place reads as many holders
+     * and sells as one. A developer showing nothing means nothing when the
+     * allocation was bundled out at creation, which is exactly the shape of the
+     * screens that report "Dev 0%" next to a coin about to be dumped.
+     */
+    const bundled = judged(info.insiderPct, limits.maxInsiderPct);
+    const wallets =
+      info.insiderWallets && info.insiderWallets > 0
+        ? `  <i>${info.insiderWallets} wallets, one hand</i>`
+        : '';
+    lines.push(`   🕸 Bundled    ${bundled}${wallets}`);
+    lines.push(`   💧 LP locked  ${lp}`);
+    lines.push(`   📜 Dev record ${history}`);
+
+    if (info.rugged) lines.push('   🚨 <b>The launch index has marked this one rugged.</b>');
   }
 
   // Authorities, stated either way. Silence here would read as "safe", which is
@@ -394,7 +461,7 @@ export function renderTokenCard(info: TokenInfo, limits = DEFAULT_SAFETY): strin
   }
 
   // holder distribution
-  if (info.holdersUnavailable) {
+  if (info.holdersUnavailable && info.top10Pct === undefined) {
     lines.push('');
     lines.push('<b>👥 Top holders</b>');
     lines.push('<i>Unavailable — RPC rejected the query. Use a private endpoint.</i>');
@@ -415,7 +482,7 @@ export function renderTokenCard(info: TokenInfo, limits = DEFAULT_SAFETY): strin
       lines.push(`   ${progressBar(info.top10Pct)} <b>${info.top10Pct.toFixed(1)}%</b> ${light}`);
     }
 
-    const shown = info.holders.filter((x) => x.tag !== 'bonding curve').slice(0, 5);
+    const shown = info.holders.filter((x) => x.tag !== 'bonding curve' && x.tag !== 'pool').slice(0, 5);
     for (const [i, hold] of shown.entries()) {
       const tag = hold.tag ? ` <i>${h(hold.tag)}</i>` : '';
       const pct = hold.pctOfSupply.toFixed(2).padStart(5);
@@ -668,6 +735,8 @@ export function renderSettings(s: Settings, walletCount: number): string {
     `   1h volume     <b>${s.copySafety.minVolume1hUsd > 0 ? `min $${s.copySafety.minVolume1hUsd.toLocaleString('en-US')}` : 'any'}</b>`,
     `   Already in it <b>${s.copySafety.oneEntryPerMint ? 'skip' : 'buy anyway'}</b>`,
     `   Max per coin  <b>${s.copySafety.maxSolPerMint > 0 ? `${s.copySafety.maxSolPerMint} ◎` : 'no cap'}</b>`,
+    `   Bundled max   <b>${s.copySafety.maxInsiderPct > 0 ? `${s.copySafety.maxInsiderPct}%` : 'any'}</b>`,
+    `   Dev history   <b>${s.copySafety.refuseSerialRuggers ? 'refuse ruggers' : 'not checked'}</b>`,
     '',
     `👛 <b>${walletCount}</b> wallet${walletCount === 1 ? '' : 's'}   ·   🎯 ${s.activeGroup ? h(s.activeGroup) : 'all'}`,
   ].join('\n');

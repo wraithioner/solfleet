@@ -67,6 +67,24 @@ export interface SafetyLimits {
    * already in.
    */
   oneEntryPerMint: boolean;
+  /**
+   * Refuse a coin whose developer has rugged before. Off disables the check.
+   *
+   * The strongest signal available and the one no reading of the coin itself
+   * can produce. Sampled across sixteen fresh launches, two were by developers
+   * with fifty and forty-six prior tokens and a recorded history of rugging
+   * them — both showing a launch wallet holding nothing at all.
+   */
+  refuseSerialRuggers: boolean;
+  /**
+   * Refuse when this share of supply sits in wallets believed to be one person.
+   * Zero disables the check.
+   *
+   * The check a launch-wallet limit cannot be. An allocation bundled out to
+   * twenty fresh wallets at creation reads as twenty holders, shows a developer
+   * with nothing, and behaves as one seller.
+   */
+  maxInsiderPct: number;
 }
 
 export const DEFAULT_SAFETY: SafetyLimits = {
@@ -78,6 +96,8 @@ export const DEFAULT_SAFETY: SafetyLimits = {
   minVolume1hUsd: 1_000,
   maxSolPerMint: 0.5,
   oneEntryPerMint: true,
+  refuseSerialRuggers: true,
+  maxInsiderPct: 20,
 };
 
 /**
@@ -88,7 +108,7 @@ export const DEFAULT_SAFETY: SafetyLimits = {
  * version marker lets a genuinely stricter set replace those without
  * overwriting a limit the operator picked deliberately afterwards.
  */
-export const SAFETY_VERSION = 5;
+export const SAFETY_VERSION = 6;
 
 export interface SafetyVerdict {
   safe: boolean;
@@ -217,9 +237,45 @@ export function assessToken(info: TokenInfo, limits: SafetyLimits = DEFAULT_SAFE
     }
   }
 
+  /*
+   * What the launch index knows and the mint cannot say.
+   *
+   * Everything above reads the coin in front of you. These read the people
+   * behind it — whether this developer has done this before, and whether the
+   * supply is spread across wallets that are really one hand. Both are ways of
+   * losing money that a clean-looking token hides perfectly.
+   */
+  if (info.rugged === true) {
+    reasons.push('The launch index has already marked this one rugged.');
+  }
+
+  if (limits.refuseSerialRuggers && info.creatorRugHistory === true) {
+    const prior =
+      info.creatorPriorTokens && info.creatorPriorTokens > 1
+        ? ` They have launched ${info.creatorPriorTokens} tokens.`
+        : '';
+    reasons.push(`This developer has a history of rugging what they launch.${prior}`);
+  }
+
+  if (limits.maxInsiderPct > 0 && info.insiderPct !== undefined && info.insiderPct > limits.maxInsiderPct) {
+    reasons.push(
+      `${info.insiderPct.toFixed(1)}% of supply sits in wallets believed to be one person, ` +
+        `over the ${limits.maxInsiderPct}% limit.`,
+    );
+  }
+
   // worth knowing, not worth refusing over
   if (info.creatorHoldsPct !== undefined && info.creatorHoldsPct > 5 && info.creatorHoldsPct <= limits.maxDevPct) {
     notes.push(`Launch wallet holds ${info.creatorHoldsPct.toFixed(1)}%.`);
+  }
+  if (info.copycat) {
+    notes.push('Uses a symbol that already belongs to another token.');
+  }
+  if (info.creatorPriorTokens !== undefined && info.creatorPriorTokens > 5 && !info.creatorRugHistory) {
+    notes.push(`Developer has launched ${info.creatorPriorTokens} tokens before this one.`);
+  }
+  if (info.insiderPct !== undefined && info.insiderPct > 5 && info.insiderPct <= limits.maxInsiderPct) {
+    notes.push(`${info.insiderPct.toFixed(1)}% held by connected wallets.`);
   }
   if (info.pairCreatedAt && Date.now() - info.pairCreatedAt < 3_600_000) {
     notes.push(`Pair is ${Math.round((Date.now() - info.pairCreatedAt) / 60_000)} minutes old.`);
@@ -248,6 +304,12 @@ export function describeLimits(limits: SafetyLimits): string[] {
     limits.minVolume1hUsd > 0
       ? `1h volume: refuse under <b>$${limits.minVolume1hUsd.toLocaleString('en-US')}</b>`
       : '1h volume: <b>not checked</b>',
+    limits.refuseSerialRuggers
+      ? 'Developer: <b>refuse anyone with a rug history</b>'
+      : 'Developer history: <b>not checked</b>',
+    limits.maxInsiderPct > 0
+      ? `Connected wallets: refuse above <b>${limits.maxInsiderPct}%</b> of supply`
+      : 'Connected wallets: <b>not checked</b>',
     limits.oneEntryPerMint
       ? 'Already holding it: <b>a second trader is not copied in</b>'
       : 'Already holding it: <b>copied anyway</b>',

@@ -7,6 +7,7 @@ import { fetchBondingCurve, curveMarketCapSol, curveProgress, bondingCurvePda } 
 import { getSolPrice } from './prices.js';
 import { getTokenMetadata } from './metadata.js';
 import { getMintAuthorities } from './mintauth.js';
+import { getRugcheck } from './rugcheck.js';
 import { allWallets } from '../store/wallets.js';
 import type { Chain } from '../types.js';
 
@@ -77,6 +78,31 @@ export interface TokenInfo {
   /** How much of the supply the operator's own wallets control. */
   ownedPct?: number;
   ownedAmount?: number;
+
+  /* ── from the launch index ───────────────────────────────────────────── */
+  /** 1 is clean; tens and above mean the index objected to something. */
+  rugcheckScore?: number;
+  rugcheckRisks?: Array<{ name: string; level: string }>;
+  /**
+   * Supply held by wallets the index believes are one person.
+   *
+   * The number a launch-wallet check cannot produce. Spreading an allocation
+   * across twenty fresh wallets at creation shows a developer holding nothing
+   * while one person still decides when the supply hits the market.
+   */
+  insiderPct?: number;
+  insiderWallets?: number;
+  /** Every holder, not only the twenty largest accounts. */
+  holderCount?: number;
+  /** Tokens this developer launched before this one. */
+  creatorPriorTokens?: number;
+  /** The developer has a recorded history of rugging what they launch. */
+  creatorRugHistory?: boolean;
+  /** Claims a symbol that already belongs to something else. */
+  copycat?: boolean;
+  /** The index's own verdict that this one is already over. */
+  rugged?: boolean;
+  lpLockedPct?: number;
 
   warnings: string[];
 }
@@ -288,6 +314,51 @@ async function loadMarketData(address: string, kind: 'solana' | 'evm'): Promise<
  */
 const HOLDER_DEADLINE_MS = 4000;
 
+/**
+ * Programs whose token accounts are a market rather than somebody's position.
+ *
+ * Excluding the bonding curve was not enough. A pump.fun coin that graduates
+ * moves its supply into an AMM pool, and that pool is then the largest holder
+ * by a distance — measured live on a graduated token, the pool alone held
+ * 72.2% and the top ten came to 91.3% with it counted against 19.1% without.
+ * Against a 20% limit that is the difference between refusing every graduated
+ * token and judging it on its actual distribution.
+ */
+const POOL_PROGRAMS = new Set([
+  'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA', // PumpSwap
+  '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8', // Raydium AMM v4
+  'CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C', // Raydium CPMM
+  'CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK', // Raydium CLMM
+  'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc', // Orca Whirlpool
+  'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo', // Meteora DLMM
+  'Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB', // Meteora pools
+  'srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX', // OpenBook
+]);
+
+/**
+ * Which of these owners are pools, decided by the program that owns them.
+ *
+ * One batched read. A pool's authority is a program-derived address, so the
+ * account behind it belongs to the AMM rather than to the system program —
+ * which is the difference between liquidity and a whale.
+ */
+async function poolOwners(owners: string[]): Promise<Set<string>> {
+  const pools = new Set<string>();
+  if (owners.length === 0) return pools;
+
+  try {
+    const infos = await rpc().getMultipleAccountsInfo(owners.map((o) => new PublicKey(o)));
+    owners.forEach((owner, i) => {
+      const program = infos[i]?.owner?.toBase58();
+      if (program && POOL_PROGRAMS.has(program)) pools.add(owner);
+    });
+  } catch {
+    // an unreadable owner is left as a holder: over-counting concentration
+    // refuses a trade, under-counting takes one, and the first is cheaper
+  }
+  return pools;
+}
+
 async function loadSolanaHolders(mint: string): Promise<Partial<TokenInfo>> {
   const timeout = new Promise<Partial<TokenInfo>>((resolve) =>
     setTimeout(() => resolve({ holdersUnavailable: true }), HOLDER_DEADLINE_MS).unref?.(),
@@ -343,9 +414,14 @@ async function readSolanaHolders(mint: string): Promise<Partial<TokenInfo>> {
 
     holders.sort((a, b) => b.amount - a.amount);
 
+    // the curve is one kind of market; a graduated coin's pool is the other,
+    // and it is far larger — see POOL_PROGRAMS
+    const pools = await poolOwners(holders.filter((h) => !h.tag).map((h) => h.owner));
+    for (const h of holders) if (pools.has(h.owner)) h.tag = 'pool';
+
     // liquidity sitting in the curve or a pool is not concentration risk, so
     // exclude it from the "top holders" number that actually matters
-    const realHolders = holders.filter((h) => h.tag !== 'bonding curve');
+    const realHolders = holders.filter((h) => h.tag !== 'bonding curve' && h.tag !== 'pool');
     const top10Pct = realHolders.slice(0, 10).reduce((sum, h) => sum + h.pctOfSupply, 0);
 
     const owned = holders.filter((h) => h.tag === 'you');
@@ -420,12 +496,13 @@ export async function getTokenInfo(address: string, kind: 'solana' | 'evm'): Pro
   };
 
   if (kind === 'solana') {
-    const [market, holders, curve, meta, authorities] = await Promise.all([
+    const [market, holders, curve, meta, authorities, rug] = await Promise.all([
       loadMarketData(address, 'solana'),
       loadSolanaHolders(address),
       loadCurveData(address),
       getTokenMetadata(address).catch(() => null),
       getMintAuthorities(address),
+      getRugcheck(address),
     ]);
 
     // DexScreener wins on market cap once a pool exists; before that the curve
@@ -448,6 +525,41 @@ export async function getTokenInfo(address: string, kind: 'solana' | 'evm'): Pro
       merged.symbol ??= meta.symbol;
       merged.imageUrl ??= meta.imageUrl;
       merged.description ??= meta.description;
+    }
+
+    /*
+     * The index's numbers where it has them, ours where it does not.
+     *
+     * It is preferred for concentration rather than merely consulted, because
+     * it can name a pool and a cluster of one person's wallets and we cannot.
+     * Our own read stays as the fallback for the moments it is unreachable —
+     * and `holdersUnavailable` is cleared when it answers, since the figure is
+     * then known even though our RPC query was throttled out of returning it.
+     */
+    if (rug) {
+      merged.rugcheckScore = rug.score;
+      merged.rugcheckRisks = rug.risks.map((r) => ({ name: r.name, level: r.level }));
+      merged.insiderPct = rug.insiderPct;
+      merged.insiderWallets = rug.insiderWallets;
+      merged.holderCount = rug.totalHolders;
+      merged.creatorPriorTokens = rug.creatorPriorTokens;
+      merged.creatorRugHistory = rug.creatorRugHistory;
+      merged.copycat = rug.copycat;
+      merged.rugged = rug.rugged;
+      merged.lpLockedPct = rug.lpLockedPct;
+
+      /*
+       * The index's concentration figure, without pretending our own read
+       * worked. `holdersUnavailable` means one thing — the RPC refused us —
+       * and clearing it here to signal "but we know anyway" made the card
+       * claim a holder list it did not have. The gate only ever complains
+       * when the figure is missing entirely, so supplying it is enough.
+       */
+      if (rug.top10Pct !== undefined) merged.top10Pct = rug.top10Pct;
+      if (rug.creatorPct !== undefined) merged.creatorHoldsPct ??= rug.creatorPct;
+      if (merged.liquidityUsd === undefined && rug.liquidityUsd !== undefined) {
+        merged.liquidityUsd = rug.liquidityUsd;
+      }
     }
 
     addWarnings(merged);
