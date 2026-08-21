@@ -366,21 +366,48 @@ async function checkSocketHealth(notify: Notifier): Promise<void> {
   const pollShare = claims.poll / total;
   if (pollShare > 0.6 && !warnedSocketQuiet) {
     warnedSocketQuiet = true;
+
+    /*
+     * Rebuild the subscriptions rather than only reporting them.
+     *
+     * The difference this covers is not two and a half seconds against three —
+     * it is against twenty. A socket delivering normally puts a copied trade in
+     * front of us about 1.7 seconds after the block, and the poll that stands
+     * in for a dead one runs on a twenty-second tick.
+     *
+     * The client reconnects its transport by itself, but a subscription that
+     * was silently dropped on the way back leaves this end holding a handle to
+     * nothing: we believe we are watching, the poll quietly covers, and the
+     * only visible symptom is copies landing late for no stated reason. Tearing
+     * the handles down is what makes `syncSubscriptions` create them again on
+     * the same pass, a few lines below this.
+     */
+    const watching = [...subscriptions.keys()];
     log.warn(
       `The live socket is missing most transactions (${claims.poll}/${total} found by the poll instead). ` +
-        'Copies will be up to a tick late.',
+        `Rebuilding ${watching.length} subscription(s).`,
     );
+    for (const address of watching) await unsubscribe(address);
+
+    // the count starts over, or the rebuilt socket is judged on the dead one's
+    // record and torn down again on the very next tick
+    claims.socket = 0;
+    claims.poll = 0;
+
     await notify(
       [
-        '🐌 <b>Copy trading has slowed down</b>',
+        '🐌 <b>Copy trading had slowed down</b>',
         '',
-        `The live feed is missing most trades — ${claims.poll} of the last ${total} were found by the ` +
-          'backup check instead, which runs every 20 seconds.',
+        `The live feed was missing most trades — ${total} checked, and the ` +
+          'backup check on its 20-second tick was finding them first.',
         '',
-        '<i>Copies still happen, just later. Usually an RPC problem that clears on its own.</i>',
+        '<i>The connection has been rebuilt. Copies should be back to a couple of seconds.</i>',
       ].join('\n'),
     ).catch(() => {});
-  } else if (pollShare <= 0.3) {
+    return;
+  }
+
+  if (pollShare <= 0.3) {
     warnedSocketQuiet = false;
   }
 

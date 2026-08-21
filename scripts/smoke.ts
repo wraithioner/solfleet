@@ -2127,6 +2127,22 @@ assert.match(cSrc, /pollShare > 0\.6/, 'and an inversion is what raises the alar
 assert.match(cSrc, /warnedSocketQuiet = false/, 'a recovery clears it rather than leaving it standing');
 ok('a socket that has gone quiet is reported instead of being covered for silently');
 
+/*
+ * And acted on, not only reported. The gap this covers is not 2.8 seconds
+ * against 3 — it is against 20, which is the tick the poll runs on. The client
+ * reconnects its own transport, but a subscription dropped on the way back
+ * leaves this end holding a handle to nothing.
+ */
+const health = cSrc.slice(cSrc.indexOf('async function checkSocketHealth'), cSrc.indexOf('async function handleSignature'));
+assert.match(health, /for \(const address of watching\) await unsubscribe\(address\)/, 'the dead handles are torn down');
+assert.ok(
+  cSrc.indexOf('await checkSocketHealth(notify)') < cSrc.indexOf('for (const \[address, target\] of wanted)') ||
+    /await checkSocketHealth\(notify\);/.test(cSrc.slice(cSrc.indexOf('export async function syncSubscriptions'))),
+  'and the rebuild happens on the same pass that recreates them',
+);
+assert.match(health, /claims\.socket = 0;\s*\n\s*claims\.poll = 0;/, 'the count starts over after a rebuild');
+ok('a quiet socket is rebuilt, and the new one is not judged on the old one\'s record');
+
 console.log('\n[37] An exit reaches wherever the position is');
 
 /*
