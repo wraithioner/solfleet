@@ -1789,5 +1789,40 @@ assert.equal(aware.openCount, 2, 'it is still an open position, alongside the pr
 assert.notEqual(aware.worst?.mint, DARK, 'and it is never named the worst trade on a price of zero');
 ok('a position nothing will price is reported as unknown, not as a total loss');
 
+console.log('\n[29] Rebuilding proceeds from the chain');
+
+/*
+ * The repair for sales that happened while nothing was recording them. It may
+ * only ever raise a figure: the scan reaches back a bounded distance, so an
+ * older sale falling outside it must not be read as "this returned less than
+ * we thought" — that replaces one wrong number with another.
+ */
+db.wipe();
+const REPAIR = 'MintNeedsRepair11111111111111111111111111';
+db.recordBuy(REPAIR, 0.5, 2, 10_000, 'FIX', 0.52);
+db.recordSell(REPAIR, 0.05, 1);
+assert.equal(db.position(REPAIR)!.realisedSol, 0.05);
+
+db.setRealised(REPAIR, 0.61);
+assert.equal(db.position(REPAIR)!.realisedSol, 0.61, 'a measured figure replaces the short one');
+ok('a position whose sale went unrecorded can be repaired from a measurement');
+
+// and it refuses nonsense rather than corrupting the ledger
+db.setRealised(REPAIR, Number.NaN);
+db.setRealised(REPAIR, -1);
+db.setRealised('MintThatDoesNotExist1111111111111111111', 5);
+assert.equal(db.position(REPAIR)!.realisedSol, 0.61, 'unreadable or negative figures change nothing');
+ok('the repair refuses a value it cannot trust');
+
+/*
+ * The whole point: once the proceeds are recorded, the position stops reading
+ * as a total loss. These are the shapes before and after the repair.
+ */
+const broken = accountPnl([{ ...db.position(REPAIR)!, realisedSol: 0 }], new Map(), 200);
+assert.ok(broken.netPct < -99, `unrepaired reads as a near-total loss: ${broken.netPct}`);
+const fixed = accountPnl(db.positions(), new Map(), 200);
+assert.ok(fixed.netSol > 0, `repaired shows the real result: ${fixed.netSol}`);
+ok('an unrecorded sale reads as −100% until it is repaired, then as the profit it was');
+
 fs.rmSync(DATA, { recursive: true, force: true });
 console.log(`\n✅ ${passed} assertions passed\n`);

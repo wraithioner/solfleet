@@ -253,6 +253,10 @@ export function pnlKeyboard(): InlineKeyboard {
     .text('🔄 Refresh', 'pnl').primary()
     .text('🪙 Positions', 'positions').primary()
     .row()
+    // reads past sales back off the chain, for the ones that were never
+    // recorded — money that arrived while nothing was writing it down
+    .text('🔧 Rebuild from chain', 'pnl_rebuild')
+    .row()
     .text('💼 Portfolio', 'portfolio').primary()
     .text('← Menu', 'home');
 }

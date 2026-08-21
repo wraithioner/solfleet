@@ -153,6 +153,56 @@ export async function showPortfolio(ctx: Context): Promise<void> {
 }
 
 /**
+ * Read past sales back off the chain and repair what was never recorded.
+ *
+ * For most of this bot's life four code paths sold tokens and one of them
+ * wrote down the proceeds, so a stop loss that rescued most of a position
+ * reported it as a total loss. The money arrived; the ledger missed it. The
+ * transactions are still on chain, so this is a repair rather than an excuse.
+ */
+export async function rebuildPnl(ctx: Context): Promise<void> {
+  await render(
+    ctx,
+    '<b>🔧 Rebuilding from the chain</b>\n\n<i>Reading every sale these wallets made. This takes a minute.</i>',
+  );
+
+  try {
+    const { rebuildRealised } = await import('../../services/reconcile.js');
+    const result = await rebuildRealised();
+
+    const lines = ['<b>🔧 Rebuilt from the chain</b>', ''];
+
+    if (result.repaired.length === 0) {
+      lines.push('<i>Nothing was missing — every recorded sale already matches the chain.</i>');
+    } else {
+      const recovered = result.repaired.reduce((sum, r) => sum + (r.now - r.was), 0);
+      lines.push(
+        `Found <b>${fmtAmount(recovered, 4)} ◎</b> of proceeds that had not been written down, ` +
+          `across <b>${result.repaired.length}</b> position${result.repaired.length === 1 ? '' : 's'}.`,
+        '',
+      );
+      for (const r of result.repaired.slice(0, 12)) {
+        lines.push(
+          `· <b>${h(r.symbol ?? r.mint.slice(0, 6))}</b>  ${fmtAmount(r.was, 4)} → <b>${fmtAmount(r.now, 4)} ◎</b>`,
+        );
+      }
+      if (result.repaired.length > 12) lines.push(`<i>…and ${result.repaired.length - 12} more</i>`);
+    }
+
+    if (result.failures.length > 0) {
+      lines.push('', `<i>⚠️ ${h(result.failures.slice(0, 2).join(' | '))}</i>`);
+      lines.push('<i>Those wallets\' sales are still missing. Try again.</i>');
+    }
+
+    lines.push('', '<i>Only ever raises a figure. The scan reaches back a bounded distance, so a very old sale can still sit outside it.</i>');
+
+    await render(ctx, lines.join('\n'), new InlineKeyboard().text('📈 Back to P&L', 'pnl').primary());
+  } catch (err) {
+    await render(ctx, `❌ Could not rebuild.\n\n<i>${h(errMessage(err))}</i>`, backButton('pnl'));
+  }
+}
+
+/**
  * The whole result, on its own screen.
  *
  * Built without the group filter deliberately: a P&L is a fact about the

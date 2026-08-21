@@ -568,6 +568,22 @@ export const db = {
     flush();
   },
 
+  /**
+   * Replace a position's recorded proceeds with a measured figure.
+   *
+   * Used only by the reconciliation that reads past sales back off the chain.
+   * Ordinary trading accumulates through `recordSell`; this overwrites, because
+   * the chain is the authority on what a sale returned and the stored figure is
+   * known to be short.
+   */
+  setRealised(mint: string, sol: number): void {
+    const d = load();
+    const pos = d.positions[mint];
+    if (!pos || !Number.isFinite(sol) || sol < 0) return;
+    pos.realisedSol = sol;
+    flush();
+  },
+
   rules(): AutoRule[] {
     return load().rules;
   },

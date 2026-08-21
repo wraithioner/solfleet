@@ -21,6 +21,7 @@ import {
   showPortfolio,
   showPositions,
   showPnl,
+  rebuildPnl,
   showSettings,
   showFactoryReset,
   executeFactoryReset,
@@ -256,6 +257,8 @@ async function routeCallback(ctx: Context, action: string, args: string[]): Prom
       return showPositions(ctx);
     case 'pnl':
       return showPnl(ctx);
+    case 'pnl_rebuild':
+      return rebuildPnl(ctx);
     case 'settings':
       return showSettings(ctx);
     case 'wallets':
