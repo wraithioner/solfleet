@@ -2240,5 +2240,35 @@ assert.match(engSrc, /Math\.max\(settings\.sweepReserveSol, floorSol\)/, 'and ne
 assert.match(engSrc, /EXIT_FEE_HEADROOM/, 'sized for the fee a stop actually pays, not the routine one');
 ok('the sweep reserves against what it is leaving behind');
 
+console.log('\n[40] Nothing on the entry path waits for something it does not need');
+
+/*
+ * Reading the wallets' balances and screening the token are both network round
+ * trips and neither needs the other's answer. In sequence they are two waits on
+ * the critical path of a raced entry; started together they cost the longer of
+ * the two. Measured against live endpoints: 1345ms one after the other, 1202ms
+ * overlapped.
+ */
+const ct = fs.readFileSync('src/services/copytrade.ts', 'utf8');
+const body = ct.slice(ct.indexOf('async function mirrorBuyLocked'), ct.indexOf('async function mirrorSell'));
+assert.ok(
+  body.indexOf('const screening = screenToken') < body.indexOf('await getMintBalances'),
+  'the screen is started before the balances are awaited',
+);
+assert.match(body, /const \{ verdict, info \} = await screening;/, 'and awaited only where it is needed');
+ok('the screen and the balance read overlap instead of queueing');
+
+/*
+ * And the reason that promise carries its own catch rather than relying on the
+ * await. The limits below it can return before anything awaits the screen, and
+ * an unhandled rejection on this runtime would take the process with it — a
+ * token that could not be read turning into the whole bot going down.
+ */
+const screenDecl = body.slice(body.indexOf('const screening ='), body.indexOf('const heldBefore'));
+assert.match(screenDecl, /\.catch\(/, 'the promise cannot reject');
+const returnsAfter = body.slice(body.indexOf('const screening ='), body.indexOf('await screening'));
+assert.ok(/\n\s+return;/.test(returnsAfter), 'there are indeed early returns between the two');
+ok('a screen nobody waits for cannot bring the process down');
+
 fs.rmSync(DATA, { recursive: true, force: true });
 console.log(`\n✅ ${passed} assertions passed\n`);

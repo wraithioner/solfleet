@@ -809,6 +809,33 @@ async function mirrorBuyLocked(
    * Read here rather than just before the trade — it is the same call either
    * way, and both limits below are about the position rather than the history.
    */
+  /*
+   * Start the screening while the balances are being read.
+   *
+   * Both are network round trips and neither needs the other's answer. Run in
+   * sequence they are two waits on the critical path of a raced entry; started
+   * together they cost the longer of the two. The screen is what the decision
+   * hangs on, so it is the one to get moving first.
+   *
+   * A screen begun for a buy the limits then refuse is a wasted request, not a
+   * wasted trade — and refusals are the exception, so the trade is made against
+   * the common case.
+   *
+   * It is given a catch at the point it is created rather than where it is
+   * awaited, because the checks below can return before anything awaits it.
+   * An unhandled rejection ends the process on this runtime, which would turn
+   * a token that could not be read into the whole bot going down.
+   */
+  const screening = screenToken(move.mint).catch(
+    (err: unknown): { verdict: SafetyVerdict; info?: TokenInfo } => ({
+      verdict: {
+        safe: false,
+        reasons: [`Could not read the token to check it: ${errMessage(err)}`],
+        notes: [],
+      },
+    }),
+  );
+
   const heldBefore = await getMintBalances(wallets.map((w) => w.address), move.mint).catch(
     () => undefined,
   );
@@ -896,7 +923,7 @@ async function mirrorBuyLocked(
    * reconsidered on their next buy into it — the answer will not have changed,
    * and re-reading it every time turns one bad token into a stream of alerts.
    */
-  const { verdict, info } = await screenToken(move.mint);
+  const { verdict, info } = await screening;
   if (!verdict.safe) {
     /*
      * Recorded as refused, not as copied. Those were once the same list, which
