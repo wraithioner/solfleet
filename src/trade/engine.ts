@@ -21,7 +21,17 @@ import { buildTrade, buildTradeBundle, signTx, toTradeArgs, type TradeArgs } fro
 import { sendBundle, waitForBundle, recentJitoTipSol, JITO_MIN_TIP_SOL } from './jito.js';
 import { detectPool, PUMP_PROGRAM_ID } from './curve.js';
 import { swapToSol, swapFromSol } from './jupiter.js';
-import { fundingBalances, partitionByBalance, requiredForBuy } from './fund.js';
+import { fundingBalances, partitionByBalance, requiredForBuy, exitReserveLamports } from './fund.js';
+
+/**
+ * The multiplier an exit is allowed to bid, mirrored from the watcher.
+ *
+ * A stop-loss pays more than a routine trade to be included, so the reserve a
+ * sweep leaves has to cover the fee that stop will actually pay rather than
+ * the one configured for ordinary trading.
+ */
+const EXIT_FEE_HEADROOM = 4;
+const LAMPORTS_PER_SOL = 1e9;
 import type { WalletRecord, TradeRequest, ExecutionResult, BatchSummary } from '../types.js';
 
 export type ProgressFn = (done: number, total: number, note?: string) => void | Promise<void>;
@@ -619,7 +629,32 @@ export async function batchSweepSol(
   const results = await pMap(senders, config.trading.concurrency, async (w) => {
     try {
       const kp = solanaKeypair(w);
-      const swept = await sweepSol(kp, destination, settings.sweepReserveSol, settings.priorityFeeSol);
+
+      /*
+       * A wallet still holding tokens keeps enough to sell them.
+       *
+       * The configured reserve is a flat figure and the default, 0.002 SOL, is
+       * less than the 0.00204 of rent a graduated token's sale needs before it
+       * returns anything. Sweeping to it strands the position exactly: the
+       * tokens are there, the stop-loss fires, and the transaction is refused
+       * for want of a fraction of a SOL that was just moved out.
+       *
+       * An empty wallet keeps the configured figure, which is what the setting
+       * is for.
+       */
+      const holdings = await getSplBalances(w.address).catch(() => []);
+      const holdsTokens = holdings.some((t) => t.amount > 0);
+      const floorSol =
+        Number(
+          exitReserveLamports(
+            settings.priorityFeeSol * EXIT_FEE_HEADROOM,
+            settings.executionMode === 'bundle' ? settings.jitoTipSol : 0,
+            { holdsTokens },
+          ),
+        ) / LAMPORTS_PER_SOL;
+      const reserve = Math.max(settings.sweepReserveSol, floorSol);
+
+      const swept = await sweepSol(kp, destination, reserve, settings.priorityFeeSol);
 
       if (!swept) {
         return {

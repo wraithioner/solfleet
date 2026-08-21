@@ -2198,5 +2198,47 @@ assert.ok(!/catch[\s\S]{0,120}wallets: \[\]/.test(dbSrc), 'and never resets to e
 assert.match(dbSrc, /\.corrupt/, 'the damaged file is kept rather than written over');
 ok('an unreadable store recovers from the backup, or refuses to start — never resets');
 
+console.log('\n[39] Sweeping must not strand the position it leaves behind');
+
+/*
+ * Selling a graduated token costs rent before it returns anything: the sale
+ * routes through a pool, so the wallet opens a wrapped-SOL account to receive
+ * the proceeds, and that account is rent-exempt at 0.00204 SOL. Refunded when
+ * it closes — but it has to be there first.
+ *
+ * The configured sweep reserve defaults to 0.002 SOL, which is less. Sweeping
+ * to it strands the position exactly: the tokens are in the wallet, the
+ * stop-loss fires, and the transaction is refused for want of a fraction of a
+ * SOL that was just moved out.
+ */
+const DEFAULT_SWEEP_LAMPORTS = BigInt(Math.floor(0.002 * 1e9));
+
+assert.ok(
+  ATA_RENT_LAMPORTS > DEFAULT_SWEEP_LAMPORTS,
+  `the shipped reserve is under the rent by ${ATA_RENT_LAMPORTS - DEFAULT_SWEEP_LAMPORTS} lamports`,
+);
+ok('the flat reserve is measurably too small to sell a graduated token');
+
+const empty = exitReserveLamports(0.00005, 0, { holdsTokens: false });
+const holding = exitReserveLamports(0.00005, 0, { holdsTokens: true });
+assert.equal(holding - empty, ATA_RENT_LAMPORTS, 'holding tokens costs exactly the rent more');
+assert.ok(holding > DEFAULT_SWEEP_LAMPORTS, 'and the floor now clears it');
+ok('a wallet holding tokens reserves the rent its sale will need');
+
+// an empty wallet still sweeps down to the operator's figure
+assert.ok(empty < DEFAULT_SWEEP_LAMPORTS, 'nothing held, nothing extra kept');
+ok('an empty wallet keeps only what the setting says');
+
+// the reserve covers more than one attempt, since a failed exit is retried
+const oneAttempt = BigInt(5000) + BigInt(Math.floor(0.00005 * 1e9));
+assert.ok(empty >= oneAttempt * 2n, 'two attempts are covered, not one');
+ok('the reserve covers a retry, because a failed exit is tried again');
+
+const engSrc = fs.readFileSync('src/trade/engine.ts', 'utf8');
+assert.match(engSrc, /const holdsTokens = holdings\.some/, 'the sweep asks what the wallet holds');
+assert.match(engSrc, /Math\.max\(settings\.sweepReserveSol, floorSol\)/, 'and never leaves less than the floor');
+assert.match(engSrc, /EXIT_FEE_HEADROOM/, 'sized for the fee a stop actually pays, not the routine one');
+ok('the sweep reserves against what it is leaving behind');
+
 fs.rmSync(DATA, { recursive: true, force: true });
 console.log(`\n✅ ${passed} assertions passed\n`);

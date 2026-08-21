@@ -256,12 +256,33 @@ export const ATA_RENT_LAMPORTS = 2_039_280n;
  * worth is reserved rather than one, so a failed attempt — a slippage revert, a
  * dropped blockhash — still leaves enough to try again.
  */
-export function exitReserveLamports(priorityFeeSol: number, jitoTipSol = 0): bigint {
+export function exitReserveLamports(
+  priorityFeeSol: number,
+  jitoTipSol = 0,
+  opts: { holdsTokens?: boolean } = {},
+): bigint {
   const perAttempt =
     BigInt(BASE_FEE_LAMPORTS) +
     BigInt(Math.floor(priorityFeeSol * LAMPORTS)) +
     BigInt(Math.floor(jitoTipSol * LAMPORTS));
-  return perAttempt * 2n;
+
+  /*
+   * Selling a graduated token costs rent before it returns anything.
+   *
+   * A coin still on its curve pays SOL straight out, but once it has migrated
+   * the sale routes through a pool and the wallet has to open a wrapped-SOL
+   * account to receive the proceeds. That account is rent-exempt at 0.00204
+   * SOL, refunded when it closes at the end of the swap — but it has to be
+   * there first, and a wallet holding only fee money cannot put it there.
+   *
+   * This is what the sweep has to leave behind. Left at fees alone it strands
+   * the position: the tokens are in the wallet, the stop-loss fires, and the
+   * transaction is refused for want of two thousandths of a SOL.
+   */
+  const rent = opts.holdsTokens ? ATA_RENT_LAMPORTS : 0n;
+
+  // an exit that fails is retried, so the reserve covers more than one go
+  return perAttempt * 2n + rent;
 }
 
 /**
