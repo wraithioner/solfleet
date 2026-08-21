@@ -119,6 +119,9 @@ export interface AccountPnl {
   losses: number;
   best?: PositionResult;
   worst?: PositionResult;
+  /** Positions still held that nothing would price, and what they cost. */
+  unpricedCount: number;
+  unpricedCostSol: number;
   /** True when nothing has ever been bought, so the screen can say so. */
   empty: boolean;
 }
@@ -144,6 +147,15 @@ export function accountPnl(
   positions: PositionRecord[],
   openValueSolByMint: Map<string, number>,
   solPriceUsd: number,
+  /**
+   * Mints the wallets hold that no venue would price.
+   *
+   * Counted apart from the rest, because marking them at zero is the same
+   * arithmetic as declaring them worthless. They may well be — but a quiet
+   * hour and a dead token look identical from here, and the total should not
+   * quietly pick one.
+   */
+  unpricedMints: Set<string> = new Set(),
 ): AccountPnl {
   let costSol = 0;
   let realisedSol = 0;
@@ -153,6 +165,8 @@ export function accountPnl(
   let closedCount = 0;
   let wins = 0;
   let losses = 0;
+  let unpricedCount = 0;
+  let unpricedCostSol = 0;
 
   const results: PositionResult[] = [];
 
@@ -167,12 +181,18 @@ export function accountPnl(
 
     // a token still sitting in the wallets is an open bet; one that is gone has
     // a final answer, and mixing the two hides how much of a "profit" is
-    // unrealised paper on something that cannot be sold
-    const open = value > 0;
+    // unrealised paper on something that cannot be sold. A held-but-unpriced
+    // token is open too — it is on the books, whatever it is worth
+    const unpriced = unpricedMints.has(pos.mint);
+    if (unpriced) {
+      unpricedCount++;
+      unpricedCostSol += cost;
+    }
+    const open = value > 0 || unpriced;
     if (cost > 0 || pos.realisedSol > 0) (open ? openCount++ : closedCount++);
 
     const netSol = pos.realisedSol + value - cost;
-    if (cost > 0) {
+    if (cost > 0 && !unpriced) {
       if (netSol >= 0) wins++;
       else losses++;
       results.push({
@@ -204,6 +224,8 @@ export function accountPnl(
     losses,
     best: ranked[0],
     worst: ranked.length > 1 ? ranked.at(-1) : undefined,
+    unpricedCount,
+    unpricedCostSol,
     empty: costSol === 0 && realisedSol === 0,
   };
 }

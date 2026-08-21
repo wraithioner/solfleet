@@ -1723,5 +1723,71 @@ assert.equal(exposureSol(LEGACY_REFUSED), 0, 'nothing was ever bought, so there 
 ok('an old record listing a refusal as copied still has no position to sell');
 
 
+console.log('\n[27] Every exit is written down');
+
+/*
+ * Four code paths sell tokens and only one of them recorded the proceeds. A
+ * take-profit firing, a stop loss, a copied exit and sell-everything all
+ * returned real SOL to the wallets and wrote none of it down, so the position
+ * kept its whole cost and none of its return — a stop loss that saved most of
+ * the money reported as having lost all of it.
+ *
+ * Guarded structurally rather than by example, because the defect is a missing
+ * call and a test that only exercises the paths it remembers would miss the
+ * next one added.
+ */
+const sellSites = ['src/services/copytrade.ts', 'src/services/watcher.ts', 'src/bot/handlers/trade.ts', 'src/trade/engine.ts'];
+for (const file of sellSites) {
+  const src = fs.readFileSync(file, 'utf8');
+  const sells = (src.match(/action: 'sell'/g) ?? []).length;
+  if (sells === 0) continue;
+  assert.ok(
+    /db\.recordSell\(/.test(src),
+    `${file} executes ${sells} sell(s) but never records the proceeds`,
+  );
+}
+ok('every file that sells also records what came back');
+
+// and the engine measures it, so no caller has to do the arithmetic itself
+const engineSrc = fs.readFileSync('src/trade/engine.ts', 'utf8');
+assert.match(engineSrc, /export async function measureSolReceived/);
+assert.match(engineSrc, /combined\.solReceived = await measureSolReceived/);
+ok('the engine measures sell proceeds once, for every path that sells');
+
+// the sell measurement mirrors the buy one, and neither invents a number
+const { measureSolSpent, measureSolReceived } = await import('../src/trade/engine.js');
+assert.equal(await measureSolSpent(['A'], undefined), undefined, 'no reading, no number');
+assert.equal(await measureSolReceived([], new Map()), undefined, 'no wallets, no number');
+ok('an unmeasurable trade reports nothing rather than zero');
+
+console.log('\n[28] Unpriced is not worthless');
+
+/*
+ * A held token nothing will quote used to be summed as $0, which is the same
+ * arithmetic as declaring it a total loss. A quiet hour and a dead token look
+ * identical from here and the headline should not silently pick one.
+ */
+db.wipe();
+const PRICED = 'MintPricedddddddddddddddddddddddddddddddd';
+const DARK = 'MintUnpriceddddddddddddddddddddddddddddddd';
+db.recordBuy(PRICED, 0.1, 1, 1_000, 'PRI', 0.1);
+db.recordBuy(DARK, 0.1, 1, 1_000, 'DARK', 0.1);
+
+const naive = accountPnl(db.positions(), new Map([[PRICED, 0.15]]), 200);
+assert.equal(naive.losses, 1, 'without the flag the dark token counts as a loss');
+
+const aware = accountPnl(
+  db.positions(),
+  new Map([[PRICED, 0.15], [DARK, 0]]),
+  200,
+  new Set([DARK]),
+);
+assert.equal(aware.unpricedCount, 1);
+assert.equal(Number(aware.unpricedCostSol.toFixed(4)), 0.1, 'and what it cost is reported');
+assert.equal(aware.losses, 0, 'it is not counted as a losing trade');
+assert.equal(aware.openCount, 2, 'it is still an open position, alongside the priced one');
+assert.notEqual(aware.worst?.mint, DARK, 'and it is never named the worst trade on a price of zero');
+ok('a position nothing will price is reported as unknown, not as a total loss');
+
 fs.rmSync(DATA, { recursive: true, force: true });
 console.log(`\n✅ ${passed} assertions passed\n`);

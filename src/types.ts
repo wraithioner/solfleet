@@ -86,6 +86,13 @@ export interface BatchSummary {
    * half-measured cost is worse than an admittedly missing one.
    */
   solSpent?: number;
+  /**
+   * SOL that came back from a batch of sells, measured the same way.
+   *
+   * Net of fees, so it is what actually arrived. Undefined when the balances
+   * could not be read on both sides.
+   */
+  solReceived?: number;
 }
 
 export type TradeAction = 'buy' | 'sell';

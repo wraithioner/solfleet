@@ -970,6 +970,13 @@ async function mirrorSellLocked(
       pool: 'auto',
     });
 
+    // the proceeds, so the position's P&L reflects a copied exit as a return
+    // rather than as the disappearance of everything it cost
+    const sellFills = summary.results.filter((r) => r.ok && r.signature).length;
+    if (summary.solReceived !== undefined && sellFills > 0) {
+      db.recordSell(move.mint, summary.solReceived, sellFills);
+    }
+
     db.appendTradeLog({
       at: Date.now(),
       action: `copy sell ${percent}%`,

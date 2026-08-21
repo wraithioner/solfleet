@@ -410,10 +410,8 @@ async function executeSell(ctx: Context, mint: string, percent: number): Promise
 
   // Proceeds are measured, not quoted: the SOL these wallets hold before and
   // after the batch is what actually arrived, fees already deducted. A quote
-  // taken beforehand would flatter every fill.
-  const addresses = wallets.map((w) => w.address);
-  const solBefore = await fundingBalances(addresses).catch(() => undefined);
-
+  // taken beforehand would flatter every fill. The engine takes both readings
+  // now, so every exit path gets it rather than only this one.
   try {
     const summary = await batchPumpTrade(
       wallets,
@@ -422,14 +420,12 @@ async function executeSell(ctx: Context, mint: string, percent: number): Promise
       throttledProgress(ctx, `Selling ${percent}% per wallet`),
     );
 
-    if (solBefore) {
-      const solAfter = await fundingBalances(addresses).catch(() => undefined);
-      if (solAfter) {
-        let delta = 0n;
-        for (const [address, after] of solAfter) delta += after - (solBefore.get(address) ?? 0n);
-        const fills = summary.results.filter((r) => r.ok && r.signature).length;
-        if (delta > 0n) db.recordSell(mint, Number(delta) / LAMPORTS, fills);
-      }
+    // the engine measures this for every sell now, so the manual screen no
+    // longer needs its own copy of the arithmetic — and every other exit path
+    // gets the recording that only this one used to have
+    const fills = summary.results.filter((r) => r.ok && r.signature).length;
+    if (summary.solReceived !== undefined && fills > 0) {
+      db.recordSell(mint, summary.solReceived, fills);
     }
 
     db.appendTradeLog({

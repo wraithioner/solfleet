@@ -196,21 +196,40 @@ export function listPositions(portfolio: Portfolio): Array<{
   totalUsd: number;
   walletCount: number;
   boughtHere: boolean;
+  /**
+   * True when no venue would price this token.
+   *
+   * Distinct from a value of zero, and the difference decides whether a
+   * position reads as a loss. Nothing priced it, so the market has gone quiet
+   * or the indexers have not caught up — either way "unknown" is the answer,
+   * and summing it as $0 turns every unpriced holding into a total write-off.
+   */
+  unpriced: boolean;
 }> {
-  const map = new Map<string, { symbol: string; totalAmount: number; totalUsd: number; walletCount: number }>();
+  const map = new Map<
+    string,
+    { symbol: string; totalAmount: number; totalUsd: number; walletCount: number; priced: boolean }
+  >();
 
   for (const b of portfolio.solana) {
     for (const t of b.tokens) {
-      const entry = map.get(t.mint) ?? { symbol: t.symbol, totalAmount: 0, totalUsd: 0, walletCount: 0 };
+      const entry =
+        map.get(t.mint) ?? { symbol: t.symbol, totalAmount: 0, totalUsd: 0, walletCount: 0, priced: false };
       entry.totalAmount += t.amount;
       entry.totalUsd += t.usdValue ?? 0;
+      entry.priced = entry.priced || t.usdValue !== undefined;
       entry.walletCount += 1;
       map.set(t.mint, entry);
     }
   }
 
   return [...map.entries()]
-    .map(([mint, v]) => ({ mint, ...v, boughtHere: (db.position(mint)?.investedSol ?? 0) > 0 }))
+    .map(([mint, { priced, ...v }]) => ({
+      mint,
+      ...v,
+      unpriced: !priced,
+      boughtHere: (db.position(mint)?.investedSol ?? 0) > 0,
+    }))
     .sort(
       (a, b) =>
         Number(b.boughtHere) - Number(a.boughtHere) ||

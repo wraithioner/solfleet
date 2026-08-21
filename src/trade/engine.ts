@@ -157,6 +157,20 @@ export async function batchPumpTrade(
     holdings: req.action === 'sell' ? await readHoldings(solWallets, req.mint) : undefined,
   };
 
+  /*
+   * What the wallets hold in SOL before a sell, so the proceeds can be measured.
+   *
+   * Read alongside the holdings query rather than after it, because a copied
+   * exit is as raced as a copied entry and this must not cost it a round trip.
+   * A sell that is never measured is a position whose P&L shows the whole cost
+   * as a loss forever, which is how a take-profit that worked reads as a
+   * disaster.
+   */
+  const solBeforeSell =
+    req.action === 'sell'
+      ? await fundingBalances(solWallets.map((w) => w.address)).catch(() => undefined)
+      : undefined;
+
   // A wallet with nothing to sell — or nothing to spend — has nothing to do. It
   // is not a failure, and it must not be packed into a bundle either, where one
   // such wallet fails the build for the other four.
@@ -223,8 +237,44 @@ export async function batchPumpTrade(
   const combined = summarise([...summary.results, ...idle], startedAt);
   if (req.action === 'buy') {
     combined.solSpent = await measureSolSpent(active.map((w) => w.address), solBefore);
+  } else if (solBeforeSell) {
+    combined.solReceived = await measureSolReceived(solWallets.map((w) => w.address), solBeforeSell);
   }
   return combined;
+}
+
+/**
+ * What a batch of sells actually returned, measured from the wallets' balances.
+ *
+ * Net of the transaction fees, so it is what arrived rather than what the pool
+ * quoted — slightly conservative, and the only figure that can be checked.
+ *
+ * Every sell in this bot needs it and only one of them used to have it. The
+ * manual screen measured its own proceeds inline; a take-profit firing, a stop
+ * loss, a copied exit and sell-everything all sold real tokens for real SOL and
+ * wrote none of it down, so the position kept its full cost and none of its
+ * return. A stop loss that saved most of a position reported it as a total one.
+ */
+export async function measureSolReceived(
+  addresses: string[],
+  before: Map<string, bigint> | undefined,
+): Promise<number | undefined> {
+  if (!before || addresses.length === 0) return undefined;
+
+  const after = await fundingBalances(addresses).catch(() => undefined);
+  if (!after) return undefined;
+
+  let received = 0n;
+  for (const address of addresses) {
+    const start = before.get(address);
+    const end = after.get(address);
+    if (start === undefined || end === undefined) continue;
+    received += end - start;
+  }
+
+  // a sell that netted nothing after fees is not proceeds worth recording, and
+  // a negative reading means the window caught something else entirely
+  return received > 0n ? Number(received) / 1e9 : undefined;
 }
 
 /**
@@ -691,7 +741,7 @@ export async function batchSellAllPositions(
     await onProgress?.(i, mints.length, `selling ${mint.slice(0, 6)}…`);
 
     const holders = wallets.filter((w) => !w.disabled);
-    summaries[mint] = await batchPumpTrade(holders, {
+    const summary = await batchPumpTrade(holders, {
       action: 'sell',
       mint,
       amount: 100,
@@ -700,6 +750,13 @@ export async function batchSellAllPositions(
       priorityFeeSol: settings.priorityFeeSol,
       pool: 'auto',
     });
+    summaries[mint] = summary;
+
+    // closing everything is still a set of exits, and each one returned SOL
+    const fills = summary.results.filter((r) => r.ok && r.signature).length;
+    if (summary.solReceived !== undefined && fills > 0) {
+      db.recordSell(mint, summary.solReceived, fills);
+    }
   }
 
   await onProgress?.(mints.length, mints.length);

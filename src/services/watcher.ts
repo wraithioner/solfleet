@@ -272,6 +272,14 @@ async function fire(rule: AutoRule, price: number, notify: Notifier): Promise<vo
       pool: 'auto',
     });
 
+    // a rule that fired returned SOL to the wallets; without this the position
+    // keeps its whole cost and none of its proceeds, and a stop loss that saved
+    // most of the money reports as having lost all of it
+    const fills = summary.results.filter((r) => r.ok && r.signature).length;
+    if (summary.solReceived !== undefined && fills > 0) {
+      db.recordSell(rule.mint, summary.solReceived, fills);
+    }
+
     db.appendTradeLog({
       at: Date.now(),
       action: `${rule.kind} ${rule.sellPercent}%`,

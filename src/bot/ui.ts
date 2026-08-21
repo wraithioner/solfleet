@@ -171,6 +171,11 @@ export function renderPnl(a: AccountPnl, marks: ValueMark[], currentUsd: number)
     lines.push(`   ${solCell(a.costSol)}  spent`);
     lines.push(`   ${solCell(a.realisedSol)}  sold back`);
     if (a.openValueSol > 0) lines.push(`   ${solCell(a.openValueSol)}  still open`);
+    if (a.unpricedCount > 0) {
+      lines.push(
+        `   ${solCell(a.unpricedCostSol)}  <i>in ${a.unpricedCount} position${a.unpricedCount === 1 ? '' : 's'} nothing would price</i>`,
+      );
+    }
     if (a.feesSol > 0) lines.push(`   ${solCell(a.feesSol)}  <i>fees &amp; rent, included above</i>`);
     lines.push('');
 
@@ -208,6 +213,14 @@ export function renderPnl(a: AccountPnl, marks: ValueMark[], currentUsd: number)
       );
     }
     if ((a.best && a.best.netSol > 0) || (a.worst && a.worst.netSol < 0)) lines.push('');
+  }
+
+  if (!a.empty && a.unpricedCount > 0) {
+    lines.push(
+      `<i>The total leaves out ${a.unpricedCount === 1 ? 'a position' : `${a.unpricedCount} positions`} no venue ` +
+        'would quote. Counting them as zero would be a guess that they are worthless.</i>',
+      '',
+    );
   }
 
   const windows: Array<[string, number]> = [

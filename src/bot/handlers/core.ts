@@ -118,13 +118,17 @@ export async function showHome(ctx: Context): Promise<void> {
  * ahead; anything not in this map is treated as having gone to zero, which is
  * the correct reading of a token the wallets no longer hold.
  */
-function openValueSol(portfolio: Portfolio): Map<string, number> {
+function openValueSol(portfolio: Portfolio): { marks: Map<string, number>; unpriced: Set<string> } {
   const solPrice = portfolio.totals.solPriceUsd;
-  const map = new Map<string, number>();
-  if (solPrice <= 0) return map;
+  const marks = new Map<string, number>();
+  const unpriced = new Set<string>();
+  if (solPrice <= 0) return { marks, unpriced };
 
-  for (const p of listPositions(portfolio)) map.set(p.mint, p.totalUsd / solPrice);
-  return map;
+  for (const p of listPositions(portfolio)) {
+    marks.set(p.mint, p.totalUsd / solPrice);
+    if (p.unpriced) unpriced.add(p.mint);
+  }
+  return { marks, unpriced };
 }
 
 export async function showPortfolio(ctx: Context): Promise<void> {
@@ -135,7 +139,8 @@ export async function showPortfolio(ctx: Context): Promise<void> {
     const portfolio = await buildPortfolio({ group: settings.activeGroup, includeTokens: true });
     // marked from the wallets on screen, so the line agrees with the number
     // above it; the dedicated screen always reads the whole account
-    const pnl = accountPnl(db.positions(), openValueSol(portfolio), portfolio.totals.solPriceUsd);
+    const held = openValueSol(portfolio);
+    const pnl = accountPnl(db.positions(), held.marks, portfolio.totals.solPriceUsd, held.unpriced);
 
     await render(
       ctx,
@@ -159,7 +164,8 @@ export async function showPnl(ctx: Context): Promise<void> {
 
   try {
     const portfolio = await buildPortfolio({ group: null, includeTokens: true });
-    const pnl = accountPnl(db.positions(), openValueSol(portfolio), portfolio.totals.solPriceUsd);
+    const held = openValueSol(portfolio);
+    const pnl = accountPnl(db.positions(), held.marks, portfolio.totals.solPriceUsd, held.unpriced);
 
     // a look is also a reading; the hourly loop is the backstop, not the only
     // source, so opening this screen after a redeploy still leaves a mark
