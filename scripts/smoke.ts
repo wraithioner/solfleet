@@ -1662,7 +1662,22 @@ ok('a copy that throws releases the coin instead of jamming it forever');
 // ── refusals are not positions ───────────────────────────────────────────────
 const { DEFAULT_SAFETY: DS } = await import('../src/services/safety.js');
 assert.equal(DS.maxSolPerMint, 0.5, 'a cap ships on by default');
-ok('the shipped default caps one coin at 0.5 SOL');
+assert.equal(DS.oneEntryPerMint, true, 'and a second trader is refused by default');
+ok('the shipped defaults are one entry per coin, capped at 0.5 SOL');
+
+/*
+ * The blunt rule, and the one most people mean by "do not buy it twice".
+ * Scoped so that a trader set to average into their OWN position still can —
+ * what it refuses is a stranger joining a coin already on the books.
+ */
+const alreadyIn = (copiedByThisTarget: boolean, exposure: number, on = true) =>
+  on && !copiedByThisTarget && exposure > 0;
+
+assert.equal(alreadyIn(false, 0.2), true, 'another trader is refused a coin we already hold');
+assert.equal(alreadyIn(true, 0.2), false, 'the trader who opened it may still average in');
+assert.equal(alreadyIn(false, 0), false, 'a coin nobody holds is open to anyone');
+assert.equal(alreadyIn(false, 0.2, false), false, 'and the rule can be switched off');
+ok('one entry per coin refuses the second trader, not the first one averaging in');
 
 console.log('\n[26] Copy exits only close what the trader opened');
 

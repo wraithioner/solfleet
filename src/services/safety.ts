@@ -56,6 +56,17 @@ export interface SafetyLimits {
    * and neither can see the other.
    */
   maxSolPerMint: number;
+  /**
+   * Refuse a copy into a coin the wallets are already holding.
+   *
+   * The blunt version of the cap above, and the one most people mean. Two
+   * traders liking the same coin is not two reasons to buy it — the second
+   * entry pays a worse price for the same bet, and doubles what a rug takes.
+   * The trader who opened the position can still average into it if they are
+   * set to `every`; this only refuses somebody else joining a coin you are
+   * already in.
+   */
+  oneEntryPerMint: boolean;
 }
 
 export const DEFAULT_SAFETY: SafetyLimits = {
@@ -66,6 +77,7 @@ export const DEFAULT_SAFETY: SafetyLimits = {
   maxAgeHours: 72,
   minVolume1hUsd: 1_000,
   maxSolPerMint: 0.5,
+  oneEntryPerMint: true,
 };
 
 /**
@@ -76,7 +88,7 @@ export const DEFAULT_SAFETY: SafetyLimits = {
  * version marker lets a genuinely stricter set replace those without
  * overwriting a limit the operator picked deliberately afterwards.
  */
-export const SAFETY_VERSION = 4;
+export const SAFETY_VERSION = 5;
 
 export interface SafetyVerdict {
   safe: boolean;
@@ -236,6 +248,9 @@ export function describeLimits(limits: SafetyLimits): string[] {
     limits.minVolume1hUsd > 0
       ? `1h volume: refuse under <b>$${limits.minVolume1hUsd.toLocaleString('en-US')}</b>`
       : '1h volume: <b>not checked</b>',
+    limits.oneEntryPerMint
+      ? 'Already holding it: <b>a second trader is not copied in</b>'
+      : 'Already holding it: <b>copied anyway</b>',
     limits.maxSolPerMint > 0
       ? `Per token: never hold more than <b>${limits.maxSolPerMint} ◎</b> of one coin`
       : 'Per token: <b>no cap</b>',

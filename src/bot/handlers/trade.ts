@@ -1401,7 +1401,7 @@ export async function showCopySafety(ctx: Context): Promise<void> {
       '',
       '<i>Age is measured from the token\'s first market, not the pool it trades in now — a coin that graduates gets a brand-new pool and would otherwise read as minutes old.</i>',
       '',
-      '<i>The per-coin cap spans every wallet you follow. Without it, three traders buying the same coin means three full-size entries — each one only knows what it bought itself.</i>',
+      '<i>Both per-coin limits span every wallet you follow. Without them, three traders buying the same coin means three full-size entries — each one only knows what it bought itself.</i>',
       '',
       ...describeLimits(limits).map((l) => `· ${l}`),
       '',
@@ -1435,6 +1435,12 @@ export async function showCopySafety(ctx: Context): Promise<void> {
       .primary()
       .row()
       .text(
+        limits.oneEntryPerMint ? '🚫 Already in it: skip' : '➕ Already in it: buy anyway',
+        'safety_oneentry',
+      )
+      .primary()
+      .row()
+      .text(
         limits.maxSolPerMint > 0 ? `🧯 Max ${limits.maxSolPerMint} ◎ per coin` : '🧯 No cap per coin',
         'safety_mintcap',
       )
@@ -1456,6 +1462,7 @@ export async function cycleSafety(ctx: Context, which: string): Promise<void> {
   else if (which === 'age') limits.maxAgeHours = cycleStep(AGE_STEPS, limits.maxAgeHours);
   else if (which === 'vol') limits.minVolume1hUsd = cycleStep(VOL_STEPS, limits.minVolume1hUsd);
   else if (which === 'mintcap') limits.maxSolPerMint = cycleStep(MINT_CAP_STEPS, limits.maxSolPerMint);
+  else if (which === 'oneentry') limits.oneEntryPerMint = !limits.oneEntryPerMint;
 
   db.updateSettings({ copySafety: limits });
   await showCopySafety(ctx);

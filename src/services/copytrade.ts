@@ -678,6 +678,39 @@ async function mirrorBuyLocked(
    * already in, what this would have added, and where the limit is.
    */
   const limits = db.settings().copySafety;
+
+  /*
+   * Somebody else already put you in this coin.
+   *
+   * Two followed wallets liking the same token is not two reasons to own it.
+   * The second copy lands later, so it pays a worse price for the same bet, and
+   * it doubles what a rug takes out — the conviction being mirrored is one
+   * trade's worth however many people made it.
+   *
+   * Scoped to a coin this target did not open, so a trader set to average in
+   * still can. What it refuses is a stranger joining a position already on the
+   * books, whether the bot opened it copying somebody else or the operator
+   * bought it by hand.
+   */
+  if (limits.oneEntryPerMint && !target.copiedMints.includes(move.mint) && exposureSol(move.mint) > 0) {
+    log.info(
+      `Skipped copying ${target.label} into ${move.mint}: ` +
+        `already holding ${exposureSol(move.mint).toFixed(4)} SOL of it.`,
+    );
+    await notify(
+      [
+        `🧯 <b>Did not copy ${target.label}</b>`,
+        `<code>${move.mint}</code>`,
+        '',
+        `You are already in this coin for <b>${exposureSol(move.mint).toFixed(4)} ◎</b>.`,
+        'A second trader buying it does not buy it again.',
+        '',
+        '<i>Copy trading → Safety → Already holding, to change this.</i>',
+      ].join('\n'),
+    ).catch(() => {});
+    return;
+  }
+
   const room = roomUnderCap(move.mint, limits.maxSolPerMint);
   const batchSol = perWallet * wallets.length;
 
