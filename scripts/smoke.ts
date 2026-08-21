@@ -1824,5 +1824,26 @@ const fixed = accountPnl(db.positions(), new Map(), 200);
 assert.ok(fixed.netSol > 0, `repaired shows the real result: ${fixed.netSol}`);
 ok('an unrecorded sale reads as −100% until it is repaired, then as the profit it was');
 
+/*
+ * The worst thing this screen can say. The first version reported "nothing was
+ * missing" after the provider had refused every wallet — it cannot tell "no
+ * sales were missing" from "no sales were read", and it chose the reassuring
+ * one. The all-clear is now gated on the scan having actually finished.
+ */
+const coreSrc = fs.readFileSync('src/bot/handlers/core.ts', 'utf8');
+const allClear = coreSrc.indexOf('Nothing was missing');
+assert.ok(allClear > 0, 'the all-clear message still exists');
+const guard = coreSrc.lastIndexOf('result.complete', allClear);
+assert.ok(guard > 0 && allClear - guard < 200, 'the all-clear is guarded by the scan having completed');
+ok('a scan that read nothing never reports an all-clear');
+
+// and the reconcile paces itself rather than being refused
+const recSrc = fs.readFileSync('src/services/reconcile.ts', 'utf8');
+assert.match(recSrc, /RPC_GAP_MS/, 'calls are spaced');
+assert.match(recSrc, /isRateLimited/, 'a rate limit is recognised rather than thrown as a failure');
+assert.ok(!/pMap\(wallets/.test(recSrc), 'wallets are read one at a time, not concurrently');
+assert.match(recSrc, /complete: false/, 'a short read reports itself as incomplete');
+ok('the scan is paced, and a partial read says it is partial');
+
 fs.rmSync(DATA, { recursive: true, force: true });
 console.log(`\n✅ ${passed} assertions passed\n`);

@@ -163,21 +163,27 @@ export async function showPortfolio(ctx: Context): Promise<void> {
 export async function rebuildPnl(ctx: Context): Promise<void> {
   await render(
     ctx,
-    '<b>🔧 Rebuilding from the chain</b>\n\n<i>Reading every sale these wallets made. This takes a minute.</i>',
+    '<b>🔧 Rebuilding from the chain</b>\n\n<i>Reading every sale these wallets made, slowly enough not to be refused. This takes a minute.</i>',
   );
+
+  // the scan is paced, so it is worth saying it is still moving
+  let lastEdit = 0;
+  const progress = async (note: string) => {
+    if (Date.now() - lastEdit < 4_000) return;
+    lastEdit = Date.now();
+    await render(ctx, `<b>🔧 Rebuilding from the chain</b>\n\n<i>${h(note)}…</i>`).catch(() => {});
+  };
 
   try {
     const { rebuildRealised } = await import('../../services/reconcile.js');
-    const result = await rebuildRealised();
+    const result = await rebuildRealised(progress);
 
+    const recovered = result.repaired.reduce((sum, r) => sum + (r.now - r.was), 0);
     const lines = ['<b>🔧 Rebuilt from the chain</b>', ''];
 
-    if (result.repaired.length === 0) {
-      lines.push('<i>Nothing was missing — every recorded sale already matches the chain.</i>');
-    } else {
-      const recovered = result.repaired.reduce((sum, r) => sum + (r.now - r.was), 0);
+    if (result.repaired.length > 0) {
       lines.push(
-        `Found <b>${fmtAmount(recovered, 4)} ◎</b> of proceeds that had not been written down, ` +
+        `Recovered <b>${fmtAmount(recovered, 4)} ◎</b> of proceeds that had not been written down, ` +
           `across <b>${result.repaired.length}</b> position${result.repaired.length === 1 ? '' : 's'}.`,
         '',
       );
@@ -187,16 +193,48 @@ export async function rebuildPnl(ctx: Context): Promise<void> {
         );
       }
       if (result.repaired.length > 12) lines.push(`<i>…and ${result.repaired.length - 12} more</i>`);
+    } else if (result.complete) {
+      lines.push('<i>Nothing was missing — every recorded sale already matches the chain.</i>');
     }
 
-    if (result.failures.length > 0) {
-      lines.push('', `<i>⚠️ ${h(result.failures.slice(0, 2).join(' | '))}</i>`);
-      lines.push('<i>Those wallets\' sales are still missing. Try again.</i>');
+    /*
+     * A scan that read nothing must never report an all-clear.
+     *
+     * The first version said "nothing was missing" after the provider refused
+     * both wallets, which is the worst thing this screen could say: it cannot
+     * tell "no sales were missing" from "no sales were read", and it picked the
+     * reassuring one.
+     */
+    if (!result.complete) {
+      lines.push(
+        '',
+        result.walletsRead === 0
+          ? '⚠️ <b>Nothing could be read.</b> This is not an all-clear — the scan never got going.'
+          : `⚠️ <b>Only part of the history was read</b> (${result.walletsRead}/${result.walletsTotal} wallets, ` +
+            `${result.transactionsScanned.toLocaleString('en-US')} transactions). More may still be missing.`,
+        '<i>The provider rate limited the scan. Run it again — it picks up whatever it finds.</i>',
+      );
+      if (result.failures.length > 0) {
+        lines.push(`<i>${h(result.failures.slice(0, 2).join(' | '))}</i>`);
+      }
+    } else {
+      lines.push(
+        '',
+        `<i>Read ${result.transactionsScanned.toLocaleString('en-US')} transactions across ` +
+          `${result.walletsRead} wallet${result.walletsRead === 1 ? '' : 's'}.</i>`,
+      );
     }
 
-    lines.push('', '<i>Only ever raises a figure. The scan reaches back a bounded distance, so a very old sale can still sit outside it.</i>');
+    lines.push('<i>Only ever raises a figure, so running it again is safe.</i>');
 
-    await render(ctx, lines.join('\n'), new InlineKeyboard().text('📈 Back to P&L', 'pnl').primary());
+    await render(
+      ctx,
+      lines.join('\n'),
+      new InlineKeyboard()
+        .text('📈 Back to P&L', 'pnl').primary()
+        .text('🔧 Run again', 'pnl_rebuild')
+        .row(),
+    );
   } catch (err) {
     await render(ctx, `❌ Could not rebuild.\n\n<i>${h(errMessage(err))}</i>`, backButton('pnl'));
   }
