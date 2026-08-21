@@ -997,7 +997,7 @@ export async function addAutoRule(
     triggerPct,
     // A stop-loss that sells half is a half-measure; exits default to the whole
     // position, and take-profit to half so the rest can keep running.
-    sellPercent: kind === 'take_profit' ? 50 : 100,
+    sellPercent: 100,
     peakPriceSol: peak,
     enabled: true,
     createdAt: Date.now(),
@@ -1291,7 +1291,11 @@ export async function showCopyTarget(ctx: Context, id: string): Promise<void> {
     t.takeProfitPct === undefined && t.stopLossPct === undefined
       ? '<i>Nothing armed. Every position rides on their timing alone.</i>'
       : `<i>Armed on each position this wallet opens for you, measured from what you paid` +
-        (t.takeProfitPct !== undefined ? `. Take profit sells ${t.takeProfitSellPct ?? 50}% and lets the rest run` : '') +
+        (t.takeProfitPct !== undefined
+          ? (t.takeProfitSellPct ?? 100) >= 100
+            ? '. Take profit exits the whole position'
+            : `. Take profit sells ${t.takeProfitSellPct}% and lets the rest run`
+          : '') +
         '.</i>',
     '',
     // the old wording promised something this screen cannot deliver: the cap it

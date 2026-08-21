@@ -1064,14 +1064,18 @@ ok('"off" is the absence of a rule, not a rule with a zero trigger');
 
 // arming happens on the copy buy, and must not stack on a second entry
 const { armCopyRules } = await import('../src/services/copytrade.js');
-db.updateCopyTarget(target.id, { takeProfitPct: 100, stopLossPct: 40, takeProfitSellPct: 50 });
+db.updateCopyTarget(target.id, { takeProfitPct: 100, stopLossPct: 40, takeProfitSellPct: 100 });
 const armedTarget = db.copyTargets()[0]!;
 
 armCopyRules(armedTarget, 'MINT_COPIED');
 const firstArm = db.rulesFor('MINT_COPIED');
 assert.equal(firstArm.length, 2, 'a take profit and a stop loss');
 assert.equal(firstArm.find((r) => r.kind === 'take_profit')!.triggerPct, 100);
-assert.equal(firstArm.find((r) => r.kind === 'take_profit')!.sellPercent, 50, 'takes half, lets the rest run');
+assert.equal(
+  firstArm.find((r) => r.kind === 'take_profit')!.sellPercent,
+  100,
+  'exits fully — the half-exit was a hardcoded default no screen ever showed, and the operator believed 100 all along',
+);
 assert.equal(firstArm.find((r) => r.kind === 'stop_loss')!.triggerPct, -40, 'a stop is stored as a fall');
 assert.equal(firstArm.find((r) => r.kind === 'stop_loss')!.sellPercent, 100, 'and exits the whole position');
 ok('a copy buy arms the target rules with the right signs and sizes');
@@ -2528,6 +2532,36 @@ for (const [file] of sellSites2) {
   assert.match(src, /measureTokensSold\(/, `${file} measures rather than assumes the amount`);
 }
 ok('copy sells, fired rules and manual sells all say the profit');
+
+console.log('\n[46] A take-profit exits the whole position');
+
+/*
+ * Reported from use: "all this time I thought it was selling 100%". It was
+ * selling 50 — a hardcoded default no screen ever showed or offered to change,
+ * so the operator's belief was the only reasonable one available. Both mint
+ * sites now say 100, and the stored 50s are migrated because nobody chose them.
+ */
+const dbSrc2 = fs.readFileSync('src/store/db.ts', 'utf8');
+assert.match(dbSrc2, /t\.takeProfitSellPct === undefined \|\| t\.takeProfitSellPct === 50 \? 100/, 'stored targets migrate');
+assert.match(dbSrc2, /r\.sellPercent === 50 && !r\.firedAt \? \{ \.\.\.r, sellPercent: 100 \}/, 'armed rules migrate too');
+ok('the stored half-exits are migrated, because no screen ever chose them');
+
+const ctSrc4 = fs.readFileSync('src/services/copytrade.ts', 'utf8');
+assert.match(ctSrc4, /takeProfitSellPct \?\? 100/, 'copy targets arm at 100');
+const trSrc2 = fs.readFileSync('src/bot/handlers/trade.ts', 'utf8');
+assert.ok(!/sellPercent: kind === 'take_profit' \? 50/.test(trSrc2), 'manual rules no longer mint the 50');
+ok('nothing mints the half-exit default any more');
+
+// a value someone actually sets in future survives the migration untouched
+db.wipe();
+db.addCopyTarget({
+  id: 'TP1', address: 'A', label: 't', buySol: 0.05, sizeMode: 'fixed', sizePercent: 5,
+  entryMode: 'first', maxEntries: 3, exitMode: 'off', enabled: true,
+  copiedMints: [], entryCounts: {}, refusedMints: [], createdAt: Date.now(),
+  takeProfitPct: 20, takeProfitSellPct: 75,
+});
+assert.equal(db.copyTargets()[0]!.takeProfitSellPct, 75, 'a deliberate 75 is kept');
+ok('only the unchosen default is rewritten, not a real choice');
 
 fs.rmSync(DATA, { recursive: true, force: true });
 console.log(`\n✅ ${passed} assertions passed\n`);

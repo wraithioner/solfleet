@@ -224,7 +224,7 @@ export function armCopyRules(target: CopyTarget, mint: string, notify?: Notifier
   };
 
   if (target.takeProfitPct !== undefined) {
-    add('take_profit', target.takeProfitPct, target.takeProfitSellPct ?? 50);
+    add('take_profit', target.takeProfitPct, target.takeProfitSellPct ?? 100);
   }
   if (target.stopLossPct !== undefined) {
     add('stop_loss', -Math.abs(target.stopLossPct), 100);

@@ -381,7 +381,16 @@ function migrateCopyTarget(t: CopyTarget): CopyTarget {
      * refused token was never bought and so has none.
      */
     refusedMints: t.refusedMints ?? [],
-    takeProfitSellPct: t.takeProfitSellPct ?? 50,
+    /*
+     * A take-profit exits fully. The 50 it used to default to was hardcoded —
+     * no screen ever showed it or let anyone change it — so the operator's
+     * mental model was "hit the target, sell everything" while the bot sold
+     * half and silently kept the rest. A stored 50 is that same unchosen
+     * default and is migrated with it; any other stored value is kept, since
+     * only a future screen could have set one.
+     */
+    takeProfitSellPct:
+      t.takeProfitSellPct === undefined || t.takeProfitSellPct === 50 ? 100 : t.takeProfitSellPct,
   };
 }
 
@@ -498,7 +507,11 @@ function load(): DbShape {
     mnemonic: parsed.mnemonic,
     tradeLog: parsed.tradeLog ?? [],
     positions: parsed.positions ?? {},
-    rules: parsed.rules ?? [],
+    rules: (parsed.rules ?? []).map((r) =>
+      // the same unchosen 50 landed in every armed take-profit; see the
+      // migration note on takeProfitSellPct above
+      r.kind === 'take_profit' && r.sellPercent === 50 && !r.firedAt ? { ...r, sellPercent: 100 } : r,
+    ),
     copyTargets: (parsed.copyTargets ?? []).map(migrateCopyTarget),
     dcaPlans: parsed.dcaPlans ?? [],
     valueMarks: parsed.valueMarks ?? [],
