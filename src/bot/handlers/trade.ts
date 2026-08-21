@@ -1103,12 +1103,27 @@ export async function showCopyTrade(ctx: Context): Promise<void> {
     `<i>Every copy is spread across your ${selectWallets().length} selected wallets. Tap ⚙️ to change size, how far to follow them in, and what to do when they sell.</i>`,
   );
 
+  /*
+   * How many trades were passed up today, on the button itself.
+   *
+   * Skips are deliberately silent — a coin you do not own, declined for a
+   * reason that has not changed, is not worth a message. Silent should not
+   * mean hidden, though, so the count rides on the button that opens them.
+   */
+  const recentSkips = db.copyDecisions(40).filter((d) => Date.now() - d.at < 24 * 60 * 60 * 1000).length;
+
+  lines.push('');
+  lines.push(
+    '<i>A trade the limits turn down does not message you — it is a coin you do not own. 📋 Why it skipped lists every one, newest first.</i>',
+  );
+
   const kb = new InlineKeyboard()
     .text('➕ Follow a wallet', 'copy_add').success()
     .text('🛡 Safety', 'copy_safety').primary()
     .row()
     // the answer to "they bought something and nothing happened"
-    .text('📋 Why it skipped', 'copy_decisions').primary()
+    .text(recentSkips > 0 ? `📋 Why it skipped (${recentSkips})` : '📋 Why it skipped', 'copy_decisions')
+    .primary()
     .row();
   for (const t of targets.slice(0, 8)) {
     kb.text(`⚙️ ${t.label}`, `copy_open:${t.id}`)

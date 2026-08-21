@@ -2334,22 +2334,68 @@ const trSrc = fs.readFileSync('src/bot/handlers/trade.ts', 'utf8');
 assert.match(trSrc, /'📋 Why it skipped', 'copy_decisions'/, 'reachable from the copy screen');
 
 /*
- * Not all of them are equal, and the split is deliberate. A coin refused by
- * the safety checks, or one skipped because the position is already open, is
- * about money and gets a message. A dusting airdrop is not, and messaging
- * every one would teach the operator to ignore the two that matter.
+ * Every refusal is quiet, including the ones about money.
+ *
+ * This used to split them: an airdrop was a non-event, a coin the safety
+ * checks turned down was "about money" and got a message. Read in Telegram
+ * that distinction does not survive — both arrive as a coin you do not own,
+ * declined for a reason that has not changed since the last time it was
+ * declined, and neither tells you whether anything of yours moved. The
+ * messages that survive are the ones you can act on.
  */
-const recordedQuietly = ['without spending SOL', 'Copy cap reached', 'never copied from them'];
+const recordedQuietly = [
+  'without spending SOL',      // dusting airdrop
+  'Copy cap reached',          // entry cap
+  'never copied from them',    // their sell, not our position
+  'already holding',           // second trader into an open position
+  'Refused to copy',           // failed the safety checks
+];
 for (const marker of recordedQuietly) {
-  const window = ctSrc3.slice(ctSrc3.indexOf(marker), ctSrc3.indexOf(marker) + 400);
-  assert.ok(!/await notify\(/.test(window), `a non-event is recorded quietly: ${marker}`);
+  const at = ctSrc3.indexOf(marker);
+  assert.ok(at > 0, `the path still exists: ${marker}`);
+  const window = ctSrc3.slice(at, at + 400);
+  assert.ok(!/await notify\(/.test(window), `a refusal is recorded quietly: ${marker}`);
+  assert.match(window, /noted\(/, `and it is still written down: ${marker}`);
 }
-const worthAMessage = ['Refused to copy', 'already holding'];
-for (const marker of worthAMessage) {
-  const window = ctSrc3.slice(ctSrc3.indexOf(marker), ctSrc3.indexOf(marker) + 900);
-  assert.match(window, /await notify\(/, `a decision about money still messages: ${marker}`);
-}
-ok('non-events are recorded quietly; decisions about money still send a message');
+ok(`all ${recordedQuietly.length} refusals record a reason without sending a message`);
+
+/*
+ * The exception, and the reason there is one. A copy sized larger than the
+ * whole per-coin cap fits into no position and never will — every trade from
+ * that wallet is refused for as long as the two numbers stand, which reads as
+ * copy trading being broken. That is a setting to fix, not a coin to skip.
+ */
+const capWindow = ctSrc3.slice(ctSrc3.indexOf('batchSol > limits.maxSolPerMint'));
+assert.match(capWindow.slice(0, 1200), /await notify\(/, 'a size that can never fit still says so');
+assert.match(ctSrc3, /capWarnings\.set\(/, 'and remembers it said so');
+assert.match(
+  capWindow.slice(0, 1200),
+  /capWarnings\.get\(target\.id\) !== signature/,
+  'keyed on the numbers, so it repeats only if they change',
+);
+/*
+ * And only where the numbers are a setting. Under percent sizing the batch is
+ * a share of their trade, so one over the cap means they bought big, not that
+ * anything is configured wrong — warning there would fire on a fresh amount
+ * every time, rebuilding the noise this whole change removes.
+ */
+assert.match(
+  ctSrc3,
+  /target\.sizeMode !== 'percent' && batchSol > limits\.maxSolPerMint/,
+  'and only for a fixed size, which is the only one that can be permanently wrong',
+);
+ok('the one refusal nobody can act on per-coin is said once, per configuration');
+
+/*
+ * Silent must not mean unreachable. The messages carried the mint in a
+ * tappable block; the screen that replaced them has to carry it too, or a
+ * skipped coin cannot be looked up at all.
+ */
+const uiSrc3 = fs.readFileSync('src/bot/ui.ts', 'utf8');
+const skipRender = uiSrc3.slice(uiSrc3.indexOf('export function renderCopyDecisions'));
+assert.match(skipRender.slice(0, 1400), /<code>\$\{h\(e\.mint\)\}<\/code>/, 'the full mint, tappable');
+assert.match(trSrc, /Why it skipped \(\$\{recentSkips\}\)/, 'and the count rides on the button');
+ok('a skipped coin is still findable, and the screen says how many there are');
 
 console.log('\n[42] A prompt nobody answered');
 

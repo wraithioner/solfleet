@@ -279,10 +279,19 @@ export function renderCopyDecisions(entries: CopyDecision[]): string {
 
   lines.push('<i>Trades the bot saw and chose not to copy, newest first.</i>', '');
 
+  /*
+   * The full mint, not a shortened one.
+   *
+   * These skips used to arrive as Telegram messages, which carried the address
+   * in a tappable block; they were moved here because a skip is not news. That
+   * makes this the only place the address exists, and a truncated one cannot be
+   * pasted into a chart to see what was passed up.
+   */
   for (const e of entries) {
     const when = fmtAge(Date.now() - e.at);
     lines.push(`<b>${h(e.symbol ?? shortAddr(e.mint, 4, 4))}</b>  <i>${when} ago · ${h(e.target)}</i>`);
     lines.push(`   ${h(e.reason)}`);
+    lines.push(`   <code>${h(e.mint)}</code>`);
   }
 
   lines.push('', '<i>A skip is usually the limits working. Copy trading → Safety to change them.</i>');

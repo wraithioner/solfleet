@@ -766,11 +766,28 @@ export function roomUnderCap(mint: string, maxSolPerMint: number, holding: boole
 }
 
 /**
+ * Which trader has already been told its copy size cannot fit under the cap.
+ *
+ * Keyed by target, valued by the two numbers that were wrong, so raising the
+ * cap or resizing the trader gets a fresh warning if it is still wrong, and
+ * nothing repeats while it stands. Held in memory on purpose: a restart is
+ * cheap to re-warn after, and the alternative is another migrated field.
+ */
+const capWarnings = new Map<string, string>();
+
+/**
  * Write down a decision not to copy, so it can be answered for later.
  *
  * These were all log lines, which is to say invisible: from Telegram the
  * symptom is a followed wallet buying something and nothing happening, which
  * looks exactly like the bot being asleep.
+ *
+ * This is also where refusals live rather than in Telegram. A skip is not news
+ * — it is a coin you do not own, declined for a reason that has not changed
+ * since the last time it was declined — and a stream of them buries the
+ * messages that do mean something. They are read on 📋 Why it skipped, when
+ * somebody wants to know why a trade did not happen. What still goes to
+ * Telegram is anything that needs an answer.
  */
 function noted(target: CopyTarget, mint: string, reason: string, symbol?: string): void {
   db.recordCopyDecision({ at: Date.now(), target: target.label, mint, symbol, reason });
@@ -906,17 +923,6 @@ async function mirrorBuyLocked(
         `already holding ${openSol.toFixed(4)} SOL of it.`,
     );
     noted(target, move.mint, `You already hold ${openSol.toFixed(3)} ◎ of this coin`);
-    await notify(
-      [
-        `🧯 <b>Did not copy ${h(target.label)}</b>`,
-        `<code>${move.mint}</code>`,
-        '',
-        `You are already in this coin for <b>${openSol.toFixed(4)} ◎</b>.`,
-        'A second trader buying it does not buy it again.',
-        '',
-        '<i>Copy trading → Safety → Already holding, to change this.</i>',
-      ].join('\n'),
-    ).catch(() => {});
     return;
   }
 
@@ -929,17 +935,48 @@ async function mirrorBuyLocked(
         `${openSol.toFixed(4)} SOL already in, this adds ${batchSol.toFixed(4)}, ` +
         `cap is ${limits.maxSolPerMint} SOL.`,
     );
-    await notify(
-      [
-        `🧯 <b>Did not copy ${h(target.label)}</b>`,
-        `<code>${move.mint}</code>`,
-        '',
-        `Already holding <b>${openSol.toFixed(4)} ◎</b> of this coin.`,
-        `This copy would add <b>${batchSol.toFixed(4)} ◎</b>, over the <b>${limits.maxSolPerMint} ◎</b> per-token cap.`,
-        '',
-        '<i>Copy trading → Safety → Per token to change it.</i>',
-      ].join('\n'),
-    ).catch(() => {});
+    noted(
+      target,
+      move.mint,
+      openSol > 0
+        ? `Would put ${(openSol + batchSol).toFixed(3)} ◎ in one coin, over your ${limits.maxSolPerMint} ◎ cap`
+        : `Copy size ${batchSol.toFixed(3)} ◎ is over your ${limits.maxSolPerMint} ◎ per-coin cap`,
+    );
+
+    /*
+     * One case here is not a skip, it is a misconfiguration.
+     *
+     * When a fixed size is larger than the whole cap, no position and no coin
+     * makes it fit — every copy from this wallet will be refused for as long
+     * as the two numbers stand. That reads from Telegram as copy trading
+     * simply not working, so it is worth one message, said once per pair of
+     * numbers rather than once per coin.
+     *
+     * Fixed sizing only, and that is the whole point of the check. Under
+     * percent sizing the batch is a share of THEIR trade, so a size over the
+     * cap says they made one big buy, not that anything is set up wrong — the
+     * next smaller trade fits. Warning on that would fire on a new amount
+     * every time, which is the stream of noise this change exists to remove.
+     */
+    if (target.sizeMode !== 'percent' && batchSol > limits.maxSolPerMint) {
+      const signature = `${batchSol.toFixed(4)}/${limits.maxSolPerMint}`;
+      if (capWarnings.get(target.id) !== signature) {
+        capWarnings.set(target.id, signature);
+        await notify(
+          [
+            '⚠️ <b>Copy trading is sized above your per-coin cap</b>',
+            '',
+            `<b>${h(target.label)}</b> copies at <b>${batchSol.toFixed(4)} ◎</b> a coin ` +
+              `(${perWallet.toFixed(4)} ◎ × ${wallets.length} wallet${wallets.length === 1 ? '' : 's'}), ` +
+              `and the cap is <b>${limits.maxSolPerMint} ◎</b>.`,
+            '',
+            'Nothing from this trader can be copied until one of those two changes.',
+            '',
+            '<i>Copy trading → Safety → Per token, or lower the size on this trader.</i>',
+          ].join('\n'),
+        ).catch(() => {});
+      }
+    }
     return;
   }
 
@@ -985,16 +1022,6 @@ async function mirrorBuyLocked(
 
     log.warn(`Refused to copy ${target.label} into ${move.mint}: ${verdict.reasons.join(' ')}`);
     noted(target, move.mint, verdict.reasons[0] ?? 'Failed the safety checks', info?.symbol);
-    await notify(
-      [
-        `🛡 <b>Did not copy ${h(target.label)}</b>`,
-        `<code>${move.mint}</code>`,
-        '',
-        ...verdict.reasons.map((r) => `· ${r}`),
-        '',
-        '<i>Copy trading → Safety to change these limits.</i>',
-      ].join('\n'),
-    ).catch(() => {});
     return;
   }
 
