@@ -5,12 +5,13 @@ import { db, type CopyTarget, type CopyExitMode } from '../../store/db.js';
 import { selectWallets, mainWallet } from '../../store/wallets.js';
 import { getTokenInfo, extractTokenAddress } from '../../services/tokeninfo.js';
 import { getSolPrice } from '../../services/prices.js';
-import { positionPnl, formatPnl, formatEntry } from '../../services/pnl.js';
+import { positionPnl, formatPnl, formatEntry, exitResult, formatExit } from '../../services/pnl.js';
 import { getMintBalances, getSolBalance, LAMPORTS } from '../../chains/solana.js';
 import { simulateSequentialBuys, fetchBondingCurve } from '../../trade/curve.js';
 import {
   batchPumpTrade,
   measureTokensGained,
+  measureTokensSold,
   isFreshEntry,
   batchSweepSol,
   batchSweepToken,
@@ -353,6 +354,7 @@ async function executeBuy(ctx: Context, mint: string, solPerWallet: number): Pro
       symbol: bought?.symbol,
       costSol: summary.solSpent,
       freshEntry: isFreshEntry(heldBefore),
+      decimals: bought?.decimals,
     });
 
     await render(
@@ -418,6 +420,10 @@ async function executeSell(ctx: Context, mint: string, percent: number): Promise
 
   await render(ctx, `<b>🔴 Selling ${percent}% across ${wallets.length} wallets…</b>`);
 
+  // read before the trade, so the tokens sold can be measured against it
+  const addresses = wallets.map((w) => w.address);
+  const heldBefore = await getMintBalances(addresses, mint).catch(() => undefined);
+
   // Proceeds are measured, not quoted: the SOL these wallets hold before and
   // after the batch is what actually arrived, fees already deducted. A quote
   // taken beforehand would flatter every fill. The engine takes both readings
@@ -434,6 +440,12 @@ async function executeSell(ctx: Context, mint: string, percent: number): Promise
     // longer needs its own copy of the arithmetic — and every other exit path
     // gets the recording that only this one used to have
     const fills = summary.results.filter((r) => r.ok && r.signature).length;
+
+    const position = db.position(mint);
+    const tokensSold = await measureTokensSold(addresses, mint, heldBefore, position?.decimals);
+    const sellOutcome =
+      summary.solReceived !== undefined ? exitResult(position, tokensSold, summary.solReceived) : null;
+
     if (summary.solReceived !== undefined && fills > 0) {
       db.recordSell(mint, summary.solReceived, fills);
     }
@@ -449,7 +461,8 @@ async function executeSell(ctx: Context, mint: string, percent: number): Promise
 
     await render(
       ctx,
-      renderBatchSummary(`🔴 Sold ${percent}% × ${wallets.length}`, summary),
+      renderBatchSummary(`🔴 Sold ${percent}% × ${wallets.length}`, summary) +
+        (sellOutcome ? `\n\n${formatExit(sellOutcome)}` : ''),
       new InlineKeyboard()
         .text('🔄 Token', `tokeninfo:${tokenId(mint)}`)
         .text('💸 Sweep to main', 'sweep_sol_confirm')

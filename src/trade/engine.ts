@@ -91,6 +91,31 @@ export function isFreshEntry(before: Map<string, bigint> | undefined): boolean {
   return ![...before.values()].some((v) => v > 0n);
 }
 
+/**
+ * Whole tokens a batch of sells actually parted with, from balance deltas.
+ *
+ * The mirror of `measureTokensGained`, and needed for the same reason: an
+ * exit's profit is priced per token sold, and "sold 50%" is a request, not a
+ * measurement — partial fills and idle wallets both move the real figure.
+ */
+export async function measureTokensSold(
+  addresses: string[],
+  mint: string,
+  before: Map<string, bigint> | undefined,
+  decimals: number | undefined,
+): Promise<number> {
+  if (!before || addresses.length === 0) return 0;
+
+  const after = await getMintBalances(addresses, mint).catch(() => undefined);
+  if (!after) return 0;
+
+  let deltaRaw = 0n;
+  for (const [address, held] of before) deltaRaw += held - (after.get(address) ?? 0n);
+  if (deltaRaw <= 0n) return 0;
+
+  return Number(deltaRaw) / 10 ** (decimals ?? 6);
+}
+
 function fail(w: WalletRecord, err: unknown): ExecutionResult {
   // The result carries the reason to the screen, but a batch fired by the
   // watcher has no screen — copy trading reported "❌ 1" and left nothing

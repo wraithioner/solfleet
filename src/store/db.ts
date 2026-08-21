@@ -93,6 +93,8 @@ export interface PositionRecord {
    */
   basisSol?: number;
   basisTokens?: number;
+  /** Mint decimals, kept so an exit can turn raw balance deltas into tokens. */
+  decimals?: number;
   firstBuyAt: number;
   lastTradeAt: number;
 }
@@ -281,6 +283,7 @@ export interface BuyEntry {
   costSol?: number;
   /** True when the wallets held none of this coin before the batch. */
   freshEntry?: boolean;
+  decimals?: number;
 }
 
 /**
@@ -592,7 +595,7 @@ export const db = {
 
   /** Add a completed buy to the position's cost basis. */
   recordBuy(mint: string, entry: BuyEntry): void {
-    const { solSpent, fills, tokensBought = 0, symbol, costSol, freshEntry = false } = entry;
+    const { solSpent, fills, tokensBought = 0, symbol, costSol, freshEntry = false, decimals } = entry;
     if (solSpent <= 0 || fills <= 0) return;
     const d = load();
     const now = Date.now();
@@ -626,6 +629,7 @@ export const db = {
 
     pos.lastTradeAt = now;
     if (symbol && !pos.symbol) pos.symbol = symbol;
+    if (decimals !== undefined) pos.decimals ??= decimals;
 
     d.positions[mint] = pos;
     flush();

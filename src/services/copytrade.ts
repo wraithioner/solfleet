@@ -2,13 +2,14 @@ import { PublicKey } from '@solana/web3.js';
 import { rpc, WSOL_MINT, getMintBalances, LAMPORTS } from '../chains/solana.js';
 import { db, type CopyTarget, type CopyExitMode } from '../store/db.js';
 import { selectWallets } from '../store/wallets.js';
-import { batchPumpTrade, measureTokensGained } from '../trade/engine.js';
+import { batchPumpTrade, measureTokensGained, measureTokensSold } from '../trade/engine.js';
 import { retry, errMessage, fmtAmount, escapeHtml as h } from '../util.js';
 import { config } from '../config.js';
 import { assessToken, type SafetyVerdict } from './safety.js';
 import { getTokenInfo, type TokenInfo } from './tokeninfo.js';
 import { log } from '../logger.js';
 import { newRuleId, type Notifier } from './watcher.js';
+import { exitResult, formatExit } from './pnl.js';
 
 /**
  * Copy trading: mirror another wallet's entries and exits.
@@ -1056,6 +1057,7 @@ async function mirrorBuyLocked(
       costSol: summary.solSpent,
       // `holding` was read before the limits that needed it, above
       freshEntry: !holding,
+      decimals: info?.decimals,
     });
 
     if (fills > 0) armCopyRules(target, move.mint, notify);
@@ -1199,6 +1201,21 @@ async function mirrorSellLocked(
     // the proceeds, so the position's P&L reflects a copied exit as a return
     // rather than as the disappearance of everything it cost
     const sellFills = summary.results.filter((r) => r.ok && r.signature).length;
+
+    /*
+     * What this exit made, priced before the sale is recorded — recording
+     * changes the position the profit is measured against.
+     */
+    const position = db.position(move.mint);
+    const tokensSold = await measureTokensSold(
+      wallets.map((w) => w.address),
+      move.mint,
+      held,
+      position?.decimals,
+    );
+    const outcome =
+      summary.solReceived !== undefined ? exitResult(position, tokensSold, summary.solReceived) : null;
+
     if (summary.solReceived !== undefined && sellFills > 0) {
       db.recordSell(move.mint, summary.solReceived, sellFills);
     }
@@ -1215,7 +1232,9 @@ async function mirrorSellLocked(
 
     await notify(
       `👥 <b>${h(target.label)} sold ${percent}%</b>\n<code>${move.mint}</code>\n\n` +
-        `Mirrored — ✅ ${summary.succeeded}  ❌ ${summary.failed}${firstReason(summary)}`,
+        `Mirrored — ✅ ${summary.succeeded}  ❌ ${summary.failed}` +
+        (outcome ? `\n${formatExit(outcome)}` : '') +
+        `${firstReason(summary)}`,
     ).catch(() => {});
   } catch (err) {
     await notify(`❌ Copy sell failed: <i>${errMessage(err)}</i>`).catch(() => {});

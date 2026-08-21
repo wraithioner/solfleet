@@ -2482,5 +2482,52 @@ assert.equal(DEFAULT_SAFETY.maxDevMints, 20);
 assert.equal(DEFAULT_SAFETY.minTraders5m, 5);
 ok('the shipped defaults are 20 mints and 5 traders');
 
+console.log('\n[45] An exit says what it made');
+
+/*
+ * The gap reported from use: a copy sell said "Mirrored — ✅ 2" and a
+ * take-profit said the price move, and neither said what the trade returned
+ * in money. The cost of the part sold is priced at the open position's basis —
+ * selling half prices that half at what it cost, not at what the whole did.
+ */
+const { exitResult, formatExit } = await import('../src/services/pnl.js');
+db.wipe();
+db.recordBuy('MintExit111111111111111111111111111111111', {
+  solSpent: 1, fills: 2, tokensBought: 1_000_000, symbol: 'EXIT', costSol: 1.02, decimals: 6,
+});
+const posExit = db.position('MintExit111111111111111111111111111111111')!;
+
+// sold half the tokens for 0.8 SOL: half cost 0.5, so +0.3
+const win = exitResult(posExit, 500_000, 0.8)!;
+assert.equal(Number(win.profitSol.toFixed(4)), 0.3);
+assert.equal(Number(win.pct.toFixed(1)), 60.0);
+assert.match(formatExit(win), /💰 Profit/);
+assert.match(formatExit(win), /\+0\.3000 ◎/);
+ok('a partial exit is priced against the part sold, not the whole position');
+
+const loss = exitResult(posExit, 1_000_000, 0.4)!;
+assert.equal(Number(loss.profitSol.toFixed(4)), -0.6);
+assert.match(formatExit(loss), /📉 Loss/);
+ok('a losing exit says so in red rather than hiding in a fill count');
+
+// no basis, no number — an invented profit would be read as real
+assert.equal(exitResult(undefined, 100, 1), null);
+assert.equal(exitResult({ ...posExit, basisSol: undefined, basisTokens: undefined, investedSol: 0, tokensBought: 0 }, 100, 1), null);
+assert.equal(exitResult(posExit, 0, 1), null, 'nothing measurably sold, nothing claimed');
+ok('an unmeasured exit reports nothing rather than a guess');
+
+// every exit path carries the line
+const sellSites2: Array<[string, string]> = [
+  ['src/services/copytrade.ts', 'mirrorSell'],
+  ['src/services/watcher.ts', 'fired'],
+  ['src/bot/handlers/trade.ts', 'executeSell'],
+];
+for (const [file] of sellSites2) {
+  const src = fs.readFileSync(file, 'utf8');
+  assert.match(src, /formatExit\(/, `${file} says what the exit made`);
+  assert.match(src, /measureTokensSold\(/, `${file} measures rather than assumes the amount`);
+}
+ok('copy sells, fired rules and manual sells all say the profit');
+
 fs.rmSync(DATA, { recursive: true, force: true });
 console.log(`\n✅ ${passed} assertions passed\n`);

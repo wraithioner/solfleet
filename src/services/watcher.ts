@@ -2,12 +2,13 @@ import crypto from 'node:crypto';
 import { db, type AutoRule } from '../store/db.js';
 import { isUnlocked } from '../store/vault.js';
 import { selectWallets } from '../store/wallets.js';
-import { batchPumpTrade, measureTokensGained, isFreshEntry } from '../trade/engine.js';
+import { batchPumpTrade, measureTokensGained, measureTokensSold, isFreshEntry } from '../trade/engine.js';
 import { getMintBalances } from '../chains/solana.js';
 import { pricesInSol } from './price.js';
 import { errMessage, escapeHtml as h } from '../util.js';
 import { pollCopyTargets, syncSubscriptions, stopSubscriptions } from './copytrade.js';
 import { buildPortfolio } from './portfolio.js';
+import { exitResult, formatExit } from './pnl.js';
 import { log } from '../logger.js';
 
 /**
@@ -412,6 +413,20 @@ async function fire(rule: AutoRule, price: number, notify: Notifier): Promise<vo
       await rearm(rule, firstFailure(summary) ?? 'every wallet failed to sell', notify);
       return;
     }
+
+    /*
+     * What the exit made, priced before the sale is recorded — recording
+     * changes the position the profit is measured against.
+     */
+    const position = db.position(rule.mint);
+    const tokensSold = await measureTokensSold(
+      wallets.map((w) => w.address),
+      rule.mint,
+      holders,
+      position?.decimals,
+    );
+    const outcome =
+      summary.solReceived !== undefined ? exitResult(position, tokensSold, summary.solReceived) : null;
     if (summary.solReceived !== undefined && fills > 0) {
       db.recordSell(rule.mint, summary.solReceived, fills);
     }
@@ -435,6 +450,7 @@ async function fire(rule: AutoRule, price: number, notify: Notifier): Promise<vo
         `Price: ${price.toExponential(4)} SOL${entry ? ` (${movePct >= 0 ? '+' : ''}${movePct.toFixed(1)}% from entry)` : ''}`,
         `Sold ${rule.sellPercent}% across ${summary.results.length} wallets`,
         `✅ ${summary.succeeded}   ❌ ${summary.failed}`,
+        ...(outcome ? [formatExit(outcome)] : []),
       ].join('\n'),
     );
   } catch (err) {

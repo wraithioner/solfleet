@@ -89,6 +89,45 @@ export function formatPnl(p: PositionPnl): string {
   return `${arrow} ${sign}${p.netSol.toFixed(4)} SOL (${sign}${p.netPct.toFixed(1)}%)`;
 }
 
+/**
+ * What one exit made or lost, priced against the position it came out of.
+ *
+ * The number the exit notifications never carried: a copied sell reported
+ * "Mirrored — ✅ 2" and a take-profit reported the price move, and neither said
+ * what the trade returned in money. The cost of the part sold is the tokens
+ * sold at the open position's basis — selling half a position prices that half
+ * at what it cost, not at what the whole position did.
+ *
+ * Null rather than a guess when the basis was never measured. A profit figure
+ * invented from a missing entry would be read as real.
+ */
+export function exitResult(
+  pos: PositionRecord | undefined,
+  tokensSold: number,
+  solReceived: number,
+): { profitSol: number; pct: number } | null {
+  if (!pos || tokensSold <= 0 || solReceived <= 0) return null;
+
+  const sol = pos.basisSol ?? pos.investedSol;
+  const tokens = pos.basisTokens ?? pos.tokensBought;
+  if (sol <= 0 || tokens <= 0) return null;
+
+  const costOfSold = (sol / tokens) * tokensSold;
+  if (costOfSold <= 0) return null;
+
+  return {
+    profitSol: solReceived - costOfSold,
+    pct: ((solReceived - costOfSold) / costOfSold) * 100,
+  };
+}
+
+/** One line, coloured by sign, for the message a fill sends. */
+export function formatExit(r: { profitSol: number; pct: number }): string {
+  const sign = r.profitSol >= 0 ? '+' : '−';
+  const word = r.profitSol >= 0 ? '💰 Profit' : '📉 Loss';
+  return `${word} <b>${sign}${Math.abs(r.profitSol).toFixed(4)} ◎</b> (${sign}${Math.abs(r.pct).toFixed(1)}%)`;
+}
+
 // ── account-wide ──────────────────────────────────────────────────────────────
 
 /**
