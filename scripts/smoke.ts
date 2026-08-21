@@ -2434,5 +2434,53 @@ assert.match(unknown, /4242/, 'the code survives');
 assert.ok(!/slippage|not enough/i.test(unknown), 'and is not dressed up as something known');
 ok('an unrecognised rejection stays raw rather than being guessed at');
 
+console.log('\n[44] Factories and painted volume');
+
+/*
+ * Two signals from Jupiter's free token index, measured before being trusted.
+ * Sampled across eighteen live launches: six developers past a hundred mints,
+ * the worst at 11,284 — and tokens showing real dollar volume with one or two
+ * wallets behind all of it.
+ */
+const factory = { ...safeBase, devMints: 481 };
+const fv = assessToken(factory);
+assert.equal(fv.safe, false);
+assert.match(fv.reasons.join(' '), /481/, 'the count is named');
+assert.match(fv.reasons.join(' '), /factory/i);
+ok('a developer who mints tokens by the hundred is refused');
+
+assert.equal(assessToken({ ...safeBase, devMints: 3 }).safe, true, 'a few prior mints is normal');
+ok('an ordinary developer is not');
+
+/*
+ * Wallets, not dollars. The volume floor is blind to one bot painting volume
+ * back and forth; a floor on distinct traders is not.
+ */
+const painted = { ...safeBase, volume1h: 50_000, traders5m: 1 };
+const pv = assessToken(painted);
+assert.equal(pv.safe, false, 'heavy volume with one trader behind it is refused');
+assert.match(pv.reasons.join(' '), /one bot talking to itself/);
+ok('volume without traders is caught by the trader floor');
+
+assert.equal(assessToken({ ...safeBase, traders5m: 300 }).safe, true);
+ok('a live market passes');
+
+/*
+ * Absence passes on both, deliberately: a token in its first seconds is often
+ * not indexed yet, and for this source absence means too-new. Measured before
+ * choosing — the alternative, gating on organic share, would have refused
+ * every fresh launch (median organic share on live launches: 0.9%).
+ */
+assert.equal(assessToken({ ...safeBase, devMints: undefined, traders5m: undefined }).safe, true);
+ok('a token the index has not seen yet is judged on everything else');
+
+const offAll = { ...DEFAULT_SAFETY, maxDevMints: 0, minTraders5m: 0 };
+assert.equal(assessToken({ ...factory, traders5m: 1 }, offAll).safe, true);
+ok('both switch off');
+
+assert.equal(DEFAULT_SAFETY.maxDevMints, 20);
+assert.equal(DEFAULT_SAFETY.minTraders5m, 5);
+ok('the shipped defaults are 20 mints and 5 traders');
+
 fs.rmSync(DATA, { recursive: true, force: true });
 console.log(`\n✅ ${passed} assertions passed\n`);

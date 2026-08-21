@@ -222,6 +222,21 @@ await check('a graduated token is judged on holders, not on its own pool', async
   return `top 10 hold ${report.top10Pct.toFixed(1)}% with pools excluded`;
 });
 
+/*
+ * Jupiter's token index, which supplies the two signals nothing else does:
+ * how many tokens a developer has minted, and how many distinct wallets
+ * traded a coin in the last five minutes. Free and measured at 44ms; if it
+ * goes away the gate loses the factory and live-market checks and keeps the
+ * rest.
+ */
+await check('Jupiter token index (BONK)', async () => {
+  const { getJupTokenData } = await import('../src/services/jupdata.js');
+  const d = await getJupTokenData(BONK, 8000);
+  if (!d) throw new Error('no data — the factory and live-market checks are dark');
+  if (d.traders5m === undefined) throw new Error('stats5m missing — the live-market check is dark');
+  return `${d.holderCount?.toLocaleString() ?? '?'} holders · ${d.traders5m} traders/5m · devMints ${d.devMints ?? '?'}`;
+});
+
 console.log('\n── Pricing ──');
 
 const { getSolPrice, getSolanaPrices } = await import('../src/services/prices.js');

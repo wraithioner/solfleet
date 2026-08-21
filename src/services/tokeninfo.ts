@@ -8,6 +8,7 @@ import { getSolPrice } from './prices.js';
 import { getTokenMetadata } from './metadata.js';
 import { getMintAuthorities } from './mintauth.js';
 import { getRugcheck } from './rugcheck.js';
+import { getJupTokenData } from './jupdata.js';
 import { allWallets } from '../store/wallets.js';
 import type { Chain } from '../types.js';
 
@@ -103,6 +104,16 @@ export interface TokenInfo {
   /** The index's own verdict that this one is already over. */
   rugged?: boolean;
   lpLockedPct?: number;
+
+  /* ── from Jupiter's token index ──────────────────────────────────────── */
+  /** Tokens this developer has minted, ever. Hundreds means a factory. */
+  devMints?: number;
+  /** Distinct wallets that traded it in the last five minutes. */
+  traders5m?: number;
+  netBuyers5m?: number;
+  /** Share of 5m volume Jupiter reads as organic. Display only — see jupdata. */
+  organicPct5m?: number;
+  organicScoreLabel?: string;
 
   warnings: string[];
 }
@@ -524,13 +535,14 @@ export async function getTokenInfo(
   };
 
   if (kind === 'solana') {
-    const [market, holders, curve, meta, authorities, rug] = await Promise.all([
+    const [market, holders, curve, meta, authorities, rug, jup] = await Promise.all([
       loadMarketData(address, 'solana'),
       loadSolanaHolders(address, opts.fast ? FAST_HOLDER_DEADLINE_MS : HOLDER_DEADLINE_MS),
       loadCurveData(address),
       getTokenMetadata(address).catch(() => null),
       getMintAuthorities(address),
       getRugcheck(address),
+      getJupTokenData(address),
     ]);
 
     // DexScreener wins on market cap once a pool exists; before that the curve
@@ -587,6 +599,28 @@ export async function getTokenInfo(
       if (rug.creatorPct !== undefined) merged.creatorHoldsPct ??= rug.creatorPct;
       if (merged.liquidityUsd === undefined && rug.liquidityUsd !== undefined) {
         merged.liquidityUsd = rug.liquidityUsd;
+      }
+    }
+
+    /*
+     * Jupiter's numbers fill what is still empty and add what nobody else has.
+     *
+     * devMints and the five-minute trader count exist in no other source this
+     * bot reads. The concentration and holder figures are third opinions — the
+     * launch index outranks them because it can name a pool, so they only fill
+     * gaps.
+     */
+    if (jup) {
+      merged.devMints = jup.devMints;
+      merged.traders5m = jup.traders5m;
+      merged.netBuyers5m = jup.netBuyers5m;
+      merged.organicPct5m = jup.organicPct5m;
+      merged.organicScoreLabel = jup.organicScoreLabel;
+      merged.holderCount ??= jup.holderCount;
+      merged.top10Pct ??= jup.topHoldersPct;
+      if (merged.creatorPriorTokens === undefined && jup.devMints !== undefined) {
+        // devMints counts this token too; prior launches are one fewer
+        merged.creatorPriorTokens = Math.max(0, jup.devMints - 1);
       }
     }
 

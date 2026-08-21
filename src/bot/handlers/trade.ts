@@ -1399,6 +1399,10 @@ const VOL_STEPS = [0, 500, 1_000, 5_000, 25_000];
 const MINT_CAP_STEPS = [0.1, 0.25, 0.5, 1, 2, 0];
 /** Share of supply allowed in wallets the index reads as one person. */
 const INSIDER_STEPS = [10, 20, 30, 50, 0];
+/** Mints before a developer counts as a factory. Sampled worst case: 11,284. */
+const DEVMINT_STEPS = [5, 20, 50, 200, 0];
+/** Distinct wallets in five minutes before a market counts as live. */
+const TRADERS_STEPS = [3, 5, 10, 25, 0];
 
 /**
  * The answer to "the trader bought something and nothing happened".
@@ -1471,6 +1475,18 @@ export async function showCopySafety(ctx: Context): Promise<void> {
       .primary()
       .row()
       .text(
+        limits.maxDevMints > 0 ? `🏭 Dev factory max ${limits.maxDevMints} mints` : '🏭 Dev factory not checked',
+        'safety_factory',
+      )
+      .primary()
+      .row()
+      .text(
+        limits.minTraders5m > 0 ? `🧑‍🤝‍🧑 Min ${limits.minTraders5m} traders / 5m` : '🧑‍🤝‍🧑 Live market not checked',
+        'safety_traders',
+      )
+      .primary()
+      .row()
+      .text(
         limits.oneEntryPerMint ? '🚫 Already in it: skip' : '➕ Already in it: buy anyway',
         'safety_oneentry',
       )
@@ -1501,6 +1517,8 @@ export async function cycleSafety(ctx: Context, which: string): Promise<void> {
   else if (which === 'oneentry') limits.oneEntryPerMint = !limits.oneEntryPerMint;
   else if (which === 'rugger') limits.refuseSerialRuggers = !limits.refuseSerialRuggers;
   else if (which === 'insider') limits.maxInsiderPct = cycleStep(INSIDER_STEPS, limits.maxInsiderPct);
+  else if (which === 'factory') limits.maxDevMints = cycleStep(DEVMINT_STEPS, limits.maxDevMints);
+  else if (which === 'traders') limits.minTraders5m = cycleStep(TRADERS_STEPS, limits.minTraders5m);
 
   db.updateSettings({ copySafety: limits });
   await showCopySafety(ctx);

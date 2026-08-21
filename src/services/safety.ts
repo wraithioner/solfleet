@@ -85,6 +85,27 @@ export interface SafetyLimits {
    * with nothing, and behaves as one seller.
    */
   maxInsiderPct: number;
+  /**
+   * Refuse a developer who has minted more than this many tokens. Zero
+   * disables it.
+   *
+   * Different from the rug-history check: that needs the index to have caught
+   * them rugging, this only needs arithmetic. Sampled across eighteen live
+   * launches, six had developers past a hundred mints — the worst at 11,284 —
+   * and a wallet that launches tokens by the hundred is running a factory,
+   * whatever each individual chart looks like.
+   */
+  maxDevMints: number;
+  /**
+   * Refuse a token fewer than this many distinct wallets traded in the last
+   * five minutes. Zero disables it.
+   *
+   * Wallets, not dollars — the difference matters. A dollar floor is blind to
+   * one bot painting volume back and forth; a floor on distinct traders is
+   * not. Sampled live: tokens showing real volume with one or two wallets
+   * behind all of it.
+   */
+  minTraders5m: number;
 }
 
 export const DEFAULT_SAFETY: SafetyLimits = {
@@ -98,6 +119,8 @@ export const DEFAULT_SAFETY: SafetyLimits = {
   oneEntryPerMint: true,
   refuseSerialRuggers: true,
   maxInsiderPct: 20,
+  maxDevMints: 20,
+  minTraders5m: 5,
 };
 
 /**
@@ -108,7 +131,7 @@ export const DEFAULT_SAFETY: SafetyLimits = {
  * version marker lets a genuinely stricter set replace those without
  * overwriting a limit the operator picked deliberately afterwards.
  */
-export const SAFETY_VERSION = 6;
+export const SAFETY_VERSION = 7;
 
 export interface SafetyVerdict {
   safe: boolean;
@@ -257,6 +280,24 @@ export function assessToken(info: TokenInfo, limits: SafetyLimits = DEFAULT_SAFE
     reasons.push(`This developer has a history of rugging what they launch.${prior}`);
   }
 
+  if (limits.maxDevMints > 0 && info.devMints !== undefined && info.devMints > limits.maxDevMints) {
+    reasons.push(
+      `This developer has minted ${info.devMints.toLocaleString('en-US')} tokens — a factory, not a project.`,
+    );
+  }
+
+  /*
+   * Absence passes here, as it does for age: a token in its first seconds is
+   * often not indexed yet, and for this source absence means too-new rather
+   * than suspicious. The volume floor still stands behind it.
+   */
+  if (limits.minTraders5m > 0 && info.traders5m !== undefined && info.traders5m < limits.minTraders5m) {
+    reasons.push(
+      `Only ${info.traders5m} wallet${info.traders5m === 1 ? '' : 's'} traded it in the last five minutes — ` +
+        'volume without traders is one bot talking to itself.',
+    );
+  }
+
   if (limits.maxInsiderPct > 0 && info.insiderPct !== undefined && info.insiderPct > limits.maxInsiderPct) {
     reasons.push(
       `${info.insiderPct.toFixed(1)}% of supply sits in wallets believed to be one person, ` +
@@ -310,6 +351,12 @@ export function describeLimits(limits: SafetyLimits): string[] {
     limits.maxInsiderPct > 0
       ? `Connected wallets: refuse above <b>${limits.maxInsiderPct}%</b> of supply`
       : 'Connected wallets: <b>not checked</b>',
+    limits.maxDevMints > 0
+      ? `Token factories: refuse a dev past <b>${limits.maxDevMints}</b> mints`
+      : 'Token factories: <b>not checked</b>',
+    limits.minTraders5m > 0
+      ? `Live market: refuse under <b>${limits.minTraders5m}</b> traders in 5m`
+      : 'Live market: <b>not checked</b>',
     limits.oneEntryPerMint
       ? 'Already holding it: <b>a second trader is not copied in</b>'
       : 'Already holding it: <b>copied anyway</b>',

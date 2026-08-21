@@ -424,6 +424,19 @@ export function renderTokenCard(info: TokenInfo, limits = DEFAULT_SAFETY): strin
     lines.push(`   💧 LP locked  ${lp}`);
     lines.push(`   📜 Dev record ${history}`);
 
+    // wallets, not dollars: one bot painting volume shows here as a count of 1
+    if (info.traders5m !== undefined) {
+      const organic =
+        info.organicPct5m !== undefined && info.organicPct5m >= 20
+          ? `  <i>${info.organicPct5m.toFixed(0)}% organic</i>`
+          : '';
+      lines.push(
+        `   🧑‍🤝‍🧑 5m market  <b>${fmtCount(info.traders5m)}</b> traders` +
+          (info.netBuyers5m !== undefined ? `, <b>${fmtCount(info.netBuyers5m)}</b> net buyers` : '') +
+          organic,
+      );
+    }
+
     if (info.rugged) lines.push('   🚨 <b>The launch index has marked this one rugged.</b>');
   }
 
@@ -773,6 +786,8 @@ export function renderSettings(s: Settings, walletCount: number): string {
     `   Max per coin  <b>${s.copySafety.maxSolPerMint > 0 ? `${s.copySafety.maxSolPerMint} ◎` : 'no cap'}</b>`,
     `   Bundled max   <b>${s.copySafety.maxInsiderPct > 0 ? `${s.copySafety.maxInsiderPct}%` : 'any'}</b>`,
     `   Dev history   <b>${s.copySafety.refuseSerialRuggers ? 'refuse ruggers' : 'not checked'}</b>`,
+    `   Dev factory   <b>${s.copySafety.maxDevMints > 0 ? `max ${s.copySafety.maxDevMints} mints` : 'any'}</b>`,
+    `   Live market   <b>${s.copySafety.minTraders5m > 0 ? `min ${s.copySafety.minTraders5m}/5m` : 'any'}</b>`,
     '',
     `👛 <b>${walletCount}</b> wallet${walletCount === 1 ? '' : 's'}   ·   🎯 ${s.activeGroup ? h(s.activeGroup) : 'all'}`,
   ].join('\n');
