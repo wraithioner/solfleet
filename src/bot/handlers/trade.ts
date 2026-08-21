@@ -11,6 +11,7 @@ import { simulateSequentialBuys, fetchBondingCurve } from '../../trade/curve.js'
 import {
   batchPumpTrade,
   measureTokensGained,
+  isFreshEntry,
   batchSweepSol,
   batchSweepToken,
   batchSellAllPositions,
@@ -343,7 +344,14 @@ async function executeBuy(ctx: Context, mint: string, solPerWallet: number): Pro
     const bought = await getTokenInfo(mint, 'solana').catch(() => null);
     const tokensGained = await measureTokensGained(buyAddresses, mint, heldBefore, bought?.decimals);
 
-    db.recordBuy(mint, solPerWallet * fills, fills, tokensGained, bought?.symbol, summary.solSpent);
+    db.recordBuy(mint, {
+      solSpent: solPerWallet * fills,
+      fills,
+      tokensBought: tokensGained,
+      symbol: bought?.symbol,
+      costSol: summary.solSpent,
+      freshEntry: isFreshEntry(heldBefore),
+    });
 
     await render(
       ctx,

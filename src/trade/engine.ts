@@ -68,6 +68,19 @@ export async function measureTokensGained(
   return Number(deltaRaw) / 10 ** (decimals ?? 6);
 }
 
+/**
+ * Did the wallets hold none of this coin before the batch?
+ *
+ * Decides whether the buy starts a new cost basis or adds to an open one. An
+ * unreadable balance is treated as "already holding", which keeps the existing
+ * basis rather than resetting one that may still be live — the conservative
+ * direction, since a reset basis is what a stop-loss measures against.
+ */
+export function isFreshEntry(before: Map<string, bigint> | undefined): boolean {
+  if (!before) return false;
+  return ![...before.values()].some((v) => v > 0n);
+}
+
 function fail(w: WalletRecord, err: unknown): ExecutionResult {
   // The result carries the reason to the screen, but a batch fired by the
   // watcher has no screen — copy trading reported "❌ 1" and left nothing

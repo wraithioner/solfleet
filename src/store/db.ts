@@ -74,6 +74,25 @@ export interface PositionRecord {
   sellFills: number;
   /** Whole tokens acquired, measured from balance deltas. */
   tokensBought: number;
+  /**
+   * Cost basis of the position currently held, as opposed to all of them.
+   *
+   * The lifetime figures answer "did this coin make money" and must never come
+   * back down. An entry price answers "what did the tokens I am holding cost",
+   * and a stop-loss fires against it — so it has to forget a position that was
+   * closed. Sold out of a coin at a millionth of a SOL and back into it at a
+   * thousandth, the lifetime ratio reports the old price, and every rule built
+   * on it fires at a number from a trade that is over.
+   *
+   * Reset when a buy lands on a coin the wallets were holding none of. A
+   * partial sale leaves it alone, which is correct: selling half a position
+   * does not change what the other half cost.
+   *
+   * Absent on positions recorded before it existed; readers fall back to the
+   * lifetime ratio, which is what they used to use.
+   */
+  basisSol?: number;
+  basisTokens?: number;
   firstBuyAt: number;
   lastTradeAt: number;
 }
@@ -239,6 +258,20 @@ export interface ValueMark {
   at: number;
   usd: number;
   sol: number;
+}
+
+/** What one completed batch of buys added to a position. */
+export interface BuyEntry {
+  /** The notional the batch was told to spend, summed over the wallets that filled. */
+  solSpent: number;
+  fills: number;
+  /** Whole tokens received, measured. Zero means it went unmeasured. */
+  tokensBought?: number;
+  symbol?: string;
+  /** What actually left the wallets, fees and rent included. */
+  costSol?: number;
+  /** True when the wallets held none of this coin before the batch. */
+  freshEntry?: boolean;
 }
 
 export interface TradeLogEntry {
@@ -480,14 +513,8 @@ export const db = {
   },
 
   /** Add a completed buy to the position's cost basis. */
-  recordBuy(
-    mint: string,
-    solSpent: number,
-    fills: number,
-    tokensBought = 0,
-    symbol?: string,
-    costSol?: number,
-  ): void {
+  recordBuy(mint: string, entry: BuyEntry): void {
+    const { solSpent, fills, tokensBought = 0, symbol, costSol, freshEntry = false } = entry;
     if (solSpent <= 0 || fills <= 0) return;
     const d = load();
     const now = Date.now();
@@ -511,6 +538,14 @@ export const db = {
     pos.investedSol += solSpent;
     pos.buyFills += fills;
     pos.tokensBought += tokensBought;
+
+    // a buy into a coin the wallets held none of starts the basis over; one
+    // into a position already open adds to it
+    const priorBasisSol = freshEntry ? 0 : (pos.basisSol ?? pos.investedSol - solSpent);
+    const priorBasisTokens = freshEntry ? 0 : (pos.basisTokens ?? pos.tokensBought - tokensBought);
+    pos.basisSol = Math.max(0, priorBasisSol) + solSpent;
+    pos.basisTokens = Math.max(0, priorBasisTokens) + tokensBought;
+
     pos.lastTradeAt = now;
     if (symbol && !pos.symbol) pos.symbol = symbol;
 

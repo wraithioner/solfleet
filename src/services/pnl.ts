@@ -45,8 +45,13 @@ export interface PositionPnl {
  * it.
  */
 export function entryPrice(pos: PositionRecord | undefined): number | null {
-  if (!pos || pos.investedSol <= 0 || pos.tokensBought <= 0) return null;
-  return pos.investedSol / pos.tokensBought;
+  if (!pos) return null;
+  // the position on the books, not every one this coin has ever been — see the
+  // note on basisSol in the store
+  const sol = pos.basisSol ?? pos.investedSol;
+  const tokens = pos.basisTokens ?? pos.tokensBought;
+  if (sol <= 0 || tokens <= 0) return null;
+  return sol / tokens;
 }
 
 /** Entry, current, and the move between them, ready to render. */

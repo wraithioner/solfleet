@@ -1108,7 +1108,7 @@ ok('opening a wallet that was unfollowed says so instead of crashing');
 // them apart, and mixing them up is what the senders are counting on.
 const { listPositions } = await import('../src/services/portfolio.js');
 
-db.recordBuy('BOUGHT_MINT', 0.05, 1);
+db.recordBuy('BOUGHT_MINT', { solSpent: 0.05, fills: 1 });
 const fakePortfolio = {
   solana: [
     {
@@ -1459,7 +1459,7 @@ assert.equal(accountPnl(db.positions(), new Map(), 200).empty, true);
 ok('an account that has never traded says so rather than claiming 0%');
 
 // a 1 SOL buy that actually cost 1.01 after fees, sold for 1.5
-db.recordBuy('MintA', 1, 1, 1_000_000, 'AAA', 1.01);
+db.recordBuy('MintA', { solSpent: 1, fills: 1, tokensBought: 1_000_000, symbol: 'AAA', costSol: 1.01 });
 db.recordSell('MintA', 1.5, 1);
 
 const a1 = accountPnl(db.positions(), new Map(), 200);
@@ -1481,7 +1481,7 @@ assert.equal(Number(a1.netPct.toFixed(1)), 48.5);
 ok('the percentage is measured against the true cost');
 
 // still-held tokens are marked, and count as open rather than banked
-db.recordBuy('MintB', 2, 1, 500, 'BBB', 2.02);
+db.recordBuy('MintB', { solSpent: 2, fills: 1, tokensBought: 500, symbol: 'BBB', costSol: 2.02 });
 const a2 = accountPnl(db.positions(), new Map([['MintB', 3]]), 200);
 assert.equal(a2.openCount, 1);
 assert.equal(a2.closedCount, 1);
@@ -1506,13 +1506,13 @@ ok('the best and worst trades are named');
 
 // a position written before costs were measured falls back to its notional
 db.wipe();
-db.recordBuy('MintC', 1, 1, 100, 'CCC');
+db.recordBuy('MintC', { solSpent: 1, fills: 1, tokensBought: 100, symbol: 'CCC' });
 const legacyPos = db.position('MintC')!;
 assert.equal(costOf({ ...legacyPos, costSol: undefined }), 1);
 ok('a position from before the measurement uses what it was recorded as spending');
 
 // and a later buy on that position must not lose the earlier cost
-db.recordBuy('MintC', 1, 1, 100, 'CCC', 1.02);
+db.recordBuy('MintC', { solSpent: 1, fills: 1, tokensBought: 100, symbol: 'CCC', costSol: 1.02 });
 assert.equal(Number(db.position('MintC')!.costSol!.toFixed(4)), 2.02);
 ok('adding a measured buy to an unmeasured position keeps both');
 
@@ -1562,17 +1562,41 @@ console.log('\n[25] One coin, many followed wallets');
  * the same token. Every one of them spends or dumps real money, and none was
  * visible from a single-target test.
  */
-const { exposureSol, roomUnderCap, activeMintLocks } = await import('../src/services/copytrade.js');
+const { lifetimeCostSol, openExposureSol, roomUnderCap, activeMintLocks } =
+  await import('../src/services/copytrade.js');
 
 db.wipe();
 const MINT_X = 'MintXcopytradeaudit1111111111111111111111';
 
 // ── the cap sees the position, not the follower ──────────────────────────────
-assert.equal(roomUnderCap(MINT_X, 0.5), 0.5, 'an untouched coin has the whole cap free');
-db.recordBuy(MINT_X, 0.2, 4, 1_000, 'XXX', 0.2081);
-assert.equal(Number(exposureSol(MINT_X).toFixed(4)), 0.2081, 'exposure is the measured cost, fees included');
-assert.equal(Number(roomUnderCap(MINT_X, 0.5).toFixed(4)), 0.2919);
+assert.equal(roomUnderCap(MINT_X, 0.5, false), 0.5, 'an untouched coin has the whole cap free');
+db.recordBuy(MINT_X, { solSpent: 0.2, fills: 4, tokensBought: 1_000, symbol: 'XXX', costSol: 0.2081 });
+assert.equal(
+  Number(openExposureSol(MINT_X, true).toFixed(4)),
+  0.2081,
+  'exposure is the measured cost, fees included',
+);
+assert.equal(Number(roomUnderCap(MINT_X, 0.5, true).toFixed(4)), 0.2919);
 ok('room under the per-coin cap is measured from what the coin actually cost');
+
+/*
+ * The bug this shape exists to prevent: cost is cumulative and never comes back
+ * down, so a coin bought and sold last week reads as a live position forever.
+ * Every token already traded would be locked out of copy trading permanently.
+ */
+db.recordSell(MINT_X, 0.31, 4);
+assert.ok(lifetimeCostSol(MINT_X) > 0, 'what it cost is still on the books');
+assert.equal(openExposureSol(MINT_X, false), 0, 'but nothing is riding on it once it is sold');
+assert.equal(roomUnderCap(MINT_X, 0.5, false), 0.5, 'so the whole cap is free again');
+ok('a coin that was sold stops counting as a position and can be traded again');
+
+// and a loss must not leave a phantom position behind either
+const LOST = 'MintSoldAtALoss111111111111111111111111';
+db.recordBuy(LOST, { solSpent: 0.3, fills: 1, tokensBought: 100, symbol: 'LOST', costSol: 0.31 });
+db.recordSell(LOST, 0.05, 1);
+assert.ok(0.31 - 0.05 > 0, 'the ledger alone would still show a remainder');
+assert.equal(openExposureSol(LOST, false), 0, 'holding none of it is what settles it');
+ok('a position closed at a loss is closed, not a remainder that blocks re-entry');
 
 /*
  * The case the cap exists for. Three followed wallets buying the same coin at
@@ -1584,30 +1608,30 @@ let spent = 0;
 let refused = 0;
 for (let trader = 0; trader < 3; trader++) {
   const batch = 0.05 * 4; // 0.05 SOL each across 4 wallets
-  if (batch > roomUnderCap(FRESH, 0.5)) {
+  if (batch > roomUnderCap(FRESH, 0.5, true)) {
     refused++;
     continue;
   }
-  db.recordBuy(FRESH, batch, 4, 1_000, 'XXX', batch);
+  db.recordBuy(FRESH, { solSpent: batch, fills: 4, tokensBought: 1_000, symbol: 'XXX', costSol: batch });
   spent += batch;
 }
 assert.equal(Number(spent.toFixed(4)), 0.4, 'two entries fit under a 0.5 cap');
 assert.equal(refused, 1, 'the third is refused rather than taking the total past the cap');
-assert.ok(exposureSol(FRESH) <= 0.5 + 1e-9, `cap held: ${exposureSol(FRESH)}`);
+assert.ok(openExposureSol(FRESH, true) <= 0.5 + 1e-9, `cap held: ${openExposureSol(FRESH, true)}`);
 ok('three traders into one coin stop at the cap instead of stacking three entries');
 
 // without the cap all three land — the behaviour this replaces
 let uncapped = 0;
 const OPEN = 'MintNoCapThreeTraders111111111111111111';
 for (let trader = 0; trader < 3; trader++) {
-  if (0.2 > roomUnderCap(OPEN, 0)) continue;
+  if (0.2 > roomUnderCap(OPEN, 0, true)) continue;
   uncapped += 0.2;
 }
 assert.equal(Number(uncapped.toFixed(4)), 0.6, 'uncapped, three traders spend 3x');
 ok('and with the cap off they still stack, so the cap is what does the work');
 
 // a cap of zero is off, not a cap of nothing
-assert.equal(roomUnderCap(MINT_X, 0), Infinity);
+assert.equal(roomUnderCap(MINT_X, 0, true), Infinity);
 ok('setting the cap to zero turns it off rather than blocking every buy');
 
 // ── the mint lock serialises, and does not leak ──────────────────────────────
@@ -1698,7 +1722,7 @@ const follower = {
 db.addCopyTarget(follower);
 
 const HAND_BOUGHT = 'MintHandBought11111111111111111111111111111';
-db.recordBuy(HAND_BOUGHT, 0.3, 2, 5_000, 'HAND', 0.31);
+db.recordBuy(HAND_BOUGHT, { solSpent: 0.3, fills: 2, tokensBought: 5_000, symbol: 'HAND', costSol: 0.31 });
 
 // the trader never copied it, so their sell must not reach it
 const stored = db.copyTargets().find((t) => t.id === 'T1')!;
@@ -1719,7 +1743,7 @@ ok('refused coins are kept apart from copied ones, so they cannot authorise a sa
  */
 const LEGACY_REFUSED = 'MintLegacyRefused111111111111111111111111';
 db.updateCopyTarget('T1', { copiedMints: [LEGACY_REFUSED] });
-assert.equal(exposureSol(LEGACY_REFUSED), 0, 'nothing was ever bought, so there is no position');
+assert.equal(lifetimeCostSol(LEGACY_REFUSED), 0, 'nothing was ever bought, so there is no position');
 ok('an old record listing a refusal as copied still has no position to sell');
 
 
@@ -1770,8 +1794,8 @@ console.log('\n[28] Unpriced is not worthless');
 db.wipe();
 const PRICED = 'MintPricedddddddddddddddddddddddddddddddd';
 const DARK = 'MintUnpriceddddddddddddddddddddddddddddddd';
-db.recordBuy(PRICED, 0.1, 1, 1_000, 'PRI', 0.1);
-db.recordBuy(DARK, 0.1, 1, 1_000, 'DARK', 0.1);
+db.recordBuy(PRICED, { solSpent: 0.1, fills: 1, tokensBought: 1_000, symbol: 'PRI', costSol: 0.1 });
+db.recordBuy(DARK, { solSpent: 0.1, fills: 1, tokensBought: 1_000, symbol: 'DARK', costSol: 0.1 });
 
 const naive = accountPnl(db.positions(), new Map([[PRICED, 0.15]]), 200);
 assert.equal(naive.losses, 1, 'without the flag the dark token counts as a loss');
@@ -1799,7 +1823,7 @@ console.log('\n[29] Rebuilding proceeds from the chain');
  */
 db.wipe();
 const REPAIR = 'MintNeedsRepair11111111111111111111111111';
-db.recordBuy(REPAIR, 0.5, 2, 10_000, 'FIX', 0.52);
+db.recordBuy(REPAIR, { solSpent: 0.5, fills: 2, tokensBought: 10_000, symbol: 'FIX', costSol: 0.52 });
 db.recordSell(REPAIR, 0.05, 1);
 assert.equal(db.position(REPAIR)!.realisedSol, 0.05);
 
@@ -1844,6 +1868,64 @@ assert.match(recSrc, /isRateLimited/, 'a rate limit is recognised rather than th
 assert.ok(!/pMap\(wallets/.test(recSrc), 'wallets are read one at a time, not concurrently');
 assert.match(recSrc, /complete: false/, 'a short read reports itself as incomplete');
 ok('the scan is paced, and a partial read says it is partial');
+
+console.log('\n[30] An entry price belongs to one position');
+
+/*
+ * The lifetime totals never come back down, so a coin sold and bought again
+ * used to report a price blended across two unrelated trades — and every rule
+ * measures against that number. Reachable now in a way it was not before: the
+ * limits used to lock a sold coin out of copy trading forever, which hid this.
+ */
+const { entryPriceSol: livePrice } = await import('../src/services/watcher.js');
+db.wipe();
+const ROUNDTRIP = 'MintBoughtSoldBought11111111111111111111';
+
+// in at a millionth of a SOL a token
+db.recordBuy(ROUNDTRIP, { solSpent: 1, fills: 1, tokensBought: 1_000_000, symbol: 'RT', costSol: 1.01 });
+assert.equal(livePrice(ROUNDTRIP), 1 / 1_000_000);
+ok('a first entry prices at what it paid');
+
+// all the way out
+db.recordSell(ROUNDTRIP, 1.4, 1);
+
+// and back in at a thousandth — a thousand times the price
+db.recordBuy(ROUNDTRIP, { solSpent: 1, fills: 1, tokensBought: 1_000, symbol: 'RT', costSol: 1.01, freshEntry: true });
+
+const blended = 2 / 1_001_000; // what the lifetime ratio would say
+const entry = livePrice(ROUNDTRIP)!;
+assert.equal(entry, 1 / 1_000, `entry priced the position on the books: ${entry}`);
+assert.ok(entry > blended * 500, 'and not the average of it and a trade that is over');
+ok('re-entering a coin prices the new position, not a blend with the closed one');
+
+/*
+ * The consequence, stated as money. A stop-loss set at -50% against the
+ * blended figure is already 99.9% below it the moment the position opens, so
+ * it fires instantly on a position that has not moved.
+ */
+const stop = { id: 'r', mint: ROUNDTRIP, kind: 'stop_loss' as const, triggerPct: -50, sellPercent: 100, enabled: true, createdAt: 0 };
+const take = { id: 't', mint: ROUNDTRIP, kind: 'take_profit' as const, triggerPct: 100, sellPercent: 50, enabled: true, createdAt: 0 };
+
+// the blended entry is dragged down by a million cheap tokens from a trade
+// that is over, so a position that has not moved reads as a huge winner
+assert.equal(ruleTriggered(take, entry, blended), true, 'the take-profit fires the instant it opens');
+assert.equal(ruleTriggered(take, entry, entry), false, 'against the real entry it waits, as it should');
+
+// worse than the false fire: the stop-loss can never reach its trigger, so the
+// position is unprotected while looking a thousand percent up
+assert.equal(ruleTriggered(stop, entry * 0.4, blended), false, 'a 60% fall does not reach the blended stop');
+assert.equal(ruleTriggered(stop, entry * 0.4, entry), true, 'against the real entry it protects the position');
+ok('the blended price fires a take-profit at once and leaves the stop-loss unreachable');
+
+// adding to an open position still blends, which is what averaging in means
+db.recordBuy(ROUNDTRIP, { solSpent: 1, fills: 1, tokensBought: 3_000, symbol: 'RT', freshEntry: false });
+assert.equal(livePrice(ROUNDTRIP), 2 / 4_000, 'averaging in moves the entry, correctly');
+ok('a second buy into an open position averages, rather than resetting');
+
+// and a record written before the basis existed still prices from what it has
+const legacy = { mint: 'L', investedSol: 2, realisedSol: 0, buyFills: 1, sellFills: 0, tokensBought: 100, firstBuyAt: 0, lastTradeAt: 0 };
+assert.equal(entryPrice(legacy), 2 / 100, 'the lifetime ratio is the fallback, as before');
+ok('a position from before the basis existed keeps the price it always had');
 
 fs.rmSync(DATA, { recursive: true, force: true });
 console.log(`\n✅ ${passed} assertions passed\n`);

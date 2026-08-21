@@ -600,16 +600,38 @@ export function activeMintLocks(): number {
  * coin the operator is willing to hold, and money spent by tapping a button is
  * no less spent than money spent automatically.
  */
-export function exposureSol(mint: string): number {
+export function lifetimeCostSol(mint: string): number {
   const pos = db.position(mint);
   if (!pos) return 0;
   return pos.costSol ?? pos.investedSol;
 }
 
+/**
+ * Money still riding on a coin, as opposed to money once spent on it.
+ *
+ * The distinction decides whether a coin can ever be traded again, and getting
+ * it wrong locks the bot out permanently: what a position cost is cumulative
+ * and never comes back down, so a coin bought and sold last week still reads as
+ * a live position forever. Every token an operator has already been through
+ * would be refused for the life of the install.
+ *
+ * Holdings decide it, not the ledger. `cost - realised` cannot: a position
+ * closed at a loss leaves a positive remainder and would look open, and one
+ * closed at a profit leaves a negative one. Whether the wallets are holding any
+ * of the token is the only fact that answers the question, and the buy path
+ * reads it anyway.
+ */
+export function openExposureSol(mint: string, holding: boolean): number {
+  if (!holding) return 0;
+  const pos = db.position(mint);
+  if (!pos) return 0;
+  return Math.max(0, (pos.costSol ?? pos.investedSol) - pos.realisedSol);
+}
+
 /** Room left under the per-mint cap. Infinity when the cap is off. */
-export function roomUnderCap(mint: string, maxSolPerMint: number): number {
+export function roomUnderCap(mint: string, maxSolPerMint: number, holding: boolean): number {
   if (maxSolPerMint <= 0) return Infinity;
-  return Math.max(0, maxSolPerMint - exposureSol(mint));
+  return Math.max(0, maxSolPerMint - openExposureSol(mint, holding));
 }
 
 function entriesSoFar(target: CopyTarget, mint: string): number {
@@ -680,6 +702,18 @@ async function mirrorBuyLocked(
   const limits = db.settings().copySafety;
 
   /*
+   * What the wallets hold of this coin right now.
+   *
+   * Read here rather than just before the trade — it is the same call either
+   * way, and both limits below are about the position rather than the history.
+   */
+  const heldBefore = await getMintBalances(wallets.map((w) => w.address), move.mint).catch(
+    () => undefined,
+  );
+  const holding = heldBefore !== undefined && [...heldBefore.values()].some((v) => v > 0n);
+  const openSol = openExposureSol(move.mint, holding);
+
+  /*
    * Somebody else already put you in this coin.
    *
    * Two followed wallets liking the same token is not two reasons to own it.
@@ -692,17 +726,17 @@ async function mirrorBuyLocked(
    * books, whether the bot opened it copying somebody else or the operator
    * bought it by hand.
    */
-  if (limits.oneEntryPerMint && !target.copiedMints.includes(move.mint) && exposureSol(move.mint) > 0) {
+  if (limits.oneEntryPerMint && !target.copiedMints.includes(move.mint) && holding) {
     log.info(
       `Skipped copying ${target.label} into ${move.mint}: ` +
-        `already holding ${exposureSol(move.mint).toFixed(4)} SOL of it.`,
+        `already holding ${openSol.toFixed(4)} SOL of it.`,
     );
     await notify(
       [
         `🧯 <b>Did not copy ${target.label}</b>`,
         `<code>${move.mint}</code>`,
         '',
-        `You are already in this coin for <b>${exposureSol(move.mint).toFixed(4)} ◎</b>.`,
+        `You are already in this coin for <b>${openSol.toFixed(4)} ◎</b>.`,
         'A second trader buying it does not buy it again.',
         '',
         '<i>Copy trading → Safety → Already holding, to change this.</i>',
@@ -711,13 +745,13 @@ async function mirrorBuyLocked(
     return;
   }
 
-  const room = roomUnderCap(move.mint, limits.maxSolPerMint);
+  const room = roomUnderCap(move.mint, limits.maxSolPerMint, holding);
   const batchSol = perWallet * wallets.length;
 
   if (batchSol > room) {
     log.warn(
       `Skipped copying ${target.label} into ${move.mint}: ` +
-        `${exposureSol(move.mint).toFixed(4)} SOL already in, this adds ${batchSol.toFixed(4)}, ` +
+        `${openSol.toFixed(4)} SOL already in, this adds ${batchSol.toFixed(4)}, ` +
         `cap is ${limits.maxSolPerMint} SOL.`,
     );
     await notify(
@@ -725,7 +759,7 @@ async function mirrorBuyLocked(
         `🧯 <b>Did not copy ${target.label}</b>`,
         `<code>${move.mint}</code>`,
         '',
-        `Already holding <b>${exposureSol(move.mint).toFixed(4)} ◎</b> of this coin.`,
+        `Already holding <b>${openSol.toFixed(4)} ◎</b> of this coin.`,
         `This copy would add <b>${batchSol.toFixed(4)} ◎</b>, over the <b>${limits.maxSolPerMint} ◎</b> per-token cap.`,
         '',
         '<i>Copy trading → Safety → Per token to change it.</i>',
@@ -804,9 +838,9 @@ async function mirrorBuyLocked(
   const settings = db.settings();
   log.info(`Copying ${target.label} into ${move.mint} (entry ${already + 1}/${allowed})`);
 
-  // read before the trade so the fill can be measured against it
+  // holdings were read above, before the limits that needed them; the same map
+  // is what the fill is measured against
   const addresses = wallets.map((w) => w.address);
-  const heldBefore = await getMintBalances(addresses, move.mint).catch(() => undefined);
 
   const sizing =
     target.sizeMode === 'percent'
@@ -839,7 +873,15 @@ async function mirrorBuyLocked(
     // the token count is the cost basis: without it there is no entry price,
     // and without an entry price a take-profit or stop-loss cannot fire at all
     const tokensGained = await measureTokensGained(addresses, move.mint, heldBefore, info?.decimals);
-    db.recordBuy(move.mint, perWallet * fills, fills, tokensGained, info?.symbol, summary.solSpent);
+    db.recordBuy(move.mint, {
+      solSpent: perWallet * fills,
+      fills,
+      tokensBought: tokensGained,
+      symbol: info?.symbol,
+      costSol: summary.solSpent,
+      // `holding` was read before the limits that needed it, above
+      freshEntry: !holding,
+    });
 
     if (fills > 0) armCopyRules(target, move.mint, notify);
     db.appendTradeLog({
@@ -936,7 +978,7 @@ async function mirrorSellLocked(
    * is how somebody finds out days later. The rules armed on the position still
    * stand, and so does selling it by hand.
    */
-  if (exposureSol(move.mint) <= 0) {
+  if (lifetimeCostSol(move.mint) <= 0) {
     log.warn(`Copied exit for ${move.mint} skipped: listed as copied but no recorded cost basis.`);
     await notify(
       [

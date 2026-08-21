@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import { db, type AutoRule } from '../store/db.js';
 import { isUnlocked } from '../store/vault.js';
 import { selectWallets } from '../store/wallets.js';
-import { batchPumpTrade, measureTokensGained } from '../trade/engine.js';
+import { batchPumpTrade, measureTokensGained, isFreshEntry } from '../trade/engine.js';
 import { getMintBalances } from '../chains/solana.js';
 import { pricesInSol } from './price.js';
 import { errMessage } from '../util.js';
@@ -54,8 +54,21 @@ export function newRuleId(): string {
  */
 export function entryPriceSol(mint: string): number | null {
   const pos = db.position(mint);
-  if (!pos || pos.investedSol <= 0 || pos.tokensBought <= 0) return null;
-  return pos.investedSol / pos.tokensBought;
+  if (!pos) return null;
+
+  /*
+   * The position being held, not every position this coin has ever been.
+   *
+   * The lifetime totals never come back down, so a coin sold and bought again
+   * reports a price blended across two unrelated trades — and a stop-loss
+   * measuring against it fires at a number from a position that is closed.
+   * Records written before the basis existed fall back to the lifetime ratio,
+   * which is what they were computed from anyway.
+   */
+  const sol = pos.basisSol ?? pos.investedSol;
+  const tokens = pos.basisTokens ?? pos.tokensBought;
+  if (sol <= 0 || tokens <= 0) return null;
+  return sol / tokens;
 }
 
 /** Has this rule's condition been met? Pure, so the thresholds are testable. */
@@ -234,7 +247,14 @@ async function fire(rule: AutoRule, price: number, notify: Notifier): Promise<vo
 
       const fills = summary.results.filter((r) => r.ok && r.signature).length;
       const gained = await measureTokensGained(addresses, rule.mint, heldBefore, undefined);
-      db.recordBuy(rule.mint, (rule.buySol ?? 0) * fills, fills, gained, rule.symbol, summary.solSpent);
+      db.recordBuy(rule.mint, {
+        solSpent: (rule.buySol ?? 0) * fills,
+        fills,
+        tokensBought: gained,
+        symbol: rule.symbol,
+        costSol: summary.solSpent,
+        freshEntry: isFreshEntry(heldBefore),
+      });
       db.appendTradeLog({
         at: Date.now(),
         action: `limit buy ${rule.buySol} SOL`,
@@ -350,7 +370,14 @@ async function runDueDca(notify: Notifier): Promise<void> {
 
       const fills = summary.results.filter((r) => r.ok && r.signature).length;
       const gained = await measureTokensGained(addresses, plan.mint, heldBefore, undefined);
-      db.recordBuy(plan.mint, plan.buySol * fills, fills, gained, plan.symbol, summary.solSpent);
+      db.recordBuy(plan.mint, {
+        solSpent: plan.buySol * fills,
+        fills,
+        tokensBought: gained,
+        symbol: plan.symbol,
+        costSol: summary.solSpent,
+        freshEntry: isFreshEntry(heldBefore),
+      });
       db.appendTradeLog({
         at: Date.now(),
         action: `DCA ${round}/${plan.roundsTotal}`,
