@@ -316,7 +316,20 @@ async function fire(rule: AutoRule, price: number, notify: Notifier): Promise<vo
   log.info(`Rule ${rule.kind} fired for ${rule.mint} at ${price.toExponential(4)} SOL`);
 
   try {
-    const wallets = selectWallets();
+    /*
+     * An exit reaches wherever the position is, not wherever you are trading.
+     *
+     * The wallet set is filtered by the active group, and that filter is one
+     * tap on a settings screen. Buy a token with group A selected, switch to
+     * group B, and the stop-loss guarding that position looks for it in the
+     * wrong wallets, finds nothing, reports the position gone and retires
+     * itself. The position is still there and no longer has a stop.
+     *
+     * Entries stay filtered — choosing which wallets trade is the entire point
+     * of a group. Closing a position is not a choice about which wallets.
+     */
+    const buying = rule.kind === 'limit_buy';
+    const wallets = buying ? selectWallets() : selectWallets({ group: null });
     const settings = db.settings();
 
     if (rule.kind === 'limit_buy') {

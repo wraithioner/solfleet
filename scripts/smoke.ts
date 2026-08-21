@@ -2127,5 +2127,39 @@ assert.match(cSrc, /pollShare > 0\.6/, 'and an inversion is what raises the alar
 assert.match(cSrc, /warnedSocketQuiet = false/, 'a recovery clears it rather than leaving it standing');
 ok('a socket that has gone quiet is reported instead of being covered for silently');
 
+console.log('\n[37] An exit reaches wherever the position is');
+
+/*
+ * A stop-loss that cannot find the position it guards. The wallet set is
+ * filtered by the active group, and that filter is one tap on a settings
+ * screen: buy under group A, switch to group B, and the rule looks in the
+ * wrong wallets, finds nothing, reports the position gone and retires itself.
+ * The position is still there and no longer has a stop.
+ */
+const wSrc2 = fs.readFileSync('src/services/watcher.ts', 'utf8');
+assert.match(wSrc2, /buying \? selectWallets\(\) : selectWallets\(\{ group: null \}\)/, 'exits see every wallet');
+ok('a rule selling a position looks in every wallet, not the group in use');
+
+// but an entry still respects the group, which is what a group is for
+assert.match(wSrc2, /const buying = rule\.kind === 'limit_buy'/, 'buys are told apart from sells');
+ok('a limit buy still goes only where the operator pointed it');
+
+const cSrc2 = fs.readFileSync('src/services/copytrade.ts', 'utf8');
+assert.match(cSrc2, /const wallets = selectWallets\(\{ group: null \}\);/, 'copied exits too');
+ok('a copied exit closes the position wherever it was opened');
+
+/*
+ * And the shared queue. One address transacting like a program filled it and
+ * every other followed wallet was refused at the door — the flood control was
+ * penalising the wallets that were behaving.
+ */
+assert.match(cSrc2, /function evictOldest/, 'there is room to be made');
+assert.match(cSrc2, /busiest/, 'and it is taken from whoever is filling the queue');
+assert.ok(
+  cSrc2.indexOf('if (!evictOldest()) return;') > cSrc2.indexOf('FLOOD_LIMIT'),
+  'the flood cut-off still comes first',
+);
+ok('a busy wallet loses its own stalest trade rather than a quiet wallet losing its newest');
+
 fs.rmSync(DATA, { recursive: true, force: true });
 console.log(`\n✅ ${passed} assertions passed\n`);

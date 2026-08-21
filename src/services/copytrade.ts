@@ -526,6 +526,34 @@ const FLOOD_LIMIT = 60;
 const floodCounts = new Map<string, number>();
 let draining = false;
 
+/**
+ * Make room by dropping the stalest trade from the busiest wallet.
+ *
+ * Two things were wrong with refusing the new arrival instead. A copied trade
+ * is worth following because it just happened — an entry from thirty seconds
+ * ago is already priced in, so of everything in the queue the newest item is
+ * the one to keep and the oldest is the one to lose.
+ *
+ * And the queue is shared. One address transacting like a program filled it
+ * and every other followed wallet's trades were refused at the door, which is
+ * the opposite of what a flood control should do: the wallet causing the
+ * problem should be the one that loses its place.
+ */
+function evictOldest(): boolean {
+  if (queue.length === 0) return false;
+
+  const perTarget = new Map<string, number>();
+  for (const q of queue) {
+    perTarget.set(q.target.address, (perTarget.get(q.target.address) ?? 0) + 1);
+  }
+  const busiest = [...perTarget.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+
+  const index = queue.findIndex((q) => q.target.address === busiest);
+  if (index < 0) return false;
+  queue.splice(index, 1);
+  return true;
+}
+
 function enqueue(item: Queued): void {
   if (queue.length >= QUEUE_MAX) {
     const dropped = (floodCounts.get(item.target.address) ?? 0) + 1;
@@ -542,8 +570,12 @@ function enqueue(item: Queued): void {
             'everything else. Unfollow it and pick a wallet that trades.</i>',
         )
         .catch(() => {});
+      return;
     }
-    return;
+
+    // the newest trade is the one worth having, so make room rather than
+    // turning it away — and take that room from whoever is filling the queue
+    if (!evictOldest()) return;
   }
 
   queue.push(item);
@@ -1025,7 +1057,14 @@ async function mirrorSellLocked(
     return;
   }
 
-  const wallets = selectWallets();
+  /*
+   * Every wallet, not the group currently selected.
+   *
+   * The position was opened under whatever group was active then, and the
+   * filter is one tap. An exit that only looks where you happen to be trading
+   * finds nothing and leaves the position open — see the note in the watcher.
+   */
+  const wallets = selectWallets({ group: null });
   if (wallets.length === 0) return;
 
   // only act if we actually hold it
