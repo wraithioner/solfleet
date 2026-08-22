@@ -9,6 +9,7 @@ import { getTokenMetadata } from './metadata.js';
 import { getMintAuthorities } from './mintauth.js';
 import { getRugcheck } from './rugcheck.js';
 import { getJupTokenData } from './jupdata.js';
+import { readTokenLocks } from './locks.js';
 import { allWallets } from '../store/wallets.js';
 import type { Chain } from '../types.js';
 
@@ -76,6 +77,15 @@ export interface TokenInfo {
   /** True when the holder query failed — distinct from "no holders". */
   holdersUnavailable?: boolean;
   top10Pct?: number;
+  /** Share of supply in a vesting vault, of the concentration figure above. */
+  lockerPct?: number;
+  /** Share locked past the horizon — supply that cannot reach the book. */
+  lockedLongPct?: number;
+  /** When the longest of those unlocks. */
+  lockedUntil?: number;
+  /** Share handed out through streams that locked nothing, and to how many. */
+  launchDistPct?: number;
+  launchDistWallets?: number;
   /** How much of the supply the operator's own wallets control. */
   ownedPct?: number;
   ownedAmount?: number;
@@ -341,6 +351,17 @@ const HOLDER_DEADLINE_MS = 4000;
 const FAST_HOLDER_DEADLINE_MS = 1200;
 
 /**
+ * How long the lock lookup gets.
+ *
+ * Same reasoning as the holder deadline above and a different number, because
+ * this query is worth more. It answered in 530ms on measurement and it is what
+ * stops a coin being refused over supply locked until 2095 — so a copied entry
+ * waits for it rather than skipping it, just not indefinitely.
+ */
+const LOCK_DEADLINE_MS = 4000;
+const FAST_LOCK_DEADLINE_MS = 1500;
+
+/**
  * Programs whose token accounts are a market rather than somebody's position.
  *
  * Excluding the bonding curve was not enough. A pump.fun coin that graduates
@@ -535,7 +556,7 @@ export async function getTokenInfo(
   };
 
   if (kind === 'solana') {
-    const [market, holders, curve, meta, authorities, rug, jup] = await Promise.all([
+    const [market, holders, curve, meta, authorities, rug, jup, locks] = await Promise.all([
       loadMarketData(address, 'solana'),
       loadSolanaHolders(address, opts.fast ? FAST_HOLDER_DEADLINE_MS : HOLDER_DEADLINE_MS),
       loadCurveData(address),
@@ -543,6 +564,17 @@ export async function getTokenInfo(
       getMintAuthorities(address),
       getRugcheck(address),
       getJupTokenData(address),
+      /*
+       * Alongside the rest rather than after the verdict.
+       *
+       * It would be cheaper to look up locks only once concentration was about
+       * to refuse — that is the case they exist for. But the same read is what
+       * catches an allocation bundled out through one-second streams, and that
+       * one has to run on the coins that pass, which is all of them. Started
+       * here it costs the difference between this call and the slowest of the
+       * others, which on measurement is nothing.
+       */
+      readTokenLocks(address, { timeoutMs: opts.fast ? FAST_LOCK_DEADLINE_MS : LOCK_DEADLINE_MS }),
     ]);
 
     // DexScreener wins on market cap once a pool exists; before that the curve
@@ -596,6 +628,7 @@ export async function getTokenInfo(
        * when the figure is missing entirely, so supplying it is enough.
        */
       if (rug.top10Pct !== undefined) merged.top10Pct = rug.top10Pct;
+      if (rug.lockerPct !== undefined) merged.lockerPct = rug.lockerPct;
       if (rug.creatorPct !== undefined) merged.creatorHoldsPct ??= rug.creatorPct;
       if (merged.liquidityUsd === undefined && rug.liquidityUsd !== undefined) {
         merged.liquidityUsd = rug.liquidityUsd;
@@ -622,6 +655,13 @@ export async function getTokenInfo(
         // devMints counts this token too; prior launches are one fewer
         merged.creatorPriorTokens = Math.max(0, jup.devMints - 1);
       }
+    }
+
+    if (locks) {
+      merged.lockedLongPct = locks.lockedLongPct;
+      merged.lockedUntil = locks.lockedUntil;
+      merged.launchDistPct = locks.launchDistPct;
+      merged.launchDistWallets = locks.launchDistWallets;
     }
 
     addWarnings(merged);
@@ -662,8 +702,38 @@ function addWarnings(info: TokenInfo): void {
     info.warnings.push('Holder distribution unavailable — the RPC rejected the query (rate limit?). Concentration is unknown, not zero.');
   }
 
-  if (info.top10Pct !== undefined && info.top10Pct > 50) {
-    info.warnings.push(`Top 10 wallets hold ${info.top10Pct.toFixed(1)}% of supply — heavy concentration.`);
+  /*
+   * Concentration net of supply that is locked away for good.
+   *
+   * The raw figure counts a vesting vault as a holder, which on a live launch
+   * read 63.5% concentrated when 50.2% of it was locked until 2095. Saying
+   * that out loud on the card is the point — the number and the reason for it,
+   * rather than a quietly softened number nobody can check.
+   */
+  const locked = Math.min(info.lockerPct ?? 0, info.lockedLongPct ?? 0);
+  const free = info.top10Pct === undefined ? undefined : Math.max(0, info.top10Pct - locked);
+
+  if (free !== undefined && free > 50) {
+    info.warnings.push(`Top 10 wallets hold ${free.toFixed(1)}% of supply — heavy concentration.`);
+  }
+  if (locked > 0) {
+    const until = info.lockedUntil ? new Date(info.lockedUntil).getUTCFullYear() : undefined;
+    info.warnings.push(
+      `${locked.toFixed(1)}% of supply is locked${until ? ` until ${until}` : ''} — not counted as concentration.`,
+    );
+  }
+
+  /*
+   * A "vesting stream" that started and finished in the same second is an
+   * allocation, not a schedule. Worth its own line because the launch index
+   * scores these wallets as unrelated: it reads the funding graph, and a
+   * transfer routed through a vesting program does not look like funding.
+   */
+  if (info.launchDistPct !== undefined && info.launchDistPct > 1) {
+    info.warnings.push(
+      `${info.launchDistPct.toFixed(1)}% of supply went to ${info.launchDistWallets ?? 0} wallets at launch ` +
+        'through vesting streams that locked nothing — they can sell now.',
+    );
   }
 
   if (info.liquidityUsd !== undefined && info.liquidityUsd < 5_000 && !info.isPumpFun) {

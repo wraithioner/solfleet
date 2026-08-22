@@ -185,12 +185,18 @@ export function assessToken(info: TokenInfo, limits: SafetyLimits = DEFAULT_SAFE
     }
   }
 
-  if (info.top10Pct === undefined) {
+  const discount = lockDiscount(info);
+  const concentration = info.top10Pct === undefined ? undefined : Math.max(0, info.top10Pct - discount);
+
+  if (concentration === undefined) {
     if (info.holdersUnavailable) {
       reasons.push('Holder distribution could not be read — concentration is unknown, not zero.');
     }
-  } else if (info.top10Pct > limits.maxTop10Pct) {
-    reasons.push(`Top 10 hold ${info.top10Pct.toFixed(1)}% of supply, over the ${limits.maxTop10Pct}% limit.`);
+  } else if (concentration > limits.maxTop10Pct) {
+    reasons.push(
+      `Top 10 hold ${concentration.toFixed(1)}% of supply, over the ${limits.maxTop10Pct}% limit.` +
+        (discount > 0 ? ` (${discount.toFixed(1)}% locked long-term was not counted.)` : ''),
+    );
   }
 
   if (info.creatorHoldsPct !== undefined && info.creatorHoldsPct > limits.maxDevPct) {
@@ -298,10 +304,14 @@ export function assessToken(info: TokenInfo, limits: SafetyLimits = DEFAULT_SAFE
     );
   }
 
-  if (limits.maxInsiderPct > 0 && info.insiderPct !== undefined && info.insiderPct > limits.maxInsiderPct) {
+  const connected = connectedShare(info);
+  if (limits.maxInsiderPct > 0 && connected !== undefined && connected.pct > limits.maxInsiderPct) {
     reasons.push(
-      `${info.insiderPct.toFixed(1)}% of supply sits in wallets believed to be one person, ` +
-        `over the ${limits.maxInsiderPct}% limit.`,
+      connected.fromLaunch
+        ? `${connected.pct.toFixed(1)}% of supply went to ${info.launchDistWallets} wallets at launch ` +
+          `through vesting streams that locked nothing, over the ${limits.maxInsiderPct}% limit.`
+        : `${connected.pct.toFixed(1)}% of supply sits in wallets believed to be one person, ` +
+          `over the ${limits.maxInsiderPct}% limit.`,
     );
   }
 
@@ -315,14 +325,66 @@ export function assessToken(info: TokenInfo, limits: SafetyLimits = DEFAULT_SAFE
   if (info.creatorPriorTokens !== undefined && info.creatorPriorTokens > 5 && !info.creatorRugHistory) {
     notes.push(`Developer has launched ${info.creatorPriorTokens} tokens before this one.`);
   }
-  if (info.insiderPct !== undefined && info.insiderPct > 5 && info.insiderPct <= limits.maxInsiderPct) {
-    notes.push(`${info.insiderPct.toFixed(1)}% held by connected wallets.`);
+  if (connected !== undefined && connected.pct > 5 && connected.pct <= limits.maxInsiderPct) {
+    notes.push(
+      connected.fromLaunch
+        ? `${connected.pct.toFixed(1)}% went to ${info.launchDistWallets} wallets at launch through instant streams.`
+        : `${connected.pct.toFixed(1)}% held by connected wallets.`,
+    );
+  }
+  if (discount > 0) {
+    notes.push(
+      `${discount.toFixed(1)}% of supply is locked${
+        info.lockedUntil ? ` until ${new Date(info.lockedUntil).getUTCFullYear()}` : ''
+      } and was not counted as concentration.`,
+    );
   }
   if (info.pairCreatedAt && Date.now() - info.pairCreatedAt < 3_600_000) {
     notes.push(`Pair is ${Math.round((Date.now() - info.pairCreatedAt) / 60_000)} minutes old.`);
   }
 
   return { safe: reasons.length === 0, reasons, notes };
+}
+
+/**
+ * How much of the concentration figure is supply that cannot reach the book.
+ *
+ * Two sources have to agree before anything is discounted. The launch index
+ * says which of the counted ten is a locker; the chain says how long its
+ * contents are locked for. Taking the smaller of the two means a lock sitting
+ * outside the counted ten cannot subtract from a number it was never part of,
+ * and a locker the chain could not read is not discounted at all.
+ *
+ * Missing data discounts nothing. A concentration check that quietly relaxes
+ * itself when a lookup fails is worse than no check — it reads as a coin that
+ * passed rather than one nobody managed to look at.
+ */
+function lockDiscount(info: TokenInfo): number {
+  const eligible = info.lockerPct;
+  const verified = info.lockedLongPct;
+  if (eligible === undefined || verified === undefined) return 0;
+  return Math.max(0, Math.min(eligible, verified));
+}
+
+/**
+ * Supply in one person's hands across several wallets, from either source.
+ *
+ * The index finds clusters by funding graph. That misses an allocation routed
+ * through a vesting program: on a live launch it scored the insider share at
+ * 0% while 11% of supply had gone to nine wallets in eight seconds, through
+ * streams that started and finished one second apart.
+ *
+ * The larger of the two rather than the sum, because the wallets are very
+ * often the same wallets and adding them would count the allocation twice.
+ */
+function connectedShare(info: TokenInfo): { pct: number; fromLaunch: boolean } | undefined {
+  const graph = info.insiderPct;
+  const launch = info.launchDistPct;
+  if (graph === undefined && launch === undefined) return undefined;
+
+  const g = graph ?? 0;
+  const l = launch ?? 0;
+  return l > g ? { pct: l, fromLaunch: true } : { pct: g, fromLaunch: false };
 }
 
 /** A pump.fun token that has not graduated has a curve, not a pool. */
@@ -333,7 +395,8 @@ function isOnCurve(info: TokenInfo): boolean {
 /** One line per limit, for the screen that configures them. */
 export function describeLimits(limits: SafetyLimits): string[] {
   return [
-    `Top 10 holders: refuse above <b>${limits.maxTop10Pct}%</b>`,
+    `Top 10 holders: refuse above <b>${limits.maxTop10Pct}%</b>, ` +
+      'not counting supply locked in a vesting contract for over a year',
     `Launch wallet: refuse above <b>${limits.maxDevPct}%</b>`,
     `Mint and freeze authority: <b>${limits.requireRevokedAuthorities ? 'must be revoked' : 'not checked'}</b>`,
     limits.minLiquidityUsd > 0
@@ -349,7 +412,8 @@ export function describeLimits(limits: SafetyLimits): string[] {
       ? 'Developer: <b>refuse anyone with a rug history</b>'
       : 'Developer history: <b>not checked</b>',
     limits.maxInsiderPct > 0
-      ? `Connected wallets: refuse above <b>${limits.maxInsiderPct}%</b> of supply`
+      ? `Connected wallets: refuse above <b>${limits.maxInsiderPct}%</b> of supply, ` +
+        'counting anything handed out at launch through a vesting stream that locked nothing'
       : 'Connected wallets: <b>not checked</b>',
     limits.maxDevMints > 0
       ? `Token factories: refuse a dev past <b>${limits.maxDevMints}</b> mints`

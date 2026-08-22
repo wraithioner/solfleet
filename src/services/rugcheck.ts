@@ -35,6 +35,16 @@ export interface RugcheckReport {
   risks: RugcheckRisk[];
   /** Concentration with pools and the launch wallet taken out. */
   top10Pct?: number;
+  /**
+   * How much of that concentration is a vesting vault rather than a holder.
+   *
+   * Reported alongside rather than removed, because the index knows an account
+   * is a locker but not for how long. The unlock date is read on chain, and
+   * only what is genuinely locked past the horizon gets discounted — this is
+   * the ceiling on that discount, so a lock outside the counted ten can never
+   * subtract from a number it was not part of.
+   */
+  lockerPct?: number;
   /** Share held by wallets the index believes are one person. */
   insiderPct?: number;
   insiderWallets?: number;
@@ -86,7 +96,7 @@ interface RawReport {
  * into. The launch wallet is counted separately because a limit on the
  * developer is a different question from a limit on the top ten.
  */
-function concentration(raw: RawReport): number | undefined {
+function counted(raw: RawReport): RawHolder[] | undefined {
   const holders = raw.topHolders;
   if (!holders || holders.length === 0) return undefined;
 
@@ -96,7 +106,29 @@ function concentration(raw: RawReport): number | undefined {
     return type !== 'AMM' && type !== 'CREATOR';
   });
 
-  return real.slice(0, 10).reduce((sum, h) => sum + (h.pct ?? 0), 0);
+  return real.slice(0, 10);
+}
+
+function concentration(raw: RawReport): number | undefined {
+  return counted(raw)?.reduce((sum, h) => sum + (h.pct ?? 0), 0);
+}
+
+/**
+ * The share of the counted ten that is a locker.
+ *
+ * Lockers stay in the concentration figure here. Whether they should count is
+ * a question about the unlock date, which this index does not report and the
+ * chain does — so the decision is made where that is known, and this only says
+ * how much is eligible.
+ */
+function lockedShare(raw: RawReport): number | undefined {
+  const holders = counted(raw);
+  if (!holders) return undefined;
+
+  const known = raw.knownAccounts ?? {};
+  return holders
+    .filter((h) => (h.owner ? known[h.owner]?.type : undefined) === 'LOCKER')
+    .reduce((sum, h) => sum + (h.pct ?? 0), 0);
 }
 
 function insiderShare(raw: RawReport): number | undefined {
@@ -135,6 +167,7 @@ export async function getRugcheck(mint: string, timeoutMs = 4000): Promise<Rugch
       score: raw.score_normalised ?? raw.score ?? 0,
       risks: raw.risks ?? [],
       top10Pct: concentration(raw),
+      lockerPct: lockedShare(raw),
       insiderPct: insiderShare(raw),
       insiderWallets: raw.graphInsidersDetected,
       insiderNetworks: (raw.insiderNetworks ?? []).length,
