@@ -9,7 +9,7 @@ import { getTokenMetadata } from './metadata.js';
 import { getMintAuthorities } from './mintauth.js';
 import { getRugcheck } from './rugcheck.js';
 import { getJupTokenData } from './jupdata.js';
-import { readTokenLocks } from './locks.js';
+import { readTokenLocks, lockedBeyond, furthestUnlock, DEFAULT_LOCK_HORIZON_DAYS, DAY_MS, type LockedSupply } from './locks.js';
 import { allWallets } from '../store/wallets.js';
 import type { Chain } from '../types.js';
 
@@ -79,10 +79,14 @@ export interface TokenInfo {
   top10Pct?: number;
   /** Share of supply in a vesting vault, of the concentration figure above. */
   lockerPct?: number;
-  /** Share locked past the horizon — supply that cannot reach the book. */
-  lockedLongPct?: number;
-  /** When the longest of those unlocks. */
-  lockedUntil?: number;
+  /**
+   * Every vesting stream still holding supply, and when each one releases.
+   *
+   * Kept as the list rather than a single locked figure, because how far away
+   * an unlock has to be before it stops counting is the operator's setting —
+   * the gate applies it, this only reports what is there.
+   */
+  lockedSupply?: LockedSupply[];
   /** Share handed out through streams that locked nothing, and to how many. */
   launchDistPct?: number;
   launchDistWallets?: number;
@@ -658,8 +662,7 @@ export async function getTokenInfo(
     }
 
     if (locks) {
-      merged.lockedLongPct = locks.lockedLongPct;
-      merged.lockedUntil = locks.lockedUntil;
+      merged.lockedSupply = locks.locked;
       merged.launchDistPct = locks.launchDistPct;
       merged.launchDistWallets = locks.launchDistWallets;
     }
@@ -710,14 +713,20 @@ function addWarnings(info: TokenInfo): void {
    * that out loud on the card is the point — the number and the reason for it,
    * rather than a quietly softened number nobody can check.
    */
-  const locked = Math.min(info.lockerPct ?? 0, info.lockedLongPct ?? 0);
+  const locked = Math.min(
+    info.lockerPct ?? 0,
+    info.lockedSupply === undefined
+      ? 0
+      : lockedBeyond(info.lockedSupply, DEFAULT_LOCK_HORIZON_DAYS * DAY_MS),
+  );
   const free = info.top10Pct === undefined ? undefined : Math.max(0, info.top10Pct - locked);
 
   if (free !== undefined && free > 50) {
     info.warnings.push(`Top 10 wallets hold ${free.toFixed(1)}% of supply — heavy concentration.`);
   }
   if (locked > 0) {
-    const until = info.lockedUntil ? new Date(info.lockedUntil).getUTCFullYear() : undefined;
+    const furthest = furthestUnlock(info.lockedSupply ?? []);
+    const until = furthest ? new Date(furthest).getUTCFullYear() : undefined;
     info.warnings.push(
       `${locked.toFixed(1)}% of supply is locked${until ? ` until ${until}` : ''} — not counted as concentration.`,
     );

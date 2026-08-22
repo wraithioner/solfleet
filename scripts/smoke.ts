@@ -2619,9 +2619,14 @@ console.log('\n[47] Locked supply is not concentration');
  * second apart, moving 11% of supply to nine wallets in the eight seconds
  * after launch, which the launch index scored as 0% insider.
  */
-const { decodeStream, summariseLocks, LOCK_HORIZON_MS, INSTANT_STREAM_MS } = await import(
-  '../src/services/locks.js'
-);
+const {
+  decodeStream,
+  summariseLocks,
+  lockedBeyond,
+  furthestUnlock,
+  DAY_MS,
+  INSTANT_STREAM_MS,
+} = await import('../src/services/locks.js');
 
 /*
  * The offsets are fixed by an on-chain layout nobody here controls, so they
@@ -2629,13 +2634,11 @@ const { decodeStream, summariseLocks, LOCK_HORIZON_MS, INSTANT_STREAM_MS } = awa
  * synthetic buffer written with the same constants would pass whatever they
  * said.
  */
-const captured = Buffer.from(
-  fs.readFileSync('scripts/fixtures/streamflow-stream.b64', 'utf8').trim(),
-  'base64',
-);
-const capturedStream = decodeStream(captured)!;
+const capturedStream = decodeStream(
+  Buffer.from(fs.readFileSync('scripts/fixtures/streamflow-stream.b64', 'utf8').trim(), 'base64'),
+)!;
 assert.ok(capturedStream, 'the captured account decodes');
-assert.equal(capturedStream.deposited, 500_000_000_000_000n, 'deposited amount reads at the right offset');
+assert.equal(capturedStream.deposited, 500_000_000_000_000n, 'deposited reads at the right offset');
 assert.equal(capturedStream.withdrawn, 0n, 'nothing has been taken out of it');
 assert.equal(capturedStream.canceledAt, 0, 'and it was never canceled');
 assert.equal(
@@ -2652,78 +2655,122 @@ ok('the stream layout still matches a real Streamflow account');
 
 const SUPPLY = 995_478_347_176_126n;
 const LOCK_NOW = Date.UTC(2026, 7, 22);
-const stream = (over: Partial<Parameters<typeof summariseLocks>[0][number]>) => ({
-  deposited: 0n,
-  withdrawn: 0n,
-  canceledAt: 0,
-  start: LOCK_NOW,
-  end: LOCK_NOW,
-  recipient: 'r',
-  ...over,
-});
+const YEAR_MS = 365 * DAY_MS;
+const stream = (over: Record<string, unknown>) =>
+  ({
+    deposited: 0n,
+    withdrawn: 0n,
+    canceledAt: 0,
+    start: LOCK_NOW,
+    end: LOCK_NOW,
+    recipient: 'r',
+    ...over,
+  }) as Parameters<typeof summariseLocks>[0][number];
 
-// the real shape: one long lock, nine instant ones
+// the real shape: one distant cliff, nine that released on creation
 const live = summariseLocks(
   [
-    stream({ deposited: 500_000_000_000_000n, start: Date.UTC(2095, 7, 20), end: Date.UTC(2095, 7, 20) + 1000 }),
-    stream({ deposited: 30_000_000_000_000n, withdrawn: 30_000_000_000_000n, end: LOCK_NOW + 1000, recipient: 'a' }),
+    stream({
+      deposited: 500_000_000_000_000n,
+      start: Date.UTC(2095, 7, 20),
+      end: Date.UTC(2095, 7, 20) + 1000,
+    }),
+    stream({
+      deposited: 30_000_000_000_000n,
+      withdrawn: 30_000_000_000_000n,
+      start: LOCK_NOW - 2000,
+      end: LOCK_NOW - 1000,
+      recipient: 'a',
+    }),
     ...['b', 'c', 'd', 'e', 'f', 'g', 'h', 'i'].map((r) =>
-      stream({ deposited: 10_000_000_000_000n, withdrawn: 10_000_000_000_000n, end: LOCK_NOW + 1000, recipient: r }),
+      stream({
+        deposited: 10_000_000_000_000n,
+        withdrawn: 10_000_000_000_000n,
+        start: LOCK_NOW - 2000,
+        end: LOCK_NOW - 1000,
+        recipient: r,
+      }),
     ),
   ],
   SUPPLY,
   LOCK_NOW,
 );
-assert.ok(Math.abs(live.lockedLongPct - 50.23) < 0.05, `50.2% locked long, got ${live.lockedLongPct}`);
+const liveLocked = lockedBeyond(live.locked, YEAR_MS, LOCK_NOW);
+assert.ok(Math.abs(liveLocked - 50.23) < 0.05, `50.2% locked long, got ${liveLocked}`);
 assert.ok(Math.abs(live.launchDistPct - 11.05) < 0.05, `11.05% handed out, got ${live.launchDistPct}`);
 assert.equal(live.launchDistWallets, 9, 'to nine wallets');
+assert.equal(new Date(furthestUnlock(live.locked)!).getUTCFullYear(), 2095, 'and it can name the year');
 ok('a real launch splits into supply that is gone and supply that was handed out');
 
-// a stream one second long is a transfer however it is labelled
-const instant = summariseLocks([stream({ deposited: SUPPLY / 2n, end: LOCK_NOW + INSTANT_STREAM_MS })], SUPPLY, LOCK_NOW);
-assert.ok(instant.launchDistPct > 49, 'a minute-long "vest" counts as distribution');
-assert.equal(instant.lockedLongPct, 0, 'and not as locked');
-
-// one that actually vests does not
-const vesting = summariseLocks(
-  [stream({ deposited: SUPPLY / 2n, end: LOCK_NOW + LOCK_HORIZON_MS + 1000 })],
-  SUPPLY,
-  LOCK_NOW,
-);
-assert.equal(vesting.launchDistPct, 0, 'a real schedule is not distribution');
-assert.ok(vesting.lockedLongPct > 49, 'it is locked');
-ok('the line between a vesting schedule and a transfer is where it was drawn');
-
 /*
- * Short locks are still supply arriving. Eleven months is inside the horizon,
- * so it counts in full — a coin whose unlock lands before you would have sold
- * is concentrated, whatever the contract is called.
+ * The distinction that took two attempts to get right. Both of these are one
+ * second long; only the date separates a cliff from a handout, so duration
+ * alone cannot be the test.
  */
-const soon = summariseLocks(
-  [stream({ deposited: SUPPLY / 2n, end: LOCK_NOW + LOCK_HORIZON_MS - 86_400_000 })],
+const cliff = summariseLocks(
+  [
+    stream({
+      deposited: SUPPLY / 2n,
+      start: LOCK_NOW + YEAR_MS * 60,
+      end: LOCK_NOW + YEAR_MS * 60 + 1000,
+    }),
+  ],
   SUPPLY,
   LOCK_NOW,
 );
-assert.equal(soon.lockedLongPct, 0, 'a lock inside the horizon is not discounted');
+assert.equal(cliff.launchDistPct, 0, 'a one-second cliff in 2095 is not a handout');
+assert.ok(lockedBeyond(cliff.locked, YEAR_MS, LOCK_NOW) > 49, 'it is locked');
+
+const handout = summariseLocks(
+  [stream({ deposited: SUPPLY / 2n, start: LOCK_NOW - INSTANT_STREAM_MS, end: LOCK_NOW - 1 })],
+  SUPPLY,
+  LOCK_NOW,
+);
+assert.ok(handout.launchDistPct > 49, 'a one-second stream that already released is');
+assert.equal(handout.locked.length, 0, 'and nothing about it is locked');
+ok('a distant cliff and an instant handout are told apart by date, not duration');
 
 const paidOut = summariseLocks(
-  [stream({ deposited: SUPPLY / 2n, withdrawn: SUPPLY / 2n, end: LOCK_NOW + LOCK_HORIZON_MS * 2 })],
+  [stream({ deposited: SUPPLY / 2n, withdrawn: SUPPLY / 2n, end: LOCK_NOW + YEAR_MS * 2 })],
   SUPPLY,
   LOCK_NOW,
 );
-assert.equal(paidOut.lockedLongPct, 0, 'and neither is one already paid out');
+assert.equal(paidOut.locked.length, 0, 'a stream already drawn down holds nothing back');
 
 const canceledLock = summariseLocks(
-  [stream({ deposited: SUPPLY / 2n, canceledAt: LOCK_NOW, end: LOCK_NOW + LOCK_HORIZON_MS * 2 })],
+  [stream({ deposited: SUPPLY / 2n, canceledAt: LOCK_NOW, end: LOCK_NOW + YEAR_MS * 2 })],
   SUPPLY,
   LOCK_NOW,
 );
-assert.equal(canceledLock.lockedLongPct, 0, 'nor a canceled one');
+assert.equal(canceledLock.locked.length, 0, 'nor does a canceled one');
 ok('only supply that is actually held back counts as held back');
 
 /*
- * And what the gate does with it. These are the numbers the live coin
- * produced, against the limits that were actually set on the bot.
+ * The horizon is a setting because the honest answer depends on how long a
+ * position is held. A ninety-day cliff cannot reach somebody who closes in
+ * minutes, and is very much real supply to somebody holding for a year.
+ */
+const ninetyDay = summariseLocks(
+  [stream({ deposited: SUPPLY / 2n, end: LOCK_NOW + 100 * DAY_MS })],
+  SUPPLY,
+  LOCK_NOW,
+);
+assert.ok(lockedBeyond(ninetyDay.locked, 30 * DAY_MS, LOCK_NOW) > 49, 'discounted at a 30-day horizon');
+assert.ok(lockedBeyond(ninetyDay.locked, 90 * DAY_MS, LOCK_NOW) > 49, 'and at 90 days');
+assert.equal(lockedBeyond(ninetyDay.locked, YEAR_MS, LOCK_NOW), 0, 'but not at a year');
+
+// exactly on the line counts as locked, so "at least a year" means what it says
+const exactly = summariseLocks(
+  [stream({ deposited: SUPPLY / 2n, end: LOCK_NOW + YEAR_MS })],
+  SUPPLY,
+  LOCK_NOW,
+);
+assert.ok(lockedBeyond(exactly.locked, YEAR_MS, LOCK_NOW) > 49, 'a lock of exactly the horizon is locked');
+ok('the horizon moves the line, and the line includes itself');
+
+/*
+ * And what the gate does with it, on the numbers the live coin produced
+ * against the limits actually set on the bot.
  */
 const OPERATOR = {
   ...DEFAULT_SAFETY,
@@ -2740,8 +2787,7 @@ const lizard = {
   warnings: [],
   top10Pct: 63.62,
   lockerPct: 50.48,
-  lockedLongPct: 50.23,
-  lockedUntil: Date.UTC(2095, 7, 20),
+  lockedSupply: [{ pct: 50.23, unlockAt: Date.UTC(2095, 7, 20) }],
   launchDistPct: 11.05,
   launchDistWallets: 9,
   insiderPct: 0,
@@ -2756,45 +2802,63 @@ const lizard = {
   curveComplete: true,
 };
 
-const before = assessToken({ ...lizard, lockerPct: undefined, lockedLongPct: undefined }, OPERATOR);
-assert.ok(!before.safe, 'without the lock data it is refused');
-assert.match(before.reasons[0] ?? '', /63\.6% of supply/, 'on the raw 63.6%');
+const beforeLocks = assessToken({ ...lizard, lockerPct: undefined, lockedSupply: undefined }, OPERATOR);
+assert.ok(!beforeLocks.safe, 'without the lock data it is refused');
+assert.match(beforeLocks.reasons[0] ?? '', /63\.6% of supply/, 'on the raw 63.6%');
 
-const after2 = assessToken(lizard, OPERATOR);
-assert.ok(after2.safe, `with it the coin passes: ${after2.reasons.join(' ')}`);
+const withLocks = assessToken(lizard, OPERATOR);
+assert.ok(withLocks.safe, `with it the coin passes: ${withLocks.reasons.join(' ')}`);
 assert.ok(
-  after2.notes.some((n) => /50\.2% of supply is locked until 2095/.test(n)),
+  withLocks.notes.some((n) => /50\.2% of supply is locked until 2095/.test(n)),
   'and says why, rather than quietly softening the number',
 );
 assert.ok(
-  after2.notes.some((n) => /11\.1% went to 9 wallets at launch/.test(n)),
+  withLocks.notes.some((n) => /11\.1% went to 9 wallets at launch/.test(n)),
   'while naming the 11% the index scored at zero',
 );
 ok('the coin that started this passes, for stated reasons');
 
 /*
- * Fail closed. A lookup that did not answer must not hand out a discount —
- * a concentration limit that relaxes itself on a timeout reads exactly like
- * one that was satisfied.
+ * Fail closed. A lookup that did not answer must not hand out a discount — a
+ * concentration limit that relaxes itself on a timeout reads exactly like one
+ * that was satisfied.
  */
-for (const gap of [{ lockerPct: undefined }, { lockedLongPct: undefined }]) {
+for (const gap of [{ lockerPct: undefined }, { lockedSupply: undefined }]) {
   const v = assessToken({ ...lizard, ...gap }, OPERATOR);
   assert.ok(!v.safe, `half the lock evidence is not enough: ${JSON.stringify(gap)}`);
 }
 ok('a lock nobody could verify discounts nothing');
 
 /*
- * The other half. The launch distribution has to be able to refuse on its own,
- * or feature two is decoration — the index reported 0% for this coin.
+ * A near lock is not a discount at every setting the screen offers. Ninety-one
+ * days out is discounted at the shorter horizons and counts in full at a year.
  */
-const strict = assessToken(lizard, { ...OPERATOR, maxInsiderPct: 10 });
-assert.ok(!strict.safe, 'at a 10% limit the launch allocation refuses it');
+const nearLock = { ...lizard, lockedSupply: [{ pct: 50.23, unlockAt: Date.now() + 91 * DAY_MS }] };
+assert.ok(assessToken(nearLock, { ...OPERATOR, lockHorizonDays: 90 }).safe, 'discounted at 90 days');
+assert.ok(!assessToken(nearLock, { ...OPERATOR, lockHorizonDays: 365 }).safe, 'and not at a year');
+ok('the setting actually changes the verdict');
+
+/*
+ * The other half. The launch distribution has to be able to refuse on its own,
+ * or the second feature is decoration — the index reported 0% for this coin.
+ */
+const strictInsiders = assessToken(lizard, { ...OPERATOR, maxInsiderPct: 10 });
+assert.ok(!strictInsiders.safe, 'at a 10% limit the launch allocation refuses it');
 assert.match(
-  strict.reasons.join(' '),
+  strictInsiders.reasons.join(' '),
   /11\.1% of supply went to 9 wallets at launch/,
-  'naming what it found, not the index\'s zero',
+  'naming what it found, not the zero it was handed',
 );
 ok('an allocation bundled out through instant streams can refuse a coin by itself');
+
+// and it is reachable: a button cycling the three horizons, and a route to it
+const tradeSrc47 = fs.readFileSync('src/bot/handlers/trade.ts', 'utf8');
+assert.match(tradeSrc47, /const LOCK_STEPS = \[30, 90, 365\]/, 'the three horizons are the offered steps');
+assert.match(tradeSrc47, /'safety_lock'/, 'on a button');
+assert.match(fs.readFileSync('src/bot/index.ts', 'utf8'), /case 'safety_lock':/, 'that is routed');
+db.wipe();
+assert.equal(db.settings().copySafety.lockHorizonDays, 365, 'shipping at a year, the strict end');
+ok('the horizon is a button, and it starts where it is safest');
 
 fs.rmSync(DATA, { recursive: true, force: true });
 console.log(`\n✅ ${passed} assertions passed\n`);

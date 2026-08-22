@@ -1,4 +1,5 @@
 import type { TokenInfo } from './tokeninfo.js';
+import { lockedBeyond, furthestUnlock, DEFAULT_LOCK_HORIZON_DAYS, DAY_MS } from './locks.js';
 
 /**
  * The check that stands between a followed wallet and your money.
@@ -16,6 +17,20 @@ import type { TokenInfo } from './tokeninfo.js';
 export interface SafetyLimits {
   /** Refuse when the top ten wallets hold more than this share of supply. */
   maxTop10Pct: number;
+  /**
+   * How long supply must be locked away before it stops counting as
+   * concentration, in days.
+   *
+   * A vesting vault is one address holding a large balance, which is exactly
+   * what a whale is, and every index counts them the same. The difference is
+   * only the date — and the question a concentration limit is really asking is
+   * whether this can land on you while you are in the position.
+   *
+   * So the right number follows how long positions are held, not how long the
+   * contract runs. Somebody closing in minutes can discount a ninety-day
+   * cliff; somebody holding for months cannot. Shorter is more permissive.
+   */
+  lockHorizonDays: number;
   /** Refuse when the launch wallet still holds more than this share. */
   maxDevPct: number;
   /** Refuse a mint that can still be frozen or inflated. */
@@ -110,6 +125,7 @@ export interface SafetyLimits {
 
 export const DEFAULT_SAFETY: SafetyLimits = {
   maxTop10Pct: 20,
+  lockHorizonDays: DEFAULT_LOCK_HORIZON_DAYS,
   maxDevPct: 1,
   requireRevokedAuthorities: true,
   minLiquidityUsd: 3_000,
@@ -185,7 +201,7 @@ export function assessToken(info: TokenInfo, limits: SafetyLimits = DEFAULT_SAFE
     }
   }
 
-  const discount = lockDiscount(info);
+  const discount = lockDiscount(info, limits.lockHorizonDays);
   const concentration = info.top10Pct === undefined ? undefined : Math.max(0, info.top10Pct - discount);
 
   if (concentration === undefined) {
@@ -334,9 +350,12 @@ export function assessToken(info: TokenInfo, limits: SafetyLimits = DEFAULT_SAFE
   }
   if (discount > 0) {
     notes.push(
-      `${discount.toFixed(1)}% of supply is locked${
-        info.lockedUntil ? ` until ${new Date(info.lockedUntil).getUTCFullYear()}` : ''
-      } and was not counted as concentration.`,
+      (() => {
+        const until = furthestUnlock(info.lockedSupply ?? []);
+        return `${discount.toFixed(1)}% of supply is locked${
+          until ? ` until ${new Date(until).getUTCFullYear()}` : ''
+        } and was not counted as concentration.`;
+      })(),
     );
   }
   if (info.pairCreatedAt && Date.now() - info.pairCreatedAt < 3_600_000) {
@@ -344,6 +363,15 @@ export function assessToken(info: TokenInfo, limits: SafetyLimits = DEFAULT_SAFE
   }
 
   return { safe: reasons.length === 0, reasons, notes };
+}
+
+/** Days as something readable on a button. */
+export function formatHorizon(days: number): string {
+  if (days >= 365 && days % 365 === 0) {
+    const years = days / 365;
+    return years === 1 ? '1 year' : `${years} years`;
+  }
+  return `${days} days`;
 }
 
 /**
@@ -359,10 +387,11 @@ export function assessToken(info: TokenInfo, limits: SafetyLimits = DEFAULT_SAFE
  * itself when a lookup fails is worse than no check — it reads as a coin that
  * passed rather than one nobody managed to look at.
  */
-function lockDiscount(info: TokenInfo): number {
+function lockDiscount(info: TokenInfo, horizonDays: number): number {
   const eligible = info.lockerPct;
-  const verified = info.lockedLongPct;
-  if (eligible === undefined || verified === undefined) return 0;
+  if (eligible === undefined || info.lockedSupply === undefined) return 0;
+
+  const verified = lockedBeyond(info.lockedSupply, Math.max(0, horizonDays) * DAY_MS);
   return Math.max(0, Math.min(eligible, verified));
 }
 
@@ -395,8 +424,8 @@ function isOnCurve(info: TokenInfo): boolean {
 /** One line per limit, for the screen that configures them. */
 export function describeLimits(limits: SafetyLimits): string[] {
   return [
-    `Top 10 holders: refuse above <b>${limits.maxTop10Pct}%</b>, ` +
-      'not counting supply locked in a vesting contract for over a year',
+    `Top 10 holders: refuse above <b>${limits.maxTop10Pct}%</b>`,
+    `Locked supply: ignore what cannot unlock for <b>${formatHorizon(limits.lockHorizonDays)}</b>`,
     `Launch wallet: refuse above <b>${limits.maxDevPct}%</b>`,
     `Mint and freeze authority: <b>${limits.requireRevokedAuthorities ? 'must be revoked' : 'not checked'}</b>`,
     limits.minLiquidityUsd > 0

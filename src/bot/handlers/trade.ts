@@ -43,7 +43,7 @@ import {
 import { render } from './core.js';
 import { newRuleId, entryPriceSol, describe as describeRule } from '../../services/watcher.js';
 import { priceInSol } from '../../services/price.js';
-import { describeLimits, formatAge } from '../../services/safety.js';
+import { describeLimits, formatAge, formatHorizon } from '../../services/safety.js';
 import type { TradeRequest } from '../../types.js';
 
 /**
@@ -1414,6 +1414,13 @@ export function nextStep(steps: number[], current: number | undefined): number |
 // ── the limits a copied buy has to clear ──────────────────────────────────────
 
 const TOP10_STEPS = [10, 20, 30, 40, 60, 100];
+/*
+ * How far away an unlock has to be before locked supply stops counting as
+ * concentration. Shorter is more permissive, and the right value follows how
+ * long positions are held rather than how long the contract runs — a copy
+ * closed in minutes is not reached by a ninety-day cliff.
+ */
+const LOCK_STEPS = [30, 90, 365];
 const DEV_STEPS = [0, 1, 2, 5, 10, 100];
 const LIQ_STEPS = [0, 1_000, 3_000, 10_000, 25_000];
 /*
@@ -1469,6 +1476,8 @@ export async function showCopySafety(ctx: Context): Promise<void> {
     ].join('\n'),
     new InlineKeyboard()
       .text(`👥 Top 10 max ${limits.maxTop10Pct}%`, 'safety_top10').primary()
+      .row()
+      .text(`🔐 Ignore supply locked ${formatHorizon(limits.lockHorizonDays)}+`, 'safety_lock').primary()
       .row()
       .text(`👤 Dev max ${limits.maxDevPct}%`, 'safety_dev').primary()
       .row()
@@ -1551,6 +1560,7 @@ export async function cycleSafety(ctx: Context, which: string): Promise<void> {
   else if (which === 'insider') limits.maxInsiderPct = cycleStep(INSIDER_STEPS, limits.maxInsiderPct);
   else if (which === 'factory') limits.maxDevMints = cycleStep(DEVMINT_STEPS, limits.maxDevMints);
   else if (which === 'traders') limits.minTraders5m = cycleStep(TRADERS_STEPS, limits.minTraders5m);
+  else if (which === 'lock') limits.lockHorizonDays = cycleStep(LOCK_STEPS, limits.lockHorizonDays);
 
   db.updateSettings({ copySafety: limits });
   await showCopySafety(ctx);

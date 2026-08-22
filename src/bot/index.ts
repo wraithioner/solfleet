@@ -524,6 +524,8 @@ async function routeCallback(ctx: Context, action: string, args: string[]): Prom
 
     case 'safety_top10':
       return T.cycleSafety(ctx, 'top10');
+    case 'safety_lock':
+      return T.cycleSafety(ctx, 'lock');
     case 'safety_dev':
       return T.cycleSafety(ctx, 'dev');
     case 'safety_auth':
