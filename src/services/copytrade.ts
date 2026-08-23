@@ -766,6 +766,35 @@ export function roomUnderCap(mint: string, maxSolPerMint: number, holding: boole
 }
 
 /**
+ * Where a copied entry's seconds actually go.
+ *
+ * Latency here is the whole game and none of it was measured, which meant
+ * every proposal to make it faster was an argument about guesses. Measured off
+ * a live token the two costs turned out to be the screen and the transaction
+ * build, at roughly 390ms each, against 60ms to actually send — so the paid
+ * fast-send products everyone reaches for first were optimising 7% of it.
+ *
+ * Logged rather than sent to Telegram. It is a number for tuning the bot, not
+ * news about a trade, and the operator has enough messages.
+ */
+function stopwatch(): { mark: (stage: string) => void; report: (what: string) => void } {
+  const started = Date.now();
+  let last = started;
+  const stages: string[] = [];
+
+  return {
+    mark(stage) {
+      const now = Date.now();
+      stages.push(`${stage} ${now - last}ms`);
+      last = now;
+    },
+    report(what) {
+      log.info(`⏱ ${what} in ${Date.now() - started}ms — ${stages.join(' · ')}`);
+    },
+  };
+}
+
+/**
  * Which trader has already been told its copy size cannot fit under the cap.
  *
  * Keyed by target, valued by the two numbers that were wrong, so raising the
@@ -888,6 +917,7 @@ async function mirrorBuyLocked(
    * An unhandled rejection ends the process on this runtime, which would turn
    * a token that could not be read into the whole bot going down.
    */
+  const clock = stopwatch();
   const screening = screenToken(move.mint).catch(
     (err: unknown): { verdict: SafetyVerdict; info?: TokenInfo } => ({
       verdict: {
@@ -901,6 +931,7 @@ async function mirrorBuyLocked(
   const heldBefore = await getMintBalances(wallets.map((w) => w.address), move.mint).catch(
     () => undefined,
   );
+  clock.mark('balances');
   const holding = heldBefore !== undefined && [...heldBefore.values()].some((v) => v > 0n);
   const openSol = openExposureSol(move.mint, holding);
 
@@ -1007,7 +1038,9 @@ async function mirrorBuyLocked(
    * and re-reading it every time turns one bad token into a stream of alerts.
    */
   const { verdict, info } = await screening;
+  clock.mark('screen');
   if (!verdict.safe) {
+    clock.report(`refused ${move.mint}`);
     /*
      * Recorded as refused, not as copied. Those were once the same list, which
      * meant a coin the gate had rejected — nothing bought, no money spent —
@@ -1070,6 +1103,8 @@ async function mirrorBuyLocked(
       priorityFeeSol: settings.priorityFeeSol,
       pool: 'auto',
     });
+    clock.mark('build+sign+send');
+    clock.report(`copied ${target.label} into ${move.mint}`);
 
     const fills = summary.results.filter((r) => r.ok && r.signature).length;
 
