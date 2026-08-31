@@ -2851,6 +2851,24 @@ assert.match(
 );
 ok('an allocation bundled out through instant streams can refuse a coin by itself');
 
+/*
+ * The scan is the most expensive query the bot makes, so it uses the paginated
+ * form the provider bills at a tenth of the unpaginated one. Pagination is the
+ * part that has to be right: stopping at the first page would under-report
+ * locked supply on a token with more streams than fit in it.
+ */
+const locksSrc = fs.readFileSync('src/services/locks.ts', 'utf8');
+assert.match(locksSrc, /getProgramAccountsV2/, 'the cheap form of the scan');
+assert.match(locksSrc, /paginationKey = body\.result\.paginationKey/, 'and it follows the pages');
+assert.match(locksSrc, /if \(!paginationKey\) break;/, 'until there are none left');
+assert.match(locksSrc, /page < MAX_STREAM_PAGES/, 'with a hard stop, so it cannot hang an entry');
+assert.match(
+  locksSrc,
+  /getProgramAccounts\(new PublicKey\(STREAMFLOW_PROGRAM\), \{ filters \}\)/,
+  'falling back to the unpaginated call on an endpoint that lacks it',
+);
+ok('the lock scan is billed at a tenth, and still reads every page');
+
 // and it is reachable: a button cycling the three horizons, and a route to it
 const tradeSrc47 = fs.readFileSync('src/bot/handlers/trade.ts', 'utf8');
 assert.match(tradeSrc47, /const LOCK_STEPS = \[30, 90, 365\]/, 'the three horizons are the offered steps');

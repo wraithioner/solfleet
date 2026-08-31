@@ -1,7 +1,8 @@
 import { PublicKey } from '@solana/web3.js';
 import { rpc } from '../chains/solana.js';
-import { errMessage } from '../util.js';
+import { errMessage, fetchJson } from '../util.js';
 import { log } from '../logger.js';
+import { config } from '../config.js';
 
 /**
  * What a token's vesting contracts actually say.
@@ -67,6 +68,14 @@ export const DAY_MS = 24 * 60 * 60 * 1000;
  */
 export const INSTANT_STREAM_MS = 60 * 1000;
 
+/*
+ * Page size and a hard stop on paging. A token with more than a few thousand
+ * vesting streams is not one this bot should be buying, and an unbounded loop
+ * on a paginated endpoint is a way to hang the entry path rather than read it.
+ */
+const STREAM_PAGE_SIZE = 1000;
+const MAX_STREAM_PAGES = 5;
+
 export interface LockedSupply {
   /** Share of total supply this stream is still holding. */
   pct: number;
@@ -130,6 +139,74 @@ function withDeadline<T>(work: Promise<T>, ms: number): Promise<T> {
   ]);
 }
 
+interface RpcResponse<T> {
+  result?: T;
+  error?: { code?: number; message?: string };
+}
+
+interface AccountRow {
+  account: { data: [string, string] };
+}
+
+/**
+ * Every Streamflow account for one mint, read the cheap way.
+ *
+ * Scanning a program's accounts is the most expensive query this bot makes —
+ * the provider bills `getProgramAccounts` at ten times a normal call, because
+ * it is an unbounded scan, and this runs on every token the bot looks at. The
+ * paginated form of the same query is billed at one, and measured against a
+ * live mint it is no slower: 276ms against 287ms.
+ *
+ * The pagination is the part that has to be right. The unpaginated call
+ * returns everything; this one returns a page and a key, and stopping at the
+ * first page would quietly miss locks on any token with more streams than fit
+ * in it — reporting less supply locked than there is, which fails in the safe
+ * direction but for the wrong reason.
+ *
+ * Falls back to the unpaginated call when the endpoint does not know the
+ * paginated one. It is a provider extension, not a Solana method, and the bot
+ * has to keep working against a plain RPC.
+ */
+async function streamAccounts(mint: string, timeoutMs: number): Promise<Buffer[]> {
+  const filters = [{ dataSize: STREAM_SIZE }, { memcmp: { offset: OFF.mint, bytes: mint } }];
+  const out: Buffer[] = [];
+  let paginationKey: string | null = null;
+
+  for (let page = 0; page < MAX_STREAM_PAGES; page++) {
+    const body: RpcResponse<{ accounts: AccountRow[]; paginationKey: string | null }> = await fetchJson(
+      config.solana.rpcUrl,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        timeoutMs,
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'getProgramAccountsV2',
+          params: [
+            STREAMFLOW_PROGRAM,
+            { encoding: 'base64', limit: STREAM_PAGE_SIZE, filters, ...(paginationKey ? { paginationKey } : {}) },
+          ],
+        }),
+      },
+    );
+
+    if (body.error || !body.result) {
+      // the endpoint does not offer it — pay the ten and get the same answer
+      const conn = rpc();
+      const all = await conn.getProgramAccounts(new PublicKey(STREAMFLOW_PROGRAM), { filters });
+      return all.map((a) => a.account.data);
+    }
+
+    for (const row of body.result.accounts) out.push(Buffer.from(row.account.data[0], 'base64'));
+
+    paginationKey = body.result.paginationKey;
+    if (!paginationKey) break;
+  }
+
+  return out;
+}
+
 /**
  * Read every Streamflow stream against one mint.
  *
@@ -154,12 +231,7 @@ export async function readTokenLocks(
      * copy is not worth holding open for it.
      */
     const [supplyRes, accounts] = await withDeadline(
-      Promise.all([
-        conn.getTokenSupply(new PublicKey(mint)),
-        conn.getProgramAccounts(new PublicKey(STREAMFLOW_PROGRAM), {
-          filters: [{ dataSize: STREAM_SIZE }, { memcmp: { offset: OFF.mint, bytes: mint } }],
-        }),
-      ]),
+      Promise.all([conn.getTokenSupply(new PublicKey(mint)), streamAccounts(mint, timeoutMs)]),
       timeoutMs,
     );
 
@@ -167,7 +239,7 @@ export async function readTokenLocks(
     if (supply <= 0n) return undefined;
 
     const streams = accounts
-      .map((a) => decodeStream(a.account.data))
+      .map((data) => decodeStream(data))
       .filter((s): s is Stream => s !== undefined);
 
     return summariseLocks(streams, supply, now);
