@@ -59,8 +59,8 @@ at all. Everyone else gets silence, not an error.
   (-30/50/70%), armed automatically on every position the wallet opens for you
   and measured from what *you* paid. This is the exit that does not depend on
   their timing: following someone out means selling seconds after they did, at
-  whatever the price has become by then. The take-profit sells half and lets the
-  rest run; the stop exits completely
+  whatever the price has become by then. Take-profit and stop-loss rules both
+  exit 100% of the position
 - **A token arriving is not a purchase.** Anyone can send tokens to anyone, and
   dusting a wallet other people copy is a way of making those people buy
   something worthless — the recipient's balance rises exactly as it would after
