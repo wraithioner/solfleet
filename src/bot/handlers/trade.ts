@@ -995,8 +995,8 @@ export async function addAutoRule(
     symbol: info?.symbol,
     kind,
     triggerPct,
-    // A stop-loss that sells half is a half-measure; exits default to the whole
-    // position, and take-profit to half so the rest can keep running.
+    // Stop-loss and take-profit rules default to a complete exit so the behavior
+    // matches the 100% position size shown to the operator.
     sellPercent: 100,
     peakPriceSol: peak,
     enabled: true,
@@ -1651,7 +1651,7 @@ export async function showRulePresets(ctx: Context, mint: string, what: string):
   const menus: Record<string, { title: string; blurb: string; presets: number[]; icon: string }> = {
     tp: {
       title: '🎯 Take profit',
-      blurb: 'Sells half your position when it is up this much from your entry, letting the rest run.',
+      blurb: 'Sells 100% of your position when it is up this much from your entry.',
       presets: TP_PRESETS,
       icon: '+',
     },
