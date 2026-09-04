@@ -74,9 +74,24 @@ at all. Everyone else gets silence, not an error.
 - **Every copied buy is screened first.** Copy trading is the only buy in this
   bot with no human in the loop — every other one is a deliberate tap on a
   screen already listing the warnings. Before money moves, a copied token is
-  refused if the top 10 hold over 20% of supply, the launch wallet holds over
-  1%, the mint or freeze authority is still live, or the pool is under $3,000.
-  All four are adjustable under **Copy trading → 🛡 Safety**
+  checked against every limit below, each one adjustable under
+  **Copy trading → 🛡 Safety** (defaults shown):
+  - top 10 wallets hold over **20%** of supply — supply locked for at least
+    **365 days** (also adjustable) isn't counted as concentration, since a
+    vesting vault is a whale only until it can actually sell
+  - the launch wallet still holds over **1%**
+  - the mint or freeze authority is still live, or a Token-2022 mint carries a
+    transfer hook, transfer fee, or permanent delegate
+  - wallets the index reads as one person (an allocation bundled out at
+    creation) hold over **20%**
+  - the developer has minted more than **20** tokens, which reads as a
+    factory rather than a launch, or has rugged a previous token before
+  - the pool has under **$3,000** of liquidity, once it has a pool at all
+  - fewer than **5** distinct wallets traded it in the last five minutes
+  - under **$1,000** of volume in the last hour
+  - the first market is older than **72 hours**
+  - the followed wallets already hold the coin, or copy trading has already
+    put **0.5 SOL** into this mint across every follower combined
 - **These defaults are strict on purpose, and strict has a cost.** Sampled
   against 14 tokens people were actively trading: 2 passed. Every rejection but
   one was concentration — top 10 at 21%, 25%, 29%, 42%, 51%, 78%. Raising the
