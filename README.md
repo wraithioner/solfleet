@@ -586,3 +586,15 @@ rather than becoming a wave of failed transactions on your side.
 
 Quoting is done independently by reading the bonding curve directly, so the price
 on screen is the real on-chain price rather than whatever an API reports.
+
+## License
+
+This project is released under a custom [Profit-Sharing License](LICENSE.md).
+Commercial use is permitted, but requires paying 1% of net profits generated
+from the Software to the creator, in SOL, to:
+
+```
+FQ19UgyuQtwq8RE6FCYrJ8BxUTY4B4DkggngxcUB493S
+```
+
+See [LICENSE.md](LICENSE.md) for full terms.
