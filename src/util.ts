@@ -79,12 +79,18 @@ export function escapeHtml(s: string): string {
 }
 
 export function errMessage(err: unknown): string {
-  if (err instanceof Error) return err.message;
-  if (typeof err === 'string') return err;
   try {
-    return JSON.stringify(err);
+    if (err instanceof Error) return String(err.message);
+    if (typeof err === 'string') return err;
+    const json = JSON.stringify(err);
+    if (json !== undefined) return json;
   } catch {
+    // Thrown values can be circular or expose a failing serialization hook.
+  }
+  try {
     return String(err);
+  } catch {
+    return 'Unknown error';
   }
 }
 

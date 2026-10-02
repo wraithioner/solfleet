@@ -265,6 +265,18 @@ ok('non-addresses rejected (including invalid base58 of the right length)');
 
 console.log('\n[6] Formatting + concurrency');
 const util = await import('../src/util.js');
+const circularError: Record<string, unknown> = {};
+circularError.self = circularError;
+const unreadableError = Object.assign(Object.create(null), { toJSON() { throw new Error('serialization failed'); } });
+for (const thrown of [undefined, Symbol('failure'), function failure() {}, null, 1n, circularError, unreadableError]) {
+  const message = util.errMessage(thrown);
+  assert.equal(typeof message, 'string');
+  assert.doesNotThrow(() => util.escapeHtml(message));
+}
+assert.equal(util.errMessage(new Error('RPC failed')), 'RPC failed');
+assert.equal(util.errMessage('<failure>'), '<failure>');
+assert.equal(util.errMessage(unreadableError), 'Unknown error');
+ok('formatting unusual thrown values cannot cause another error while reporting a failure');
 
 assert.equal(util.shortAddr(mint), 'DezX…B263');
 assert.equal(util.fmtUsd(1234.5), '$1,234.50');
