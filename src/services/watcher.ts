@@ -1,15 +1,16 @@
 import crypto from 'node:crypto';
 import { db, type AutoRule } from '../store/db.js';
 import { isUnlocked } from '../store/vault.js';
-import { selectWallets } from '../store/wallets.js';
+import { selectWallets, allWallets } from '../store/wallets.js';
 import { batchPumpTrade, measureTokensGained, measureTokensSold, isFreshEntry } from '../trade/engine.js';
-import { getMintBalances } from '../chains/solana.js';
+import { getMintBalances, getMintDecimals } from '../chains/solana.js';
 import { pricesInSol } from './price.js';
 import { errMessage, escapeHtml as h } from '../util.js';
 import { pollCopyTargets, syncSubscriptions, stopSubscriptions } from './copytrade.js';
 import { buildPortfolio } from './portfolio.js';
-import { exitResult, formatExit } from './pnl.js';
+import { entryPrice, exitResult, formatExit } from './pnl.js';
 import { log } from '../logger.js';
+import { assertExecutionCurrent, withExecution } from './execution.js';
 
 /**
  * The background loop behind take-profit, stop-loss and trailing stops.
@@ -34,6 +35,8 @@ export type Notifier = (text: string) => Promise<void>;
 export interface WatcherTradeServices {
   selectWallets: typeof selectWallets;
   getMintBalances: typeof getMintBalances;
+  allWallets?: typeof allWallets;
+  getMintDecimals?: typeof getMintDecimals;
   batchPumpTrade: typeof batchPumpTrade;
   measureTokensGained: typeof measureTokensGained;
   measureTokensSold: typeof measureTokensSold;
@@ -42,6 +45,8 @@ export interface WatcherTradeServices {
 const tradeServices: WatcherTradeServices = {
   selectWallets,
   getMintBalances,
+  allWallets,
+  getMintDecimals,
   batchPumpTrade,
   measureTokensGained,
   measureTokensSold,
@@ -71,22 +76,7 @@ export function newRuleId(): string {
  * and rules built on it would fire at arbitrary prices.
  */
 export function entryPriceSol(mint: string): number | null {
-  const pos = db.position(mint);
-  if (!pos) return null;
-
-  /*
-   * The position being held, not every position this coin has ever been.
-   *
-   * The lifetime totals never come back down, so a coin sold and bought again
-   * reports a price blended across two unrelated trades — and a stop-loss
-   * measuring against it fires at a number from a position that is closed.
-   * Records written before the basis existed fall back to the lifetime ratio,
-   * which is what they were computed from anyway.
-   */
-  const sol = pos.basisSol ?? pos.investedSol;
-  const tokens = pos.basisTokens ?? pos.tokensBought;
-  if (sol <= 0 || tokens <= 0) return null;
-  return sol / tokens;
+  return entryPrice(db.position(mint));
 }
 
 /** Has this rule's condition been met? Pure, so the thresholds are testable. */
@@ -292,6 +282,7 @@ function priorityFeeFor(rule: AutoRule, configured: number, ceiling: number): nu
  * believes it has one.
  */
 async function rearm(rule: AutoRule, reason: string, notify: Notifier): Promise<void> {
+  if (!db.raw().rules.some((r) => r.id === rule.id && r.enabled)) return;
   const attempts = (rule.failedAttempts ?? 0) + 1;
   // the symbol comes from whoever launched the coin, and goes into HTML
   const label = h(rule.symbol ?? rule.mint.slice(0, 8));
@@ -326,6 +317,32 @@ export async function fire(
   notify: Notifier,
   services: WatcherTradeServices = tradeServices,
 ): Promise<void> {
+  const intent = ruleIntent(rule);
+  const authorized = () => db.raw().rules.some((r) => r.id === rule.id && r.enabled && ruleIntent(r) === intent);
+  return withExecution(async () => {
+    if (!authorized()) return;
+    return withExecution(() => fireLocked(rule, price, notify, services), authorized);
+  });
+}
+
+function ruleIntent(rule: AutoRule): string {
+  return JSON.stringify({
+    mint: rule.mint, kind: rule.kind, triggerPct: rule.triggerPct,
+    triggerPriceSol: rule.triggerPriceSol, sellPercent: rule.sellPercent, buySol: rule.buySol,
+  });
+}
+
+async function fireLocked(
+  rule: AutoRule,
+  price: number,
+  notify: Notifier,
+  services: WatcherTradeServices,
+): Promise<void> {
+  // A tick holds a snapshot across several network calls. Clearing automation
+  // during those reads must revoke that snapshot's authority to trade.
+  const current = db.raw().rules.find((r) => r.id === rule.id);
+  if (!current || !current.enabled || current.firedAt) return;
+  rule = current;
   // Marked before the attempt, never after: a crash between here and the sell
   // must not leave a rule that fires again on the next tick. A batch that comes
   // back having landed nothing is a different thing entirely, and `rearm` puts
@@ -363,7 +380,12 @@ export async function fire(
     if (rule.kind === 'limit_buy') {
       // read first, so the fill can be measured and the position gets a basis
       const addresses = wallets.map((w) => w.address);
-      const heldBefore = await services.getMintBalances(addresses, rule.mint).catch(() => undefined);
+      const accountAddresses = [...new Set([...addresses, ...(services.allWallets?.() ?? []).map((w) => w.address)])];
+      const heldBefore = await services.getMintBalances(accountAddresses, rule.mint).catch(() => undefined);
+      const decimals = await services.getMintDecimals?.(rule.mint).catch(() => undefined);
+
+      assertExecutionCurrent();
+      if (!db.raw().rules.some((r) => r.id === rule.id && r.enabled)) return;
 
       tradeStarted = true;
       const summary = await services.batchPumpTrade(wallets, {
@@ -376,7 +398,10 @@ export async function fire(
         pool: 'auto',
       });
 
-      const fills = summary.results.filter((r) => r.ok && r.signature).length;
+      const filled = summary.results.filter((r) => r.ok && r.signature);
+      const fills = filled.length;
+      const uncertain = summary.results.some((r) => r.confirmationUnknown);
+      if (uncertain) db.invalidateBasis(rule.mint);
       confirmedFills = fills;
 
       // an order that bought nothing has not been filled, and retiring it here
@@ -390,7 +415,7 @@ export async function fire(
         return;
       }
 
-      const gained = await services.measureTokensGained(addresses, rule.mint, heldBefore, undefined);
+      const gained = decimals === undefined ? 0 : await services.measureTokensGained(filled.map((r) => r.address), rule.mint, heldBefore, decimals);
       db.recordBuy(rule.mint, {
         solSpent: (rule.buySol ?? 0) * fills,
         fills,
@@ -398,6 +423,8 @@ export async function fire(
         symbol: rule.symbol,
         costSol: summary.solSpent,
         freshEntry: isFreshEntry(heldBefore),
+        decimals,
+        quantityComplete: !uncertain,
       });
       if (rule.failedAttempts) db.updateRule(rule.id, { failedAttempts: 0 });
       db.appendTradeLog({
@@ -418,7 +445,7 @@ export async function fire(
           `Bought ${rule.buySol} SOL × ${wallets.length} wallets`,
           `✅ ${summary.succeeded}   ❌ ${summary.failed}`,
           ...(summary.results.some((r) => r.confirmationUnknown)
-            ? ['Some trades may still land. Check the wallets before placing another order.']
+            ? ['Some trades may still land. Entry basis and proceeds are unknown; check the wallets before another order.']
             : []),
         ].join('\n'),
       ).catch(() => {});
@@ -426,6 +453,8 @@ export async function fire(
     }
 
     const holders = await services.getMintBalances(wallets.map((w) => w.address), rule.mint);
+    assertExecutionCurrent();
+    if (!db.raw().rules.some((r) => r.id === rule.id && r.enabled)) return;
     if (holders.size === 0) {
       await notify(`⚠️ <b>${label}</b>: ${describe(rule)} triggered, but no wallet holds it any more.`).catch(() => {});
       return;
@@ -444,7 +473,10 @@ export async function fire(
     // a rule that fired returned SOL to the wallets; without this the position
     // keeps its whole cost and none of its proceeds, and a stop loss that saved
     // most of the money reports as having lost all of it
-    const fills = summary.results.filter((r) => r.ok && r.signature).length;
+    const filled = summary.results.filter((r) => r.ok && r.signature);
+    const fills = filled.length;
+    const uncertain = summary.results.some((r) => r.confirmationUnknown);
+    if (uncertain) db.invalidateBasis(rule.mint);
     confirmedFills = fills;
 
     // nothing landed, so the protection did not run — put it back
@@ -462,16 +494,17 @@ export async function fire(
      * changes the position the profit is measured against.
      */
     const position = db.position(rule.mint);
+    const decimals = position?.decimals ?? await services.getMintDecimals?.(rule.mint).catch(() => undefined);
     const tokensSold = await services.measureTokensSold(
-      wallets.map((w) => w.address),
+      filled.map((r) => r.address),
       rule.mint,
       holders,
-      position?.decimals,
+      decimals,
     );
     const outcome =
       summary.solReceived !== undefined ? exitResult(position, tokensSold, summary.solReceived) : null;
-    if (summary.solReceived !== undefined && fills > 0) {
-      db.recordSell(rule.mint, summary.solReceived, fills);
+    if (fills > 0) {
+      db.recordSell(rule.mint, summary.solReceived ?? 0, fills, uncertain ? undefined : tokensSold || undefined);
     }
 
     if (rule.failedAttempts) db.updateRule(rule.id, { failedAttempts: 0 });
@@ -548,7 +581,18 @@ export async function runDueDca(
   notify: Notifier,
   services: WatcherTradeServices = tradeServices,
 ): Promise<void> {
+  return withExecution(() => runDueDcaLocked(notify, services));
+}
+
+async function runDueDcaLocked(
+  notify: Notifier,
+  services: WatcherTradeServices,
+): Promise<void> {
   for (const plan of db.dueDcaPlans()) {
+    if (!db.dcaPlans().some((p) => p.id === plan.id && p.enabled)) continue;
+    const intent = { mint: plan.mint, buySol: plan.buySol, intervalMinutes: plan.intervalMinutes, roundsTotal: plan.roundsTotal };
+    const authorized = () => db.dcaPlans().some((p) => p.id === plan.id && p.enabled &&
+      p.mint === intent.mint && p.buySol === intent.buySol && p.intervalMinutes === intent.intervalMinutes && p.roundsTotal === intent.roundsTotal);
     const wallets = services.selectWallets();
     const settings = db.settings();
     // The store mutates plan in place, so keep the previous count by value.
@@ -573,10 +617,15 @@ export async function runDueDca(
 
     try {
       const addresses = wallets.map((w) => w.address);
-      const heldBefore = await services.getMintBalances(addresses, plan.mint).catch(() => undefined);
+      const accountAddresses = [...new Set([...addresses, ...(services.allWallets?.() ?? []).map((w) => w.address)])];
+      const heldBefore = await services.getMintBalances(accountAddresses, plan.mint).catch(() => undefined);
+      const decimals = await services.getMintDecimals?.(plan.mint).catch(() => undefined);
+
+      assertExecutionCurrent();
+      if (!db.dcaPlans().some((p) => p.id === plan.id && p.enabled)) continue;
 
       tradeStarted = true;
-      const summary = await services.batchPumpTrade(wallets, {
+      const summary = await withExecution(() => services.batchPumpTrade(wallets, {
         action: 'buy',
         mint: plan.mint,
         amount: plan.buySol,
@@ -584,12 +633,16 @@ export async function runDueDca(
         slippagePercent: settings.slippagePercent,
         priorityFeeSol: settings.priorityFeeSol,
         pool: 'auto',
-      });
+      }), authorized);
 
-      const fills = summary.results.filter((r) => r.ok && r.signature).length;
+      const filled = summary.results.filter((r) => r.ok && r.signature);
+      const fills = filled.length;
       confirmedFills = fills;
       const confirmationUnknown = summary.results.some((r) => r.confirmationUnknown);
-      if (confirmationUnknown) db.updateDcaPlan(plan.id, { enabled: false });
+      if (confirmationUnknown) {
+        db.updateDcaPlan(plan.id, { enabled: false });
+        db.invalidateBasis(plan.mint);
+      }
 
       if (fills === 0) {
         if (confirmationUnknown) {
@@ -610,7 +663,7 @@ export async function runDueDca(
         continue;
       }
 
-      const gained = await services.measureTokensGained(addresses, plan.mint, heldBefore, undefined);
+      const gained = decimals === undefined ? 0 : await services.measureTokensGained(filled.map((r) => r.address), plan.mint, heldBefore, decimals);
       db.recordBuy(plan.mint, {
         solSpent: plan.buySol * fills,
         fills,
@@ -618,6 +671,8 @@ export async function runDueDca(
         symbol: plan.symbol,
         costSol: summary.solSpent,
         freshEntry: isFreshEntry(heldBefore),
+        decimals,
+        quantityComplete: !confirmationUnknown,
       });
       db.appendTradeLog({
         at: Date.now(),
@@ -636,7 +691,7 @@ export async function runDueDca(
           `Bought ${plan.buySol} SOL × ${wallets.length} wallets`,
           `✅ ${summary.succeeded}   ❌ ${summary.failed}`,
           confirmationUnknown
-            ? '\n<i>Some trades may still land. The plan is paused; check the wallets before resuming it.</i>'
+            ? '\n<i>Some trades may still land. Entry basis is unknown and the plan is paused; check the wallets before resuming it.</i>'
             : done ? '\n<i>Plan complete.</i>' : `\n<i>Next round in ${plan.intervalMinutes} minutes.</i>`,
         ].join('\n'),
       ).catch(() => {});

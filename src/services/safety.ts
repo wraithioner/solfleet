@@ -1,5 +1,5 @@
 import type { TokenInfo } from './tokeninfo.js';
-import { lockedBeyond, furthestUnlock, DEFAULT_LOCK_HORIZON_DAYS, DAY_MS } from './locks.js';
+import { DEFAULT_LOCK_HORIZON_DAYS } from './locks.js';
 
 /**
  * The check that stands between a followed wallet and your money.
@@ -17,19 +17,7 @@ import { lockedBeyond, furthestUnlock, DEFAULT_LOCK_HORIZON_DAYS, DAY_MS } from 
 export interface SafetyLimits {
   /** Refuse when the top ten wallets hold more than this share of supply. */
   maxTop10Pct: number;
-  /**
-   * How long supply must be locked away before it stops counting as
-   * concentration, in days.
-   *
-   * A vesting vault is one address holding a large balance, which is exactly
-   * what a whale is, and every index counts them the same. The difference is
-   * only the date — and the question a concentration limit is really asking is
-   * whether this can land on you while you are in the position.
-   *
-   * So the right number follows how long positions are held, not how long the
-   * contract runs. Somebody closing in minutes can discount a ninety-day
-   * cliff; somebody holding for months cannot. Shorter is more permissive.
-   */
+  /** Legacy display setting; vesting never reduces holder concentration. */
   lockHorizonDays: number;
   /** Refuse when the launch wallet still holds more than this share. */
   maxDevPct: number;
@@ -170,6 +158,38 @@ export function assessToken(info: TokenInfo, limits: SafetyLimits = DEFAULT_SAFE
   const reasons: string[] = [];
   const notes: string[] = [];
 
+  for (const key of Object.keys(DEFAULT_SAFETY)) {
+    const value = limits[key as keyof SafetyLimits];
+    const expected = typeof DEFAULT_SAFETY[key as keyof SafetyLimits];
+    if (typeof value !== expected || (expected === 'number' && (!Number.isFinite(value) || (value as number) < 0))) {
+      reasons.push(`Safety setting ${key} is invalid — automated buying is refused.`);
+    }
+  }
+  if (info.chain !== 'solana') reasons.push('The token is not identified as a Solana mint.');
+  if (info.mintReadUnavailable || (info.token2022 === true && info.traps === undefined)) {
+    reasons.push('The mint account or its transfer extensions could not be verified.');
+  }
+  for (const key of ['mintAuthority', 'freezeAuthority'] as const) {
+    const value = info[key];
+    if (value !== undefined && value !== null && (typeof value !== 'string' || value.length === 0)) {
+      reasons.push(`Token fact ${key} is invalid — its risk is unknown.`);
+    }
+  }
+  if (info.traps !== undefined && (!Array.isArray(info.traps) || info.traps.some((trap) => typeof trap !== 'string'))) {
+    reasons.push('The transfer extension report is invalid.');
+  }
+  if (reasons.length > 0) return { safe: false, reasons, notes };
+  const percentageFields = new Set(['top10Pct', 'top10PctUpperBound', 'creatorHoldsPct', 'lockerPct', 'insiderPct', 'launchDistPct']);
+  for (const key of ['top10Pct', 'top10PctUpperBound', 'creatorHoldsPct', 'lockerPct', 'insiderPct', 'launchDistPct', 'liquidityUsd', 'volume1h', 'pairCreatedAt', 'devMints', 'traders5m'] as const) {
+    const value = info[key];
+    if (value !== undefined && (typeof value !== 'number' || !Number.isFinite(value) || value < 0 ||
+        (percentageFields.has(key) && value > 100) ||
+        ((key === 'devMints' || key === 'traders5m') && !Number.isInteger(value)))) {
+      reasons.push(`Token fact ${key} is invalid — its risk is unknown.`);
+    }
+  }
+  if (reasons.length > 0) return { safe: false, reasons, notes };
+
   /*
    * Freeze authority is the Solana honeypot.
    *
@@ -198,27 +218,28 @@ export function assessToken(info: TokenInfo, limits: SafetyLimits = DEFAULT_SAFE
 
     if (info.mintAuthority) {
       reasons.push('Mint authority is live — supply can be created and sold into the pool at any time.');
+    } else if (info.mintAuthority === undefined) {
+      reasons.push('Could not read the mint authority — supply risk is unknown, not absent.');
     }
   }
 
-  const discount = lockDiscount(info, limits.lockHorizonDays);
-  const concentration = info.top10Pct === undefined ? undefined : Math.max(0, info.top10Pct - discount);
+  const concentration = info.top10Pct === undefined ? undefined : Math.max(info.top10Pct, info.top10PctUpperBound ?? 0);
 
-  if (concentration === undefined) {
-    if (info.holdersUnavailable) {
-      reasons.push('Holder distribution could not be read — concentration is unknown, not zero.');
-    }
+  if (info.holdersUnavailable || concentration === undefined) {
+    reasons.push('Holder distribution could not be read — concentration is unknown, not zero.');
   } else if (concentration > limits.maxTop10Pct) {
-    reasons.push(
-      `Top 10 hold ${concentration.toFixed(1)}% of supply, over the ${limits.maxTop10Pct}% limit.` +
-        (discount > 0 ? ` (${discount.toFixed(1)}% locked long-term was not counted.)` : ''),
-    );
+    reasons.push(info.top10Pct !== undefined && info.top10Pct <= limits.maxTop10Pct
+      ? `The holder sample cannot prove the ${limits.maxTop10Pct}% limit: unsampled supply could put the top 10 at ${concentration.toFixed(1)}%.`
+      : `Top 10 hold ${info.top10Pct!.toFixed(1)}% of supply, over the ${limits.maxTop10Pct}% limit.`);
   }
 
   if (info.creatorHoldsPct !== undefined && info.creatorHoldsPct > limits.maxDevPct) {
     reasons.push(
       `The launch wallet holds ${info.creatorHoldsPct.toFixed(1)}% of supply, over the ${limits.maxDevPct}% limit.`,
     );
+  }
+  if (info.creatorBalanceUnavailable || (info.creator && info.creatorHoldsPct === undefined)) {
+    reasons.push('The launch wallet balance could not be read — developer concentration is unknown.');
   }
 
   /*
@@ -348,16 +369,6 @@ export function assessToken(info: TokenInfo, limits: SafetyLimits = DEFAULT_SAFE
         : `${connected.pct.toFixed(1)}% held by connected wallets.`,
     );
   }
-  if (discount > 0) {
-    notes.push(
-      (() => {
-        const until = furthestUnlock(info.lockedSupply ?? []);
-        return `${discount.toFixed(1)}% of supply is locked${
-          until ? ` until ${new Date(until).getUTCFullYear()}` : ''
-        } and was not counted as concentration.`;
-      })(),
-    );
-  }
   if (info.pairCreatedAt && Date.now() - info.pairCreatedAt < 3_600_000) {
     notes.push(`Pair is ${Math.round((Date.now() - info.pairCreatedAt) / 60_000)} minutes old.`);
   }
@@ -372,27 +383,6 @@ export function formatHorizon(days: number): string {
     return years === 1 ? '1 year' : `${years} years`;
   }
   return `${days} days`;
-}
-
-/**
- * How much of the concentration figure is supply that cannot reach the book.
- *
- * Two sources have to agree before anything is discounted. The launch index
- * says which of the counted ten is a locker; the chain says how long its
- * contents are locked for. Taking the smaller of the two means a lock sitting
- * outside the counted ten cannot subtract from a number it was never part of,
- * and a locker the chain could not read is not discounted at all.
- *
- * Missing data discounts nothing. A concentration check that quietly relaxes
- * itself when a lookup fails is worse than no check — it reads as a coin that
- * passed rather than one nobody managed to look at.
- */
-function lockDiscount(info: TokenInfo, horizonDays: number): number {
-  const eligible = info.lockerPct;
-  if (eligible === undefined || info.lockedSupply === undefined) return 0;
-
-  const verified = lockedBeyond(info.lockedSupply, Math.max(0, horizonDays) * DAY_MS);
-  return Math.max(0, Math.min(eligible, verified));
 }
 
 /**
@@ -418,14 +408,14 @@ function connectedShare(info: TokenInfo): { pct: number; fromLaunch: boolean } |
 
 /** A pump.fun token that has not graduated has a curve, not a pool. */
 function isOnCurve(info: TokenInfo): boolean {
-  return info.isPumpFun === true && info.curveComplete !== true;
+  return info.isPumpFun === true && info.curveComplete === false;
 }
 
 /** One line per limit, for the screen that configures them. */
 export function describeLimits(limits: SafetyLimits): string[] {
   return [
     `Top 10 holders: refuse above <b>${limits.maxTop10Pct}%</b>`,
-    `Locked supply: ignore what cannot unlock for <b>${formatHorizon(limits.lockHorizonDays)}</b>`,
+    'Vesting balances: <b>counted until unlock schedule and holder identity are verified</b>',
     `Launch wallet: refuse above <b>${limits.maxDevPct}%</b>`,
     `Mint and freeze authority: <b>${limits.requireRevokedAuthorities ? 'must be revoked' : 'not checked'}</b>`,
     limits.minLiquidityUsd > 0

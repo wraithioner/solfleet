@@ -14,7 +14,7 @@ import type { Settings, ValueMark, CopyDecision } from '../store/db.js';
 import { formatAccountPnl, markAgo, formatValueChange, type AccountPnl } from '../services/pnl.js';
 import type { Portfolio } from '../services/portfolio.js';
 import type { TokenInfo } from '../services/tokeninfo.js';
-import { assessToken, DEFAULT_SAFETY, formatAge, formatHorizon, type SafetyLimits } from '../services/safety.js';
+import { assessToken, DEFAULT_SAFETY, formatAge, type SafetyLimits } from '../services/safety.js';
 import type { BatchSummary, WalletRecord } from '../types.js';
 
 /** Telegram HTML mode needs exactly these three escaped. */
@@ -414,8 +414,15 @@ export function renderTokenCard(info: TokenInfo, limits = DEFAULT_SAFETY): strin
     if (info.holderCount !== undefined) {
       lines.push(`   👥 Holders    <b>${fmtCount(info.holderCount)}</b>`);
     }
-    lines.push(`   🏆 Top 10     ${judged(info.top10Pct, limits.maxTop10Pct)}`);
-    lines.push(`   🧑‍💻 Dev holds  ${judged(info.creatorHoldsPct, limits.maxDevPct, '%', 2)}`);
+    lines.push(`   🏆 Top 10     ${judged(info.holdersUnavailable ? undefined : info.top10Pct, limits.maxTop10Pct)}`);
+    if (!info.holdersUnavailable && info.top10PctUpperBound !== undefined && info.top10PctUpperBound > (info.top10Pct ?? 0)) {
+      lines.push(`   🔎 Sample bound  up to <b>${info.top10PctUpperBound.toFixed(1)}%</b>; unsampled holdings included in safety.`);
+    }
+    lines.push(`   🧑‍💻 Dev holds  ${judged(info.creatorBalanceUnavailable ? undefined : info.creatorHoldsPct, limits.maxDevPct, '%', 2)}`);
+    if (info.lockedSupply && info.lockedSupply.length > 0) {
+      const outstanding = info.lockedSupply.reduce((sum, stream) => sum + stream.pct, 0);
+      lines.push(`   ⏳ Vesting    <b>${outstanding.toFixed(1)}%</b> remains in streams; potentially claimable. <i>No concentration discount.</i>`);
+    }
 
     /*
      * The line no reading of the token itself can produce.
@@ -510,7 +517,7 @@ export function renderTokenCard(info: TokenInfo, limits = DEFAULT_SAFETY): strin
     // the launch wallet's remaining stake — the clearest rug signal pump.fun gives
     if (info.creator) {
       const stake =
-        info.creatorHoldsPct === undefined
+        info.creatorBalanceUnavailable || info.creatorHoldsPct === undefined
           ? '❓ unknown'
           : info.creatorHoldsPct === 0
             ? '✅ sold out / holds none'
@@ -520,7 +527,7 @@ export function renderTokenCard(info: TokenInfo, limits = DEFAULT_SAFETY): strin
   }
 
   // holder distribution
-  if (info.holdersUnavailable && info.top10Pct === undefined) {
+  if (info.holdersUnavailable) {
     lines.push('');
     lines.push('<b>👥 Top holders</b>');
     lines.push('<i>Unavailable — RPC rejected the query. Use a private endpoint.</i>');
@@ -789,7 +796,7 @@ export function renderSettings(s: Settings, walletCount: number): string {
     '',
     '<b>Copy trade safety</b>',
     `   Top 10 max    <b>${s.copySafety.maxTop10Pct}%</b>`,
-    `   Locked supply <b>ignored past ${formatHorizon(s.copySafety.lockHorizonDays)}</b>`,
+    '   Vesting       <b>no concentration discount without verified proof</b>',
     `   Dev max       <b>${s.copySafety.maxDevPct}%</b>`,
     `   Max age       <b>${s.copySafety.maxAgeHours > 0 ? formatAge(s.copySafety.maxAgeHours) : 'any'}</b>`,
     `   1h volume     <b>${s.copySafety.minVolume1hUsd > 0 ? `min $${s.copySafety.minVolume1hUsd.toLocaleString('en-US')}` : 'any'}</b>`,

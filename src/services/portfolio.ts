@@ -175,11 +175,14 @@ export function aggregateToken(portfolio: Portfolio, mint: string): {
   let totalUsd = 0;
 
   for (const b of portfolio.solana) {
-    const t = b.tokens.find((x) => x.mint === mint);
-    if (!t || t.amount === 0) continue;
-    holders.push({ label: b.label, address: b.address, amount: t.amount, usd: t.usdValue });
-    totalAmount += t.amount;
-    totalUsd += t.usdValue ?? 0;
+    const accounts = b.tokens.filter((x) => x.mint === mint && x.rawAmount > 0n);
+    if (accounts.length === 0) continue;
+    const amount = accounts.reduce((sum, t) => sum + t.amount, 0);
+    const priced = accounts.every((t) => t.usdValue !== undefined);
+    const usd = accounts.reduce((sum, t) => sum + (t.usdValue ?? 0), 0);
+    holders.push({ label: b.label, address: b.address, amount, ...(priced ? { usd } : {}) });
+    totalAmount += amount;
+    totalUsd += usd;
   }
 
   holders.sort((a, b) => b.amount - a.amount);
@@ -219,13 +222,15 @@ export function listPositions(portfolio: Portfolio): Array<{
   >();
 
   for (const b of portfolio.solana) {
+    const counted = new Set<string>();
     for (const t of b.tokens) {
       const entry =
         map.get(t.mint) ?? { symbol: t.symbol, totalAmount: 0, totalUsd: 0, walletCount: 0, priced: false };
       entry.totalAmount += t.amount;
       entry.totalUsd += t.usdValue ?? 0;
       entry.priced = entry.priced || t.usdValue !== undefined;
-      entry.walletCount += 1;
+      if (!counted.has(t.mint)) entry.walletCount += 1;
+      counted.add(t.mint);
       map.set(t.mint, entry);
     }
   }

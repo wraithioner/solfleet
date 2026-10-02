@@ -6,6 +6,7 @@ process.env.BOT_TOKEN = '123:TEST';
 process.env.OWNER_IDS = '1';
 process.env.DATA_DIR = './.smoke-data';
 process.env.VAULT_AUTOLOCK_MINUTES = '0';
+process.env.JUPITER_REQUEST_INTERVAL_MS = '0';
 
 import fs from 'node:fs';
 import assert from 'node:assert/strict';
@@ -2255,7 +2256,7 @@ assert.ok(empty >= oneAttempt * 2n, 'two attempts are covered, not one');
 ok('the reserve covers a retry, because a failed exit is tried again');
 
 const engSrc = fs.readFileSync('src/trade/engine.ts', 'utf8');
-assert.match(engSrc, /const holdsTokens = holdings\.some/, 'the sweep asks what the wallet holds');
+assert.match(engSrc, /const holdsTokens = holdings === undefined \|\| holdings\.some/, 'unknown token balances retain the exit reserve');
 assert.match(engSrc, /Math\.max\(settings\.sweepReserveSol, floorSol\)/, 'and never leaves less than the floor');
 assert.match(engSrc, /EXIT_FEE_HEADROOM/, 'sized for the fee a stop actually pays, not the routine one');
 ok('the sweep reserves against what it is leaving behind');
@@ -2609,7 +2610,7 @@ db.addCopyTarget({
 assert.equal(db.copyTargets()[0]!.takeProfitSellPct, 75, 'a deliberate 75 is kept');
 ok('only the unchosen default is rewritten, not a real choice');
 
-console.log('\n[47] Locked supply is not concentration');
+console.log('\n[47] Vesting evidence does not waive concentration');
 
 /*
  * The launch that produced this section. A coin read 63.5% concentrated and
@@ -2755,7 +2756,7 @@ const ninetyDay = summariseLocks(
   SUPPLY,
   LOCK_NOW,
 );
-assert.ok(lockedBeyond(ninetyDay.locked, 30 * DAY_MS, LOCK_NOW) > 49, 'discounted at a 30-day horizon');
+assert.ok(lockedBeyond(ninetyDay.locked, 30 * DAY_MS, LOCK_NOW) > 49, 'stream end remains beyond the 30-day display horizon');
 assert.ok(lockedBeyond(ninetyDay.locked, 90 * DAY_MS, LOCK_NOW) > 49, 'and at 90 days');
 assert.equal(lockedBeyond(ninetyDay.locked, YEAR_MS, LOCK_NOW), 0, 'but not at a year');
 
@@ -2807,16 +2808,13 @@ assert.ok(!beforeLocks.safe, 'without the lock data it is refused');
 assert.match(beforeLocks.reasons[0] ?? '', /63\.6% of supply/, 'on the raw 63.6%');
 
 const withLocks = assessToken(lizard, OPERATOR);
-assert.ok(withLocks.safe, `with it the coin passes: ${withLocks.reasons.join(' ')}`);
-assert.ok(
-  withLocks.notes.some((n) => /50\.2% of supply is locked until 2095/.test(n)),
-  'and says why, rather than quietly softening the number',
-);
+assert.ok(!withLocks.safe, 'unmatched vesting streams cannot discount concentrated holders');
+assert.match(withLocks.reasons.join(' '), /63\.6% of supply/);
 assert.ok(
   withLocks.notes.some((n) => /11\.1% went to 9 wallets at launch/.test(n)),
   'while naming the 11% the index scored at zero',
 );
-ok('the coin that started this passes, for stated reasons');
+ok('unmatched vesting balances cannot waive the concentration limit');
 
 /*
  * Fail closed. A lookup that did not answer must not hand out a discount — a
@@ -2830,13 +2828,12 @@ for (const gap of [{ lockerPct: undefined }, { lockedSupply: undefined }]) {
 ok('a lock nobody could verify discounts nothing');
 
 /*
- * A near lock is not a discount at every setting the screen offers. Ninety-one
- * days out is discounted at the shorter horizons and counts in full at a year.
+ * A nearer stream end cannot authorize a concentration discount at any horizon.
  */
 const nearLock = { ...lizard, lockedSupply: [{ pct: 50.23, unlockAt: Date.now() + 91 * DAY_MS }] };
-assert.ok(assessToken(nearLock, { ...OPERATOR, lockHorizonDays: 90 }).safe, 'discounted at 90 days');
-assert.ok(!assessToken(nearLock, { ...OPERATOR, lockHorizonDays: 365 }).safe, 'and not at a year');
-ok('the setting actually changes the verdict');
+assert.ok(!assessToken(nearLock, { ...OPERATOR, lockHorizonDays: 90 }).safe, 'no discount at 90 days without matched vault proof');
+assert.ok(!assessToken(nearLock, { ...OPERATOR, lockHorizonDays: 365 }).safe, 'no discount at a year either');
+ok('the display horizon cannot waive an unproven concentration risk');
 
 /*
  * The other half. The launch distribution has to be able to refuse on its own,
@@ -2869,14 +2866,14 @@ assert.match(
 );
 ok('the lock scan is billed at a tenth, and still reads every page');
 
-// and it is reachable: a button cycling the three horizons, and a route to it
+// The former discount control must not promise a safety exemption.
 const tradeSrc47 = fs.readFileSync('src/bot/handlers/trade.ts', 'utf8');
-assert.match(tradeSrc47, /const LOCK_STEPS = \[30, 90, 365\]/, 'the three horizons are the offered steps');
-assert.match(tradeSrc47, /'safety_lock'/, 'on a button');
-assert.match(fs.readFileSync('src/bot/index.ts', 'utf8'), /case 'safety_lock':/, 'that is routed');
+assert.doesNotMatch(tradeSrc47, /Ignore supply locked/, 'no unsupported concentration exemption');
+assert.doesNotMatch(tradeSrc47, /'safety_lock'/, 'the obsolete discount control is not emitted');
+assert.match(fs.readFileSync('src/bot/index.ts', 'utf8'), /case 'safety_lock':/, 'old buttons remain routable');
 db.wipe();
 assert.equal(db.settings().copySafety.lockHorizonDays, 365, 'shipping at a year, the strict end');
-ok('the horizon is a button, and it starts where it is safest');
+ok('legacy horizon settings are retained without a misleading discount control');
 
 fs.rmSync(DATA, { recursive: true, force: true });
 console.log(`\n✅ ${passed} assertions passed\n`);

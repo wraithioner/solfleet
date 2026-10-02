@@ -19,7 +19,8 @@ import {
 } from '../../store/wallets.js';
 import { getSolBalance } from '../../chains/solana.js';
 import { errMessage, fmtAmount, shortAddr } from '../../util.js';
-import { setPending, shortWalletId, walletFromShortId, stageConfirmation } from '../session.js';
+import { setPending, shortWalletId, walletFromShortId, stageConfirmation, clearAllSessions } from '../session.js';
+import { withExecutionMaintenance } from '../../services/execution.js';
 import {
   renderWalletList,
   walletsKeyboard,
@@ -264,7 +265,10 @@ export async function promptRemove(ctx: Context, walletId: string): Promise<void
   if (!w) return;
 
   const id = stageConfirmation(ctx.from!.id, `remove ${w.label}`, async (confirmCtx) => {
-    removeWallet(walletId);
+    await withExecutionMaintenance(async () => {
+      removeWallet(walletId);
+      clearAllSessions();
+    });
     await render(confirmCtx, `🗑 Removed <b>${h(w.label)}</b>.`, new InlineKeyboard().text('👛 Wallets', 'wallets'));
   });
 

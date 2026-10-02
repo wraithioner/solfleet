@@ -32,6 +32,11 @@ handling that those safeguards alone did not cover.
 
 ## Verification
 
+The integrated deeper pass passes all twelve regression suites, in addition to
+279 smoke checks and strict typechecking. Its current live read-only check
+returned 24 passed and 2 provider/data failures; see [DEEP_REVIEW.md](DEEP_REVIEW.md).
+
+
 Run `npm run check` for strict typechecking, the existing smoke suite, and the
 new offline regressions. The new tests inject RPC/trading failures, exercise real
 bot middleware with a fake Telegram API, and inject persistence failures. They
@@ -41,35 +46,25 @@ use temporary data and never broadcast transactions.
 checks**, **27 transaction**, **15 automation**, **7 portfolio**, **9 history
 reconciliation** cases, and the wallet/auth/persistence regression suite.
 
-The live read-only `npm run netcheck` run returned **25 passed, 1 failed**.
+The first-pass live read-only `npm run netcheck` run returned **25 passed, 1 failed**.
 The failure was the BONK Rugcheck lookup timing out; other Rugcheck probes
 answered. The public RPC also returned holder-query rate limits. This result
 does not establish uninterrupted upstream availability or production execution.
 
 ## Further improvements
 
+The [deeper review](DEEP_REVIEW.md) implements durable copy receipts and complete
+token-account sweeps, and documents the remaining submission-journal work.
+
+
 - Persist a transaction journal before submission, then reconcile pending
   signatures after restart. This would let unknown outcomes recover their
   ledger entries automatically; the present fix stops replay and asks the
   operator to check the wallets.
-- Separate copy-event receipt from successful transaction parsing. An RPC
-  parse failure currently consumes the signature and can miss a copy. A
-  durable queue needs distinct received, parsed, and executed states so that
-  retrying reads cannot duplicate execution.
-- A wallet can hold one mint in several token accounts. A comprehensive sweep
-  should process every account and report any remainder.
-
 ## Dependency findings
 
-`npm audit --omit=dev` reported **9 findings: 3 high and 6 moderate**, including
-inherited package findings. No forced dependency downgrade or major override
-was applied. The installed Solana packages still pull the affected dependencies.
-
-| Advisory | Applicability review |
-| --- | --- |
-| [bigint-buffer](https://github.com/advisories/GHSA-3gc7-fjrx-p6mg) | No patched release is listed. SPL-token uses fixed-width u64 layouts; the reviewed paths did not demonstrate exploitation. It remains a dependency risk, especially where native bindings are installed. |
-| [stream-json](https://github.com/advisories/GHSA-528h-pc64-c93x) | Affects streaming filters; the reviewed web3 client path uses JSON.parse rather than those filters. |
-| [uuid](https://github.com/advisories/GHSA-w5hq-g745-h8pq) | Affects v3/v5/v6 output buffers; the reviewed Jayson path calls v4 without a buffer. |
-
-These are applicability observations, not a clean security audit. Track upstream
-compatible fixes and rerun the audit when changing the Solana dependencies.
+The first pass reported 9 findings (3 high, 6 moderate). The deeper pass adds a
+scoped, compatibility-tested Jayson 5.0.0 override: the audit now reports 3 high
+and 0 moderate findings. These are the unpatched bigint-buffer advisory and its
+inherited SPL parent findings. See [DEEP_REVIEW.md](DEEP_REVIEW.md) for the evidence,
+applicability limits, primary references and remaining work.

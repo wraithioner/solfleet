@@ -16,12 +16,17 @@ import {
   createAssociatedTokenAccountIdempotentInstruction,
   createTransferCheckedInstruction,
   createCloseAccountInstruction,
+  unpackMint,
+  getTransferFeeAmount,
+  unpackAccount,
+  createHarvestWithheldTokensToMintInstruction,
 } from '@solana/spl-token';
 import { config } from '../config.js';
 import bs58 from 'bs58';
 import { retry } from '../util.js';
 import type { TokenBalance } from '../types.js';
 import { TransactionRejectedError, TransactionSubmissionUnknownError } from '../trade/errors.js';
+import { assertExecutionCurrent } from '../services/execution.js';
 
 export const LAMPORTS = LAMPORTS_PER_SOL;
 export const WSOL_MINT = 'So11111111111111111111111111111111111111112';
@@ -117,9 +122,7 @@ export async function getSplBalances(address: string): Promise<SplHolding[]> {
 
   const [classic, token22] = await Promise.all([
     retry(() => rpc().getParsedTokenAccountsByOwner(owner, { programId: TOKEN_PROGRAM_ID })),
-    retry(() => rpc().getParsedTokenAccountsByOwner(owner, { programId: TOKEN_2022_PROGRAM_ID })).catch(
-      () => ({ value: [] as never[] }),
-    ),
+    retry(() => rpc().getParsedTokenAccountsByOwner(owner, { programId: TOKEN_2022_PROGRAM_ID })),
   ]);
 
   const holdings: SplHolding[] = [];
@@ -130,12 +133,15 @@ export async function getSplBalances(address: string): Promise<SplHolding[]> {
   ]) {
     for (const acc of value) {
       const info = (acc.account.data as never as { parsed: { info: ParsedTokenInfo } }).parsed.info;
+      assertPublicTokenBalance(info);
       const raw = BigInt(info.tokenAmount.amount);
       if (raw === 0n) continue;
       holdings.push({
         mint: info.mint,
         symbol: info.mint.slice(0, 4),
-        amount: info.tokenAmount.uiAmount ?? 0,
+        // UI floats may be null even though the raw balance is non-zero.
+        // Keep accounting in unscaled token units, as used by trade quantities.
+        amount: Number(raw) / 10 ** info.tokenAmount.decimals,
         decimals: info.tokenAmount.decimals,
         rawAmount: raw,
         tokenAccount: acc.pubkey.toBase58(),
@@ -150,12 +156,43 @@ export async function getSplBalances(address: string): Promise<SplHolding[]> {
 interface ParsedTokenInfo {
   mint: string;
   tokenAmount: { amount: string; decimals: number; uiAmount: number | null };
+  extensions?: Array<{ extension: string }>;
 }
 
-/** Balance of one specific mint. Returns zeros when the wallet holds none. */
+function assertPublicTokenBalance(info: ParsedTokenInfo): void {
+  const amount = info.tokenAmount?.amount;
+  const decimals = info.tokenAmount?.decimals;
+  if (typeof amount !== 'string' || !/^\d{1,20}$/.test(amount) || BigInt(amount) > (1n << 64n) - 1n ||
+      !Number.isInteger(decimals) || decimals < 0 || decimals > 255) {
+    throw new Error('Token balance response contains an invalid raw amount or decimals.');
+  }
+  if (info.extensions?.some((ext) => ext.extension === 'confidentialTransferAccount')) {
+    throw new Error('Confidential token balances cannot be valued by public RPC reads.');
+  }
+}
+
+/** First account of one mint, retained for callers needing an account address. */
 export async function getTokenBalance(address: string, mint: string): Promise<SplHolding | null> {
   const all = await getSplBalances(address);
   return all.find((h) => h.mint === mint) ?? null;
+}
+
+/** Every account for a mint; a wallet can own several, including non-ATAs. */
+export async function getTokenAccounts(address: string, mint: string): Promise<SplHolding[]> {
+  return (await getSplBalances(address)).filter((h) => h.mint === mint);
+}
+
+/** Decimals are immutable mint metadata, never a six-decimal assumption. */
+export async function getMintDecimals(mint: string): Promise<number> {
+  const key = new PublicKey(mint);
+  const info = await retry(() => rpc().getAccountInfo(key), { attempts: 2 });
+  if (!info) throw new Error('Mint account is unavailable.');
+  if (!info.owner.equals(TOKEN_PROGRAM_ID) && !info.owner.equals(TOKEN_2022_PROGRAM_ID)) {
+    throw new Error('Account is not an SPL token mint.');
+  }
+  const decoded = unpackMint(key, info, info.owner);
+  if (!decoded.isInitialized) throw new Error('Mint account is not initialized.');
+  return decoded.decimals;
 }
 
 /**
@@ -171,49 +208,32 @@ export function parseTokenAccountAmount(data: Uint8Array): bigint {
 /**
  * How much of one mint each of many wallets holds.
  *
- * Deriving the associated token address and reading those accounts directly
- * costs one RPC round trip per 100 wallets, where
- * `getParsedTokenAccountsByOwner` costs one per wallet. That difference is the
- * gap between a token card that renders instantly and one that takes ten
- * seconds — or gets the operator rate limited mid-batch.
- *
- * The trade-off: this sees *associated* token accounts only. Every position
- * these wallets can acquire through this bot lands in one — PumpPortal, Jupiter
- * and the token sweep all use the associated account — but a balance parked in a
- * non-associated account by some other tool reads here as zero. Use
- * `getSplBalances` when an exhaustive answer matters more than the round trips.
+ * This deliberately reads all token accounts, rather than only each ATA.
+ * Basis resets and full exits cannot treat a non-ATA holding as an empty
+ * position. The mint filter covers either token program in one read per owner;
+ * bounded concurrency prevents a large wallet set from flooding the RPC.
  */
 export async function getMintBalances(addresses: string[], mint: string): Promise<Map<string, bigint>> {
   const out = new Map<string, bigint>();
   if (addresses.length === 0) return out;
 
   const mintKey = new PublicKey(mint);
-
-  // A mint belongs to exactly one token program, so classic is checked first and
-  // Token-2022 only when that turned up nothing at all.
-  for (const program of [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID]) {
-    const atas = addresses.map((a) =>
-      getAssociatedTokenAddressSync(mintKey, new PublicKey(a), true, program),
-    );
-
-    let found = false;
-    for (let i = 0; i < atas.length; i += 100) {
-      const slice = atas.slice(i, i + 100);
-      const infos = await retry(() => rpc().getMultipleAccountsInfo(slice), { attempts: 2 });
-
-      slice.forEach((_, j) => {
-        const info = infos[j];
-        if (!info) return;
-        const amount = parseTokenAccountAmount(info.data);
-        if (amount > 0n) {
-          out.set(addresses[i + j]!, amount);
-          found = true;
-        }
-      });
+  const owners = [...new Set(addresses)];
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(5, owners.length) }, async () => {
+    while (next < owners.length) {
+      const address = owners[next++]!;
+      const result = await retry(() => rpc().getParsedTokenAccountsByOwner(new PublicKey(address), { mint: mintKey }), { attempts: 2 });
+      let total = 0n;
+      for (const account of result.value) {
+        const info = (account.account.data as never as { parsed: { info: ParsedTokenInfo } }).parsed.info;
+        assertPublicTokenBalance(info);
+        if (info.mint !== mint) throw new Error('Token balance response contains a different mint.');
+        total += BigInt(info.tokenAmount.amount);
+      }
+      if (total > 0n) out.set(address, total);
     }
-
-    if (found) return out;
-  }
+  }));
 
   return out;
 }
@@ -299,6 +319,7 @@ export async function sendAndConfirm(
   // provider accepts it and then loses the response.
   const bytes = tx.serialize();
   const signature = bs58.encode(tx.signatures[0]!);
+  assertExecutionCurrent();
   try {
     await sendRpc().sendRawTransaction(bytes, {
       skipPreflight: opts.skipPreflight ?? true,
@@ -484,6 +505,14 @@ export async function sendSplToken(
 
   // reclaim the ~0.002 SOL rent sitting in the now-empty token account
   if (closeAccountAfter) {
+    if (program.equals(TOKEN_2022_PROGRAM_ID)) {
+      const info = await retry(() => rpc().getAccountInfo(source), { attempts: 2 });
+      if (!info) throw new Error('Source token account is unavailable.');
+      const account = unpackAccount(source, info, program);
+      if ((getTransferFeeAmount(account)?.withheldAmount ?? 0n) > 0n) {
+        ixs.push(createHarvestWithheldTokensToMintInstruction(mintKey, [source], program));
+      }
+    }
     ixs.push(createCloseAccountInstruction(source, from.publicKey, from.publicKey, [], program));
   }
 

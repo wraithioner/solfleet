@@ -84,15 +84,17 @@ export interface PositionRecord {
    * thousandth, the lifetime ratio reports the old price, and every rule built
    * on it fires at a number from a trade that is over.
    *
-   * Reset when a buy lands on a coin the wallets were holding none of. A
-   * partial sale leaves it alone, which is correct: selling half a position
-   * does not change what the other half cost.
+   * Reset only when a complete account-wide read establishes no holdings.
+   * A measured sale retires the proportional basis; its per-token price stays
+   * the same until another buy adds to the remaining position.
    *
    * Absent on positions recorded before it existed; readers fall back to the
    * lifetime ratio, which is what they used to use.
    */
   basisSol?: number;
   basisTokens?: number;
+  /** False when any open-position quantity was unmeasured; never guess entry. */
+  basisKnown?: boolean;
   /** Mint decimals, kept so an exit can turn raw balance deltas into tokens. */
   decimals?: number;
   firstBuyAt: number;
@@ -218,6 +220,8 @@ export interface CopyTarget {
   enabled: boolean;
   /** Newest signature already processed, so a restart does not replay history. */
   lastSignature?: string;
+  /** Recent transaction receipts claimed for this target, including socket deliveries. */
+  handledSignatures?: string[];
   /** Mints already copied from this target. */
   copiedMints: string[];
   /** Copied buys so far per mint, for the `every` cap. */
@@ -284,6 +288,8 @@ export interface BuyEntry {
   /** True when the wallets held none of this coin before the batch. */
   freshEntry?: boolean;
   decimals?: number;
+  /** False if another submitted wallet fill still has an unknown outcome. */
+  quantityComplete?: boolean;
 }
 
 /**
@@ -641,8 +647,11 @@ export const db = {
 
   /** Add a completed buy to the position's cost basis. */
   recordBuy(mint: string, entry: BuyEntry): void {
-    const { solSpent, fills, tokensBought = 0, symbol, costSol, freshEntry = false, decimals } = entry;
-    if (solSpent <= 0 || fills <= 0) return;
+    const { solSpent, fills, tokensBought = 0, symbol, costSol, freshEntry = false, decimals, quantityComplete = true } = entry;
+    if (!Number.isFinite(solSpent) || solSpent <= 0 || !Number.isSafeInteger(fills) || fills <= 0 ||
+        !Number.isFinite(tokensBought) || tokensBought < 0 ||
+        (costSol !== undefined && (!Number.isFinite(costSol) || costSol < 0)) ||
+        (decimals !== undefined && (!Number.isInteger(decimals) || decimals < 0 || decimals > 255))) return;
     const d = load();
     const now = Date.now();
     const pos = d.positions[mint] ?? {
@@ -657,21 +666,34 @@ export const db = {
       lastTradeAt: now,
     };
 
+    const priorBasisSol = pos.basisSol ?? pos.investedSol;
+    const priorBasisTokens = pos.basisTokens ?? pos.tokensBought;
+    // Old sales never recorded their quantity, so their remaining basis cannot
+    // be reconstructed from lifetime buys. A later fresh entry can recover it.
+    const priorKnown = pos.basisKnown ?? (pos.sellFills === 0 &&
+      (priorBasisSol === 0 || priorBasisTokens > 0));
+    const nextCost = (pos.costSol ?? pos.investedSol) + (costSol ?? solSpent);
+    const nextInvested = pos.investedSol + solSpent;
+    const nextTokens = pos.tokensBought + tokensBought;
+    const nextBasisSol = Math.max(0, freshEntry ? 0 : priorBasisSol) + solSpent;
+    const nextBasisTokens = Math.max(0, freshEntry ? 0 : priorBasisTokens) + tokensBought;
+    if (![nextCost, nextInvested, nextTokens, nextBasisSol, nextBasisTokens].every(Number.isFinite) ||
+        !Number.isSafeInteger(pos.buyFills + fills)) return;
+
     // a batch whose true cost went unmeasured contributes its notional, so the
     // running total stays comparable rather than developing a hole — and a
     // position that predates the measurement starts from what it was recorded
     // as having spent rather than from zero
-    pos.costSol = (pos.costSol ?? pos.investedSol) + (costSol ?? solSpent);
-    pos.investedSol += solSpent;
+    pos.costSol = nextCost;
+    pos.investedSol = nextInvested;
     pos.buyFills += fills;
-    pos.tokensBought += tokensBought;
+    pos.tokensBought = nextTokens;
 
     // a buy into a coin the wallets held none of starts the basis over; one
     // into a position already open adds to it
-    const priorBasisSol = freshEntry ? 0 : (pos.basisSol ?? pos.investedSol - solSpent);
-    const priorBasisTokens = freshEntry ? 0 : (pos.basisTokens ?? pos.tokensBought - tokensBought);
-    pos.basisSol = Math.max(0, priorBasisSol) + solSpent;
-    pos.basisTokens = Math.max(0, priorBasisTokens) + tokensBought;
+    pos.basisSol = nextBasisSol;
+    pos.basisTokens = nextBasisTokens;
+    pos.basisKnown = quantityComplete && (freshEntry || priorKnown) && tokensBought > 0;
 
     pos.lastTradeAt = now;
     if (symbol && !pos.symbol) pos.symbol = symbol;
@@ -682,8 +704,9 @@ export const db = {
   },
 
   /** Add sell proceeds. Positions with no recorded buy are still tracked. */
-  recordSell(mint: string, solReceived: number, fills: number): void {
-    if (solReceived <= 0 || fills <= 0) return;
+  recordSell(mint: string, solReceived: number, fills: number, tokensSold?: number): void {
+    if (!Number.isFinite(solReceived) || solReceived < 0 || !Number.isSafeInteger(fills) || fills <= 0 ||
+        (tokensSold !== undefined && (!Number.isFinite(tokensSold) || tokensSold < 0))) return;
     const d = load();
     const now = Date.now();
     const pos = d.positions[mint] ?? {
@@ -697,11 +720,36 @@ export const db = {
       lastTradeAt: now,
     };
 
+    const basisSol = pos.basisSol ?? pos.investedSol;
+    const basisTokens = pos.basisTokens ?? pos.tokensBought;
+    if (!Number.isFinite(pos.realisedSol + solReceived) || !Number.isSafeInteger(pos.sellFills + fills)) return;
+    const known = pos.basisKnown ?? (pos.sellFills === 0 && basisSol > 0 && basisTokens > 0);
+    if (known && tokensSold !== undefined && Number.isFinite(tokensSold) && tokensSold > 0 &&
+        tokensSold <= basisTokens * (1 + 1e-9)) {
+      const remaining = Math.max(0, basisTokens - tokensSold);
+      pos.basisSol = basisTokens > 0 ? basisSol * (remaining / basisTokens) : 0;
+      pos.basisTokens = remaining;
+      pos.basisKnown = true;
+    } else {
+      pos.basisKnown = false;
+      delete pos.basisSol;
+      delete pos.basisTokens;
+    }
     pos.realisedSol += solReceived;
     pos.sellFills += fills;
     pos.lastTradeAt = now;
 
     d.positions[mint] = pos;
+    flush();
+  },
+
+  /** Uncertain fills may change holdings even when no fill can yet be booked. */
+  invalidateBasis(mint: string): void {
+    const pos = load().positions[mint];
+    if (!pos) return;
+    pos.basisKnown = false;
+    delete pos.basisSol;
+    delete pos.basisTokens;
     flush();
   },
 
@@ -756,6 +804,11 @@ export const db = {
     const pos = d.positions[mint];
     if (!pos || !Number.isFinite(sol) || sol < 0) return;
     pos.realisedSol = sol;
+    // A recovered historical return does not establish how many tokens sold.
+    // Keep lifetime profit, but require a measured fresh entry for new rules.
+    pos.basisKnown = false;
+    delete pos.basisSol;
+    delete pos.basisTokens;
     flush();
   },
 

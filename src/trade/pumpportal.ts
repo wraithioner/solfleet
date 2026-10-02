@@ -3,14 +3,16 @@ import bs58 from 'bs58';
 import { endpoints } from '../config.js';
 import { fetchBytes, fetchJson } from '../util.js';
 import type { TradeRequest } from '../types.js';
+import { assertExternalTrade, priorityFeeLamports, pumpSwapVariants, signExternalTransaction } from './validation.js';
+import { WSOL_MINT } from '../chains/solana.js';
 
 /**
  * pump.fun execution via PumpPortal's *local* trading API.
  *
- * The important property: PumpPortal only builds an unsigned transaction and
- * hands it back. Signing happens here, with keys that never leave this process,
- * so no third party can move funds. It also means the pump.fun program layout —
- * which changes without notice — stays their problem rather than ours.
+ * PumpPortal builds a message and local signing authorizes that whole message.
+ * Keeping keys local does not make an external builder trustworthy. The bounded
+ * checks below reject unexpected signers, fees and missing swaps; full validation
+ * of spend amounts, token accounts and recipients still needs venue decoders.
  */
 
 export interface TradeArgs {
@@ -23,6 +25,16 @@ export interface TradeArgs {
   slippage: number;
   priorityFee: number;
   pool: TradeRequest['pool'];
+}
+
+function wrappedSolBudget(args: TradeArgs): bigint {
+  if (args.action !== 'buy' || args.denominatedInSol !== 'true' || typeof args.amount !== 'number') return 0n;
+  if (!Number.isFinite(args.slippage) || args.slippage < 0 || args.slippage >= 100) throw new Error('Invalid PumpPortal slippage.');
+  // Exact-token buys may wrap the maximum permitted SOL input. Keep this bound
+  // on top-level wrapping separate from the unresolved swap's actual CPI debit.
+  const basisPoints = BigInt(Math.ceil(args.slippage * 100));
+  const input = priorityFeeLamports(args.amount);
+  return (input * (10_000n + basisPoints) + 9_999n) / 10_000n;
 }
 
 export function toTradeArgs(req: TradeRequest, publicKey: string): TradeArgs {
@@ -54,7 +66,15 @@ export async function buildTrade(args: TradeArgs): Promise<VersionedTransaction>
     throw new Error(`PumpPortal returned an unexpectedly small response: ${new TextDecoder().decode(bytes)}`);
   }
 
-  return VersionedTransaction.deserialize(bytes);
+  const tx = VersionedTransaction.deserialize(bytes);
+  assertExternalTrade(tx, {
+    wallet: args.publicKey,
+    priorityFeeSol: args.priorityFee,
+    swaps: pumpSwapVariants(args.pool, args.action),
+    mints: [WSOL_MINT, args.mint],
+    wrappedSolLamports: wrappedSolBudget(args),
+  });
+  return tx;
 }
 
 /**
@@ -76,14 +96,27 @@ export async function buildTradeBundle(argsList: TradeArgs[]): Promise<Versioned
   if (!Array.isArray(encoded)) {
     throw new Error('PumpPortal did not return a transaction array. Check the trade parameters.');
   }
-
-  return encoded.map((b58) => VersionedTransaction.deserialize(bs58.decode(b58)));
+  if (encoded.length !== argsList.length) {
+    throw new Error(`PumpPortal returned ${encoded.length} transactions for ${argsList.length} wallets.`);
+  }
+  return encoded.map((b58, index) => {
+    if (typeof b58 !== 'string') throw new Error('PumpPortal returned an invalid encoded transaction.');
+    const tx = VersionedTransaction.deserialize(bs58.decode(b58));
+    const args = argsList[index]!;
+    // Bundle priorityFee on the first request is used as its Jito tip. A
+    // zero compute price is valid; the tip remains part of the signed message.
+    assertExternalTrade(tx, {
+      wallet: args.publicKey,
+      priorityFeeSol: args.priorityFee,
+      swaps: pumpSwapVariants(args.pool, args.action),
+      mints: [WSOL_MINT, args.mint],
+      wrappedSolLamports: wrappedSolBudget(args),
+      jitoTipLamports: index === 0 ? priorityFeeLamports(args.priorityFee) : 0n,
+    });
+    return tx;
+  });
 }
 
 export function signTx(tx: VersionedTransaction, signer: Keypair): VersionedTransaction {
-  // Re-wrapping the message drops any placeholder signatures PumpPortal left in
-  // place, so the only signature on the wire is the one we just produced.
-  const signed = new VersionedTransaction(tx.message);
-  signed.sign([signer]);
-  return signed;
+  return signExternalTransaction(tx, signer);
 }

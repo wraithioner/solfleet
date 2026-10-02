@@ -1,7 +1,7 @@
 import { PublicKey } from '@solana/web3.js';
-import { rpc, WSOL_MINT, getMintBalances, LAMPORTS } from '../chains/solana.js';
+import { rpc, WSOL_MINT, getMintBalances, getMintDecimals, LAMPORTS } from '../chains/solana.js';
 import { db, type CopyTarget, type CopyExitMode } from '../store/db.js';
-import { selectWallets } from '../store/wallets.js';
+import { selectWallets, allWallets } from '../store/wallets.js';
 import { batchPumpTrade, measureTokensGained, measureTokensSold } from '../trade/engine.js';
 import { retry, errMessage, fmtAmount, escapeHtml as h } from '../util.js';
 import { config } from '../config.js';
@@ -10,6 +10,7 @@ import { getTokenInfo, type TokenInfo } from './tokeninfo.js';
 import { log } from '../logger.js';
 import { newRuleId, type Notifier } from './watcher.js';
 import { exitResult, formatExit } from './pnl.js';
+import { withExecution, executionEpoch, assertExecutionEpoch, assertExecutionCurrent } from './execution.js';
 
 /**
  * Copy trading: mirror another wallet's entries and exits.
@@ -37,7 +38,20 @@ interface ParsedAccount {
 interface ParsedBalance {
   mint: string;
   owner?: string;
-  uiTokenAmount: { uiAmount: number | null };
+  uiTokenAmount: { amount?: string; decimals?: number; uiAmount: number | null };
+}
+
+function balanceAmount(balance: ParsedBalance): number | undefined {
+  const { amount, decimals, uiAmount } = balance.uiTokenAmount;
+  // Scaled UI display amounts can change without a token transfer. Raw units
+  // and the mint's decimals are the same units used by the position ledger.
+  if (amount !== undefined || decimals !== undefined) {
+    if (typeof amount !== 'string' || !/^\d+$/.test(amount) || typeof decimals !== 'number' ||
+        !Number.isInteger(decimals) || decimals < 0 || decimals > 255) return undefined;
+    const value = Number(amount) / 10 ** decimals;
+    return Number.isFinite(value) && value >= 0 ? value : undefined;
+  }
+  return typeof uiAmount === 'number' && Number.isFinite(uiAmount) && uiAmount >= 0 ? uiAmount : undefined;
 }
 
 /**
@@ -53,20 +67,25 @@ export function detectTokenMoves(
 ): TokenMove[] {
   const before = new Map<string, number>();
   const after = new Map<string, number>();
+  const unreadable = new Set<string>();
 
   for (const b of pre) {
     if (b.owner !== owner) continue;
-    before.set(b.mint, (before.get(b.mint) ?? 0) + (b.uiTokenAmount.uiAmount ?? 0));
+    const amount = balanceAmount(b);
+    if (amount === undefined) unreadable.add(b.mint);
+    else before.set(b.mint, (before.get(b.mint) ?? 0) + amount);
   }
   for (const b of post) {
     if (b.owner !== owner) continue;
-    after.set(b.mint, (after.get(b.mint) ?? 0) + (b.uiTokenAmount.uiAmount ?? 0));
+    const amount = balanceAmount(b);
+    if (amount === undefined) unreadable.add(b.mint);
+    else after.set(b.mint, (after.get(b.mint) ?? 0) + amount);
   }
 
   const moves: TokenMove[] = [];
   for (const mint of new Set([...before.keys(), ...after.keys()])) {
     // wrapped SOL moves on nearly every swap and means nothing on its own
-    if (mint === WSOL_MINT) continue;
+    if (mint === WSOL_MINT || unreadable.has(mint)) continue;
 
     const start = before.get(mint) ?? 0;
     const end = after.get(mint) ?? 0;
@@ -299,12 +318,45 @@ export async function pollCopyTargets(notify: Notifier): Promise<void> {
  *
  * The same transaction can arrive twice: once pushed down the socket and again
  * when the reconciling poll sweeps up. Copying it twice would buy twice, so
- * every path claims a signature here before it spends anything. Bounded,
- * because the only ones worth remembering are the recent ones — anything older
- * is behind `lastSignature` and will not be offered again.
+ * Durable receipts on each target govern execution. This bounded in-memory
+ * set supports diagnostics; it is never the only record of a copied event.
  */
 const processed = new Set<string>();
 const PROCESSED_MAX = 600;
+const receiptReads = new Map<string, Promise<boolean>>();
+const targetReads = new Map<string, Promise<void>>();
+
+function currentTarget(target: CopyTarget): CopyTarget | undefined {
+  const current = db.copyTargets().find((t) => t.id === target.id);
+  return current?.enabled ? current : undefined;
+}
+
+function assertCopyCurrent(target: CopyTarget): void {
+  assertExecutionCurrent();
+  if (!currentTarget(target)) throw new Error('Copy target was disabled or removed before execution.');
+}
+
+function copyIntent(target: CopyTarget): string {
+  return JSON.stringify({
+    address: target.address, buySol: target.buySol, sizeMode: target.sizeMode,
+    sizePercent: target.sizePercent, entryMode: target.entryMode, maxEntries: target.maxEntries,
+    exitMode: target.exitMode, takeProfitPct: target.takeProfitPct, stopLossPct: target.stopLossPct,
+    takeProfitSellPct: target.takeProfitSellPct,
+  });
+}
+
+function receiptKey(target: CopyTarget, signature: string): string {
+  return JSON.stringify([target.id, signature]);
+}
+
+/** Persist before money can move; a crash must never replay an uncertain copy. */
+function rememberReceipt(target: CopyTarget, signature: string): void {
+  if (target.handledSignatures?.includes(signature)) return;
+  db.updateCopyTarget(target.id, {
+    handledSignatures: [...(target.handledSignatures ?? []), signature].slice(-PROCESSED_MAX),
+  });
+  claimSignature(receiptKey(target, signature));
+}
 
 /** Test seam: forget what has been seen, as a fresh process would. */
 export function resetProcessed(): void {
@@ -423,36 +475,76 @@ async function handleSignature(
   signature: string,
   notify: Notifier,
   source: 'socket' | 'poll' = 'socket',
-): Promise<void> {
-  if (!claimSignature(signature)) return;
-  claims[source]++;
+): Promise<boolean> {
+  const key = receiptKey(target, signature);
+  const pending = receiptReads.get(key);
+  if (pending) return pending;
+  const epoch = executionEpoch();
+  const previous = targetReads.get(target.id) ?? Promise.resolve();
+  const work = previous.catch(() => {}).then(() => readSignature(target, signature, notify, source, epoch));
+  const tail = work.then(() => {}, () => {});
+  targetReads.set(target.id, tail);
+  receiptReads.set(key, work);
+  try {
+    return await work;
+  } finally {
+    if (receiptReads.get(key) === work) receiptReads.delete(key);
+    if (targetReads.get(target.id) === tail) targetReads.delete(target.id);
+  }
+}
 
-  const [tx] = await retry(
-    () => rpc().getParsedTransactions([signature], { maxSupportedTransactionVersion: 0 }),
-    { attempts: 2 },
-  );
-  if (!tx?.meta || tx.meta.err) return;
+async function readSignature(
+  target: CopyTarget,
+  signature: string,
+  notify: Notifier,
+  source: 'socket' | 'poll',
+  epoch: number,
+): Promise<boolean> {
+  assertExecutionEpoch(epoch);
+  const initial = currentTarget(target);
+  if (!initial) return false;
+  if (initial.handledSignatures?.includes(signature)) return true;
+
+  let tx;
+  try {
+    tx = await retry(async () => {
+      const [parsed] = await rpc().getParsedTransactions([signature], { maxSupportedTransactionVersion: 0 });
+      // A confirmed log can precede this RPC's readable receipt. Null is a
+      // retryable read, never evidence that the transaction was handled.
+      if (!parsed?.meta) throw new Error('Copy transaction receipt is not yet readable.');
+      return parsed;
+    }, { attempts: 2 });
+  } catch (err) {
+    log.warn(`Could not read ${target.label}'s transaction; reconciliation will retry: ${errMessage(err)}`);
+    return false;
+  }
+  assertExecutionEpoch(epoch);
+  const current = currentTarget(target);
+  if (!current) return false;
+  // Persist only after the receipt is readable, but before any submission.
+  // This deliberately guarantees at most one attempt after a process crash.
+  rememberReceipt(current, signature);
+  claims[source]++;
+  if (tx.meta!.err) return true;
 
   const moves = detectTokenMoves(
-    (tx.meta.preTokenBalances ?? []) as ParsedBalance[],
-    (tx.meta.postTokenBalances ?? []) as ParsedBalance[],
-    target.address,
+    (tx.meta!.preTokenBalances ?? []) as ParsedBalance[],
+    (tx.meta!.postTokenBalances ?? []) as ParsedBalance[],
+    current.address,
   );
-  if (moves.length === 0) return;
+  if (moves.length === 0) return true;
 
   // what the whole transaction cost them, used to size a proportional copy
   const theirSol = solSpent(
     tx.transaction.message.accountKeys as ParsedAccount[],
-    tx.meta.preBalances ?? [],
-    tx.meta.postBalances ?? [],
-    target.address,
+    tx.meta!.preBalances ?? [],
+    tx.meta!.postBalances ?? [],
+    current.address,
   );
 
-  // re-read: the stored target may have been edited since this was queued
-  const current = db.copyTargets().find((t) => t.id === target.id);
-  if (!current || !current.enabled) return;
-
   for (const move of moves) {
+    assertExecutionEpoch(epoch);
+    if (!currentTarget(current)) return true;
     if (move.delta > 0) {
       /*
        * A token arriving is not a purchase. Someone dusting a followed wallet
@@ -472,13 +564,20 @@ async function handleSignature(
       await mirrorSell(current, move, notify);
     }
   }
+  return true;
 }
 
+const POLL_PAGE_SIZE = 100;
+const POLL_MAX_PAGES = 5;
+
 async function pollTarget(target: CopyTarget, notify: Notifier): Promise<void> {
+  const epoch = executionEpoch();
   const signatures = await retry(
-    () => rpc().getSignaturesForAddress(new PublicKey(target.address), { limit: 10 }),
+    () => rpc().getSignaturesForAddress(new PublicKey(target.address), { limit: POLL_PAGE_SIZE }),
     { attempts: 2 },
   );
+  assertExecutionEpoch(epoch);
+  if (!currentTarget(target)) return;
   if (signatures.length === 0) return;
 
   const newest = signatures[0]!.signature;
@@ -489,24 +588,66 @@ async function pollTarget(target: CopyTarget, notify: Notifier): Promise<void> {
    * fistful of positions the operator never chose, some of them hours stale.
    */
   if (!target.lastSignature) {
-    db.updateCopyTarget(target.id, { lastSignature: newest });
+    db.updateCopyTarget(target.id, {
+      lastSignature: newest,
+      handledSignatures: [...new Set([...(target.handledSignatures ?? []), ...signatures.map((s) => s.signature)])]
+        .slice(-PROCESSED_MAX),
+    });
     // everything already on screen is history, not a signal to act on
-    for (const s of signatures) claimSignature(s.signature);
+    for (const s of signatures) claimSignature(receiptKey(target, s.signature));
     return;
   }
 
-  // oldest first, so their sequence is followed in the order it happened
-  const fresh: string[] = [];
-  for (const s of signatures) {
-    if (s.signature === target.lastSignature) break;
-    if (!s.err) fresh.push(s.signature);
+  const cursor = target.lastSignature;
+  const fresh: typeof signatures = [];
+  let page = signatures;
+  let foundCursor = false;
+  for (let pages = 1; pages <= POLL_MAX_PAGES; pages++) {
+    for (const s of page) {
+      if (s.signature === cursor) {
+        foundCursor = true;
+        break;
+      }
+      fresh.push(s);
+    }
+    if (foundCursor || page.length < POLL_PAGE_SIZE || pages === POLL_MAX_PAGES) break;
+    const before = page.at(-1)!.signature;
+    page = await retry(
+      () => rpc().getSignaturesForAddress(new PublicKey(target.address), { limit: POLL_PAGE_SIZE, before }),
+      { attempts: 2 },
+    );
+    assertExecutionEpoch(epoch);
+    if (!currentTarget(target)) return;
   }
-  if (fresh.length === 0) return;
-  fresh.reverse();
 
-  db.updateCopyTarget(target.id, { lastSignature: newest });
+  if (!foundCursor) {
+    // A bounded history with an unknown gap cannot safely replay entries or
+    // proportional exits. Preserve the cursor and require a deliberate resume.
+    db.updateCopyTarget(target.id, { enabled: false });
+    dropQueued(target.address);
+    await unsubscribe(target.address);
+    log.warn(`Paused ${target.label}: its previous signature was not found within ${fresh.length} receipts.`);
+    await notify(
+      `⚠️ <b>Copy trading paused for ${h(target.label)}</b>\n\n` +
+      `The previous checkpoint was missing from the last ${fresh.length} transactions. ` +
+      'There may be a gap in the history, so no trades from this backlog were copied. ' +
+      'Review this trader before following again.',
+    ).catch(() => {});
+    return;
+  }
 
-  for (const signature of fresh) await handleSignature(target, signature, notify, 'poll');
+  // Advance only across resolved receipts, including transactions that failed
+  // on chain. An unreadable receipt blocks this cursor until a later sweep.
+  for (const s of fresh.reverse()) {
+    assertExecutionEpoch(epoch);
+    if (!currentTarget(target)) return;
+    const signature = s.signature;
+    if (s.err) rememberReceipt(target, signature);
+    else if (!(await handleSignature(target, signature, notify, 'poll'))) return;
+    assertExecutionEpoch(epoch);
+    if (!currentTarget(target)) return;
+    db.updateCopyTarget(target.id, { lastSignature: signature });
+  }
 }
 
 // ── live subscriptions ────────────────────────────────────────────────────────
@@ -555,6 +696,12 @@ const FLOOD_LIMIT = 60;
 const floodCounts = new Map<string, number>();
 let draining = false;
 
+function dropQueued(address: string): void {
+  for (let i = queue.length - 1; i >= 0; i--) {
+    if (queue[i]!.target.address === address) queue.splice(i, 1);
+  }
+}
+
 /**
  * Make room by dropping the stalest trade from the busiest wallet.
  *
@@ -589,7 +736,10 @@ function enqueue(item: Queued): void {
     floodCounts.set(item.target.address, dropped);
 
     if (dropped === FLOOD_LIMIT) {
-      log.warn(`${item.target.label} is too busy to follow — dropping its subscription.`);
+      log.warn(`${item.target.label} is too busy to follow — disabling the target.`);
+      db.updateCopyTarget(item.target.id, { enabled: false });
+      dropQueued(item.target.address);
+      floodCounts.delete(item.target.address);
       void unsubscribe(item.target.address);
       void item
         .notify(
@@ -803,6 +953,8 @@ function entriesSoFar(target: CopyTarget, mint: string): number {
 export interface CopyBuyServices {
   selectWallets: typeof selectWallets;
   getMintBalances: typeof getMintBalances;
+  allWallets?: typeof allWallets;
+  getMintDecimals?: typeof getMintDecimals;
   screenToken: typeof screenToken;
   batchPumpTrade: typeof batchPumpTrade;
   measureTokensGained: typeof measureTokensGained;
@@ -811,6 +963,8 @@ export interface CopyBuyServices {
 const buyServices: CopyBuyServices = {
   selectWallets,
   getMintBalances,
+  allWallets,
+  getMintDecimals,
   screenToken,
   batchPumpTrade,
   measureTokensGained,
@@ -823,8 +977,16 @@ export async function mirrorBuy(
   notify: Notifier,
   services: CopyBuyServices = buyServices,
 ): Promise<void> {
+  const epoch = executionEpoch();
+  const intent = copyIntent(target);
   // every decision below reads state that a concurrent copy would change
-  return withMintLock(move.mint, () => mirrorBuyLocked(target, move, theirSol, notify, services));
+  return withExecution(() => {
+    assertExecutionEpoch(epoch);
+    return withMintLock(move.mint, () => mirrorBuyLocked(target, move, theirSol, notify, services));
+  }, () => {
+    const current = currentTarget(target);
+    return !!current && copyIntent(current) === intent;
+  });
 }
 
 async function mirrorBuyLocked(
@@ -834,6 +996,7 @@ async function mirrorBuyLocked(
   notify: Notifier,
   services: CopyBuyServices,
 ): Promise<void> {
+  assertCopyCurrent(target);
   // a token this target was already refused is not reconsidered: the answer
   // will not have changed, and re-reading it turns one bad coin into a stream
   if (target.refusedMints?.includes(move.mint)) {
@@ -916,9 +1079,11 @@ async function mirrorBuyLocked(
     }),
   );
 
-  const heldBefore = await services.getMintBalances(wallets.map((w) => w.address), move.mint).catch(
+  const accountAddresses = [...new Set([...wallets, ...(services.allWallets?.() ?? [])].map((w) => w.address))];
+  const heldBefore = await services.getMintBalances(accountAddresses, move.mint).catch(
     () => undefined,
   );
+  assertCopyCurrent(target);
   if (heldBefore === undefined) {
     // Unknown holdings cannot establish room under either position limit, and
     // must not reset the cost basis as though this were an empty position.
@@ -1032,6 +1197,7 @@ async function mirrorBuyLocked(
    * and re-reading it every time turns one bad token into a stream of alerts.
    */
   const { verdict, info } = await screening;
+  assertCopyCurrent(target);
   if (!verdict.safe) {
     /*
      * Recorded as refused, not as copied. Those were once the same list, which
@@ -1086,6 +1252,7 @@ async function mirrorBuyLocked(
   ).catch(() => {});
 
   try {
+    assertCopyCurrent(target);
     const summary = await services.batchPumpTrade(wallets, {
       action: 'buy',
       mint: move.mint,
@@ -1096,11 +1263,15 @@ async function mirrorBuyLocked(
       pool: 'auto',
     });
 
-    const fills = summary.results.filter((r) => r.ok && r.signature).length;
+    const filled = summary.results.filter((r) => r.ok && r.signature);
+    const fills = filled.length;
+    const uncertain = summary.results.some((r) => r.confirmationUnknown);
+    if (uncertain) db.invalidateBasis(move.mint);
 
     // the token count is the cost basis: without it there is no entry price,
     // and without an entry price a take-profit or stop-loss cannot fire at all
-    const tokensGained = await services.measureTokensGained(addresses, move.mint, heldBefore, info?.decimals);
+    const decimals = info?.decimals ?? await services.getMintDecimals?.(move.mint).catch(() => undefined);
+    const tokensGained = decimals === undefined ? 0 : await services.measureTokensGained(filled.map((r) => r.address), move.mint, heldBefore, decimals);
     db.recordBuy(move.mint, {
       solSpent: perWallet * fills,
       fills,
@@ -1109,7 +1280,8 @@ async function mirrorBuyLocked(
       costSol: summary.solSpent,
       // `holding` was read before the limits that needed it, above
       freshEntry: !holding,
-      decimals: info?.decimals,
+      decimals,
+      quantityComplete: !uncertain,
     });
 
     if (fills > 0) armCopyRules(target, move.mint, notify);
@@ -1123,7 +1295,8 @@ async function mirrorBuyLocked(
       note: `copied ${target.label} (entry ${already + 1}/${allowed})`,
     });
 
-    await notify(`👥 Copy buy done — ✅ ${summary.succeeded}  ❌ ${summary.failed}${firstReason(summary)}`).catch(
+    await notify(`👥 Copy buy done — ✅ ${summary.succeeded}  ❌ ${summary.failed}${firstReason(summary)}` +
+      (uncertain ? '\nSome trades may still land. Entry basis is unknown; check the wallets before another order.' : '')).catch(
       () => {},
     );
   } catch (err) {
@@ -1147,6 +1320,8 @@ function firstReason(summary: { results: Array<{ ok: boolean; error?: string }> 
 }
 
 async function mirrorSell(target: CopyTarget, move: TokenMove, notify: Notifier): Promise<void> {
+  const epoch = executionEpoch();
+  const intent = copyIntent(target);
   /*
    * Behind the same lock the buys queue on.
    *
@@ -1157,7 +1332,13 @@ async function mirrorSell(target: CopyTarget, move: TokenMove, notify: Notifier)
    * concludes there is nothing to close, which leaves the position open on a
    * trade the trader has already left.
    */
-  return withMintLock(move.mint, () => mirrorSellLocked(target, move, notify));
+  return withExecution(() => {
+    assertExecutionEpoch(epoch);
+    return withMintLock(move.mint, () => mirrorSellLocked(target, move, notify));
+  }, () => {
+    const current = currentTarget(target);
+    return !!current && copyIntent(current) === intent;
+  });
 }
 
 async function mirrorSellLocked(
@@ -1165,6 +1346,7 @@ async function mirrorSellLocked(
   move: TokenMove,
   notify: Notifier,
 ): Promise<void> {
+  assertCopyCurrent(target);
   /*
    * Only exit what this trader actually put you into.
    *
@@ -1197,6 +1379,7 @@ async function mirrorSellLocked(
 
   // only act if we actually hold it
   const held = await getMintBalances(wallets.map((w) => w.address), move.mint).catch(() => new Map());
+  assertCopyCurrent(target);
   if (held.size === 0) {
     // the wallets that built this position may sit outside the active group,
     // in which case the exit silently does nothing — say so rather than not
@@ -1240,6 +1423,7 @@ async function mirrorSellLocked(
   log.info(`Copying ${target.label} out of ${move.mint} (${percent}%)`);
 
   try {
+    assertCopyCurrent(target);
     const summary = await batchPumpTrade(wallets, {
       action: 'sell',
       mint: move.mint,
@@ -1252,24 +1436,28 @@ async function mirrorSellLocked(
 
     // the proceeds, so the position's P&L reflects a copied exit as a return
     // rather than as the disappearance of everything it cost
-    const sellFills = summary.results.filter((r) => r.ok && r.signature).length;
+    const filled = summary.results.filter((r) => r.ok && r.signature);
+    const sellFills = filled.length;
+    const uncertain = summary.results.some((r) => r.confirmationUnknown);
+    if (uncertain) db.invalidateBasis(move.mint);
 
     /*
      * What this exit made, priced before the sale is recorded — recording
      * changes the position the profit is measured against.
      */
     const position = db.position(move.mint);
+    const decimals = position?.decimals ?? await getMintDecimals(move.mint).catch(() => undefined);
     const tokensSold = await measureTokensSold(
-      wallets.map((w) => w.address),
+      filled.map((r) => r.address),
       move.mint,
       held,
-      position?.decimals,
+      decimals,
     );
     const outcome =
       summary.solReceived !== undefined ? exitResult(position, tokensSold, summary.solReceived) : null;
 
-    if (summary.solReceived !== undefined && sellFills > 0) {
-      db.recordSell(move.mint, summary.solReceived, sellFills);
+    if (sellFills > 0) {
+      db.recordSell(move.mint, summary.solReceived ?? 0, sellFills, uncertain ? undefined : tokensSold || undefined);
     }
 
     db.appendTradeLog({
@@ -1286,6 +1474,7 @@ async function mirrorSellLocked(
       `👥 <b>${h(target.label)} sold ${percent}%</b>\n<code>${move.mint}</code>\n\n` +
         `Mirrored — ✅ ${summary.succeeded}  ❌ ${summary.failed}` +
         (outcome ? `\n${formatExit(outcome)}` : '') +
+        (uncertain ? '\nSome trades may still land. Entry basis and proceeds are unknown; check the wallets.' : '') +
         `${firstReason(summary)}`,
     ).catch(() => {});
   } catch (err) {

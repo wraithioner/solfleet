@@ -12,6 +12,7 @@ import { log } from '../logger.js';
 import { TransactionRejectedError, TransactionSubmissionUnknownError } from './errors.js';
 import type { WalletRecord, ExecutionResult, BatchSummary } from '../types.js';
 import type { ProgressFn } from './engine.js';
+import { withExecution } from '../services/execution.js';
 
 /**
  * Distribution — the opposite direction to a sweep.
@@ -126,6 +127,15 @@ export function planFunding(opts: {
  * turns a funding run into a scatter of "insufficient lamports" failures.
  */
 export async function executeFunding(
+  source: WalletRecord,
+  plan: FundPlan,
+  priorityFeeSol: number,
+  onProgress?: ProgressFn,
+): Promise<BatchSummary> {
+  return withExecution(() => executeFundingLocked(source, plan, priorityFeeSol, onProgress));
+}
+
+async function executeFundingLocked(
   source: WalletRecord,
   plan: FundPlan,
   priorityFeeSol: number,

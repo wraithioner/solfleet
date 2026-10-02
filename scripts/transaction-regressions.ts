@@ -4,8 +4,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import bs58 from 'bs58';
-import { ComputeBudgetInstruction, Keypair, SystemProgram, TransactionMessage, VersionedTransaction } from '@solana/web3.js';
-import { TOKEN_PROGRAM_ID } from '@solana/spl-token';
+import { createHash } from 'node:crypto';
+import { ComputeBudgetInstruction, Keypair, PublicKey, SystemProgram, TransactionInstruction, TransactionMessage, VersionedTransaction } from '@solana/web3.js';
+import { TOKEN_PROGRAM_ID, NATIVE_MINT, getAssociatedTokenAddressSync, createAssociatedTokenAccountIdempotentInstruction, createSyncNativeInstruction, createCloseAccountInstruction } from '@solana/spl-token';
 
 const temporaryData = fs.mkdtempSync(path.join(os.tmpdir(), 'solfleet-transactions-'));
 
@@ -13,10 +14,12 @@ process.env.BOT_TOKEN = '123:TEST';
 process.env.OWNER_IDS = '1';
 process.env.DATA_DIR = temporaryData;
 process.env.VAULT_AUTOLOCK_MINUTES = '0';
+process.env.JUPITER_REQUEST_INTERVAL_MS = '0';
 process.env.SOLANA_RPC_URL = 'http://127.0.0.1:8899';
 process.env.SOLANA_SEND_RPC_URL = process.env.SOLANA_RPC_URL;
 
 const { getBundleStatus, sendBundle, waitForBundle } = await import('../src/trade/jito.js');
+const { endpoints } = await import('../src/config.js');
 const { TransactionRejectedError, TransactionSubmissionUnknownError } = await import('../src/trade/errors.js');
 const { rpc, sendAndConfirm, signatureLanded, priorityFeeInstructions } = await import('../src/chains/solana.js');
 const originalFetch = globalThis.fetch;
@@ -42,6 +45,35 @@ function transaction(signer: Keypair, blockhash = Keypair.generate().publicKey.t
     recentBlockhash: blockhash,
     instructions: [SystemProgram.transfer({ fromPubkey: signer.publicKey, toPubkey: Keypair.generate().publicKey, lamports: 1 })],
   }).compileToV0Message());
+  tx.sign([signer]);
+  return tx;
+}
+
+/** Venue envelopes for status tests; trade correctness is not simulated here. */
+function tradeTransaction(signer: Keypair, mint: string, venue: 'pump' | 'jupiter' = 'pump'): VersionedTransaction {
+  const mintKey = new PublicKey(mint);
+  const instructions: TransactionInstruction[] = [];
+  const nativeAta = getAssociatedTokenAddressSync(NATIVE_MINT, signer.publicKey);
+  if (venue === 'jupiter') {
+    instructions.push(
+      createAssociatedTokenAccountIdempotentInstruction(signer.publicKey, nativeAta, signer.publicKey, NATIVE_MINT),
+      SystemProgram.transfer({ fromPubkey: signer.publicKey, toPubkey: nativeAta, lamports: 10_000_000 }),
+      createSyncNativeInstruction(nativeAta),
+    );
+  }
+  instructions.push(new TransactionInstruction({
+    programId: new PublicKey(venue === 'pump'
+      ? '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P'
+      : 'JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4'),
+    keys: [{ pubkey: signer.publicKey, isSigner: true, isWritable: true }, { pubkey: mintKey, isSigner: false, isWritable: false }],
+    data: Buffer.concat([createHash('sha256').update(`global:${venue === 'pump' ? 'buy' : 'route'}`).digest().subarray(0, 8), Buffer.alloc(16, 1)]),
+  }));
+  if (venue === 'jupiter') instructions.push(createCloseAccountInstruction(nativeAta, signer.publicKey, signer.publicKey));
+  const tx = new VersionedTransaction(new TransactionMessage({
+    payerKey: signer.publicKey, recentBlockhash: Keypair.generate().publicKey.toBase58(), instructions,
+  }).compileToV0Message());
+  // Deterministic signature of this message gives the status assertions their
+  // expected identity. External signing discards this supplied signature.
   tx.sign([signer]);
   return tx;
 }
@@ -192,7 +224,7 @@ try {
   globalThis.fetch = async (input) => {
     assert.equal(String(input), 'https://pumpportal.fun/api/trade-local');
     builds++;
-    const built = transaction(signer);
+    const built = tradeTransaction(signer, request.mint);
     builtSignature = bs58.encode(built.signatures[0]!);
     return new Response(built.serialize());
   };
@@ -234,12 +266,16 @@ try {
   globalThis.fetch = async (input, init) => {
     const url = String(input);
     if (url === 'https://pumpportal.fun/api/trade-local') return new Response('unavailable', { status: 400 });
-    if (url.startsWith('https://lite-api.jup.ag/swap/v1/quote?')) {
-      return new Response(JSON.stringify({ outAmount: '100', inAmount: '10000000', routePlan: [] }));
+    if (url.startsWith(`${endpoints.jupiterQuote}?`)) {
+      return new Response(JSON.stringify({
+        inputMint: NATIVE_MINT.toBase58(), outputMint: request.mint, inAmount: '10000000', outAmount: '100',
+        otherAmountThreshold: '95', swapMode: 'ExactIn', slippageBps: 500, priceImpactPct: '0',
+        routePlan: [{ swapInfo: { label: 'Offline venue fixture' }, percent: 100 }], platformFee: null,
+      }));
     }
-    if (url === 'https://lite-api.jup.ag/swap/v1/swap') {
+    if (url === endpoints.jupiterSwap) {
       assert.ok(JSON.parse(String(init?.body)).userPublicKey === wallet.address);
-      return new Response(JSON.stringify({ swapTransaction: Buffer.from(transaction(signer).serialize()).toString('base64') }));
+      return new Response(JSON.stringify({ swapTransaction: Buffer.from(tradeTransaction(signer, request.mint, 'jupiter').serialize()).toString('base64') }));
     }
     throw new Error(`Unexpected offline request: ${url}`);
   };
@@ -254,7 +290,7 @@ try {
   globalThis.fetch = async (input, init) => {
     if (String(input) === 'https://pumpportal.fun/api/trade-local') {
       assert.ok(Array.isArray(JSON.parse(String(init?.body))));
-      return new Response(JSON.stringify([bs58.encode(transaction(signer).serialize())]));
+      return new Response(JSON.stringify([bs58.encode(tradeTransaction(signer, request.mint).serialize())]));
     }
     if (String(input) === 'https://mainnet.block-engine.jito.wtf/api/v1/bundles') throw new Error('Jito send response lost');
     throw new Error(`Unexpected offline request: ${String(input)}`);

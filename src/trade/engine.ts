@@ -11,6 +11,8 @@ import {
   sendSplToken,
   getSplBalances,
   getTokenBalance,
+  getTokenAccounts,
+  getMintDecimals,
   getMintBalances,
   recentPriorityFeeMicroLamports,
   priorityFeeSolFromMicroLamports,
@@ -22,6 +24,7 @@ import { detectPool, PUMP_PROGRAM_ID } from './curve.js';
 import { swapToSol, swapFromSol } from './jupiter.js';
 import { fundingBalances, partitionByBalance, requiredForBuy, exitReserveLamports } from './fund.js';
 import { TransactionRejectedError, TransactionSubmissionUnknownError } from './errors.js';
+import { withExecution } from '../services/execution.js';
 
 /**
  * The multiplier an exit is allowed to bid, mirrored from the watcher.
@@ -75,16 +78,16 @@ export async function measureTokensGained(
   before: Map<string, bigint> | undefined,
   decimals: number | undefined,
 ): Promise<number> {
-  if (!before || addresses.length === 0) return 0;
+  if (!before || addresses.length === 0 || decimals === undefined || !Number.isInteger(decimals) || decimals < 0) return 0;
 
   const after = await getMintBalances(addresses, mint).catch(() => undefined);
   if (!after) return 0;
 
   let deltaRaw = 0n;
-  for (const [address, held] of after) deltaRaw += held - (before.get(address) ?? 0n);
+  for (const address of new Set(addresses)) deltaRaw += (after.get(address) ?? 0n) - (before.get(address) ?? 0n);
   if (deltaRaw <= 0n) return 0;
 
-  return Number(deltaRaw) / 10 ** (decimals ?? 6);
+  return Number(deltaRaw) / 10 ** decimals;
 }
 
 /**
@@ -113,16 +116,16 @@ export async function measureTokensSold(
   before: Map<string, bigint> | undefined,
   decimals: number | undefined,
 ): Promise<number> {
-  if (!before || addresses.length === 0) return 0;
+  if (!before || addresses.length === 0 || decimals === undefined || !Number.isInteger(decimals) || decimals < 0) return 0;
 
   const after = await getMintBalances(addresses, mint).catch(() => undefined);
   if (!after) return 0;
 
   let deltaRaw = 0n;
-  for (const [address, held] of before) deltaRaw += held - (after.get(address) ?? 0n);
+  for (const address of new Set(addresses)) deltaRaw += (before.get(address) ?? 0n) - (after.get(address) ?? 0n);
   if (deltaRaw <= 0n) return 0;
 
-  return Number(deltaRaw) / 10 ** (decimals ?? 6);
+  return Number(deltaRaw) / 10 ** decimals;
 }
 
 function fail(w: WalletRecord, err: unknown): ExecutionResult {
@@ -157,6 +160,15 @@ export async function batchPumpTrade(
   wallets: WalletRecord[],
   request: TradeRequest,
   mode: ExecutionMode = db.settings().executionMode,
+  onProgress?: ProgressFn,
+): Promise<BatchSummary> {
+  return withExecution(() => batchPumpTradeLocked(wallets, request, mode, onProgress));
+}
+
+async function batchPumpTradeLocked(
+  wallets: WalletRecord[],
+  request: TradeRequest,
+  mode: ExecutionMode,
   onProgress?: ProgressFn,
 ): Promise<BatchSummary> {
   const startedAt = Date.now();
@@ -302,6 +314,12 @@ export async function batchPumpTrade(
       : await parallelTrades(active, req, startedAt, ctx, onProgress);
 
   const combined = summarise([...summary.results, ...idle], startedAt);
+  // An unresolved wallet can land inside the measurement window. Assigning its
+  // spend/proceeds to confirmed fills would invent the confirmed position's cost.
+  if (combined.results.some((r) => r.confirmationUnknown)) {
+    db.invalidateBasis(req.mint);
+    return combined;
+  }
   if (req.action === 'buy') {
     combined.solSpent = await measureSolSpent(active.map((w) => w.address), solBefore);
   } else if (solBeforeSell) {
@@ -659,6 +677,14 @@ export async function batchSweepSol(
   destination: string,
   onProgress?: ProgressFn,
 ): Promise<BatchSummary> {
+  return withExecution(() => batchSweepSolLocked(wallets, destination, onProgress));
+}
+
+async function batchSweepSolLocked(
+  wallets: WalletRecord[],
+  destination: string,
+  onProgress?: ProgressFn,
+): Promise<BatchSummary> {
   const startedAt = Date.now();
   const settings = db.settings();
 
@@ -684,8 +710,8 @@ export async function batchSweepSol(
        * An empty wallet keeps the configured figure, which is what the setting
        * is for.
        */
-      const holdings = await getSplBalances(w.address).catch(() => []);
-      const holdsTokens = holdings.some((t) => t.amount > 0);
+      const holdings = await getSplBalances(w.address).catch(() => undefined);
+      const holdsTokens = holdings === undefined || holdings.some((t) => t.rawAmount > 0n);
       const floorSol =
         Number(
           exitReserveLamports(
@@ -734,53 +760,61 @@ export async function batchSweepToken(
   destination: string,
   onProgress?: ProgressFn,
 ): Promise<BatchSummary> {
+  return withExecution(() => batchSweepTokenLocked(wallets, mint, destination, onProgress));
+}
+
+async function batchSweepTokenLocked(
+  wallets: WalletRecord[],
+  mint: string,
+  destination: string,
+  onProgress?: ProgressFn,
+): Promise<BatchSummary> {
   const startedAt = Date.now();
   const settings = db.settings();
   const senders = wallets.filter((w) => !w.disabled && w.address !== destination);
   let done = 0;
 
-  const results = await pMap(senders, config.trading.concurrency, async (w) => {
+  const perWallet = await pMap(senders, config.trading.concurrency, async (w): Promise<ExecutionResult[]> => {
     try {
-      const holding = await getTokenBalance(w.address, mint);
-      if (!holding || holding.rawAmount === 0n) {
-        return {
+      const holdings = await getTokenAccounts(w.address, mint);
+      if (holdings.length === 0) {
+        return [{
           walletId: w.id,
           label: w.label,
           address: w.address,
           ok: true,
           detail: 'no balance',
-        } satisfies ExecutionResult;
+        } satisfies ExecutionResult];
       }
 
-      const signature = await sendSplToken(
-        solanaKeypair(w),
-        destination,
-        mint,
-        holding.rawAmount,
-        holding.decimals,
-        settings.priorityFeeSol,
-        holding.programId,
-        true, // close the emptied account and reclaim its rent
-        holding.tokenAccount,
-      );
-
-      return {
-        walletId: w.id,
-        label: w.label,
-        address: w.address,
-        ok: true,
-        signature,
-        detail: `${holding.amount} tokens`,
-      } satisfies ExecutionResult;
+      const results: ExecutionResult[] = [];
+      const keypair = solanaKeypair(w);
+      // Each account has its own source and rent. Preserve already confirmed
+      // transfers if a later account fails, instead of hiding the partial fill.
+      for (const holding of holdings) {
+        try {
+          const signature = await sendSplToken(
+            keypair, destination, mint, holding.rawAmount, holding.decimals,
+            settings.priorityFeeSol, holding.programId, true, holding.tokenAccount,
+          );
+          results.push({ walletId: w.id, label: w.label, address: w.address, ok: true,
+            signature, detail: `${holding.amount} tokens from ${holding.tokenAccount}` });
+        } catch (err) {
+          results.push(fail(w, err));
+          // Unknown confirmation can leave this wallet's available SOL unclear.
+          if (err instanceof TransactionSubmissionUnknownError) break;
+        }
+      }
+      return results;
     } catch (err) {
-      return fail(w, err);
+      return [fail(w, err)];
     } finally {
       done++;
       await onProgress?.(done, senders.length);
     }
   });
 
-  return summarise(results, startedAt);
+  return summarise(perWallet.flat(), startedAt);
 }
 
 /**
@@ -788,6 +822,13 @@ export async function batchSweepToken(
  * the "get me flat and consolidated" button.
  */
 export async function batchSellAllPositions(
+  wallets: WalletRecord[],
+  onProgress?: ProgressFn,
+): Promise<{ mints: string[]; summaries: Record<string, BatchSummary>; skipped: string[] }> {
+  return withExecution(() => batchSellAllPositionsLocked(wallets, onProgress));
+}
+
+async function batchSellAllPositionsLocked(
   wallets: WalletRecord[],
   onProgress?: ProgressFn,
 ): Promise<{ mints: string[]; summaries: Record<string, BatchSummary>; skipped: string[] }> {
@@ -832,6 +873,9 @@ export async function batchSellAllPositions(
     await onProgress?.(i, mints.length, `selling ${mint.slice(0, 6)}…`);
 
     const holders = wallets.filter((w) => !w.disabled);
+    const addresses = holders.map((w) => w.address);
+    const before = await getMintBalances(addresses, mint).catch(() => undefined);
+    const decimals = db.position(mint)?.decimals ?? await getMintDecimals(mint).catch(() => undefined);
     const summary = await batchPumpTrade(holders, {
       action: 'sell',
       mint,
@@ -844,9 +888,12 @@ export async function batchSellAllPositions(
     summaries[mint] = summary;
 
     // closing everything is still a set of exits, and each one returned SOL
-    const fills = summary.results.filter((r) => r.ok && r.signature).length;
-    if (summary.solReceived !== undefined && fills > 0) {
-      db.recordSell(mint, summary.solReceived, fills);
+    const filled = summary.results.filter((r) => r.ok && r.signature);
+    const fills = filled.length;
+    const uncertain = summary.results.some((r) => r.confirmationUnknown);
+    if (fills > 0) {
+      const sold = await measureTokensSold(filled.map((r) => r.address), mint, before, decimals);
+      db.recordSell(mint, summary.solReceived ?? 0, fills, uncertain ? undefined : sold || undefined);
     }
   }
 

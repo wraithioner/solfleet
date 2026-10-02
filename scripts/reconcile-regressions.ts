@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
+import bs58 from 'bs58';
 import type { ConfirmedSignatureInfo, ParsedTransactionWithMeta } from '@solana/web3.js';
 import type { ReconcileServices } from '../src/services/reconcile.js';
 
@@ -16,13 +18,24 @@ const { proceedsByMint, rebuildRealised } = await import('../src/services/reconc
 const owner = '11111111111111111111111111111111';
 const mint = 'offline-reconciliation-mint';
 const sale = {
-  transaction: { message: { accountKeys: [{ pubkey: owner }] } },
+  transaction: { message: {
+    accountKeys: [{ pubkey: owner, signer: true }, { pubkey: 'token-account' }],
+    instructions: [{
+      programId: '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P',
+      accounts: [owner, 'token-account'],
+      data: bs58.encode(createHash('sha256').update('global:sell').digest().subarray(0, 8)),
+    }],
+  } },
   meta: {
     err: null,
-    preTokenBalances: [{ mint, owner, uiTokenAmount: { uiAmount: 100 } }],
-    postTokenBalances: [{ mint, owner, uiTokenAmount: { uiAmount: 0 } }],
-    preBalances: [0],
-    postBalances: [100_000_000],
+    preTokenBalances: [{ accountIndex: 1, mint, owner, uiTokenAmount: { amount: '100', decimals: 0, uiAmount: 100 } }],
+    postTokenBalances: [{ accountIndex: 1, mint, owner, uiTokenAmount: { amount: '0', decimals: 0, uiAmount: 0 } }],
+    preBalances: [0, 2_039_280],
+    postBalances: [100_000_000, 2_039_280],
+    innerInstructions: [{ index: 0, instructions: [{
+      programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+      parsed: { type: 'transfer', info: { source: 'token-account', destination: 'pool-token-account', amount: '100' } },
+    }] }],
   },
 } as unknown as ParsedTransactionWithMeta;
 const page = (prefix: string, count: number, blockTime = 10_000): ConfirmedSignatureInfo[] =>
@@ -85,7 +98,7 @@ try {
   {
     const pages = Array.from({ length: 12 }, (_, i) => page(`boundary-${i}`, 100, i === 11 ? 8_000 : 10_000));
     const result = await proceedsByMint(owner, 9_000_000, undefined, mocks(pages));
-    assert.equal(result.scanned, 1200);
+    assert.equal(result.scanned, 1100, 'transactions before the history boundary are excluded individually');
     assert.equal(result.complete, true, 'the history boundary was established at the budget boundary');
     check('the signature budget still permits a proven complete history boundary');
   }

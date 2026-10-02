@@ -1,5 +1,6 @@
 import { endpoints } from '../config.js';
 import { fetchJson, chunk } from '../util.js';
+import { fetchJupiterJson } from './jupiter-client.js';
 import { WSOL_MINT } from '../chains/solana.js';
 import { log } from '../logger.js';
 
@@ -56,7 +57,7 @@ export async function getSolanaPrices(mints: string[]): Promise<Map<string, numb
   // the price endpoint accepts a limited id list per request
   for (const group of chunk([...new Set(missing)], 50)) {
     try {
-      const res = await fetchJson<Record<string, JupPriceEntry | null>>(
+      const res = await fetchJupiterJson<Record<string, JupPriceEntry | null>>(
         `${endpoints.jupiterPrice}?ids=${group.join(',')}`,
         { timeoutMs: 12_000 },
       );
@@ -98,7 +99,7 @@ export async function getDexscreenerPrice(mint: string): Promise<number | undefi
     // priceUsd describes the pair's BASE token, so a pair where our mint is the
     // quote side would quote a completely unrelated token
     const pairs = (res.pairs ?? []).filter(
-      (p) => p.baseToken?.address?.toLowerCase() === mint.toLowerCase(),
+      (p) => p.baseToken?.address === mint,
     );
     if (pairs.length === 0) return undefined;
 

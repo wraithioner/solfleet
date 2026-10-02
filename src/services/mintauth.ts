@@ -1,6 +1,7 @@
 import { PublicKey } from '@solana/web3.js';
 import {
   TOKEN_2022_PROGRAM_ID,
+  TOKEN_PROGRAM_ID,
   ExtensionType,
   unpackMint,
   getExtensionTypes,
@@ -8,6 +9,7 @@ import {
   getTransferHook,
   getPermanentDelegate,
   getDefaultAccountState,
+  getPausableConfig,
 } from '@solana/spl-token';
 import { rpc } from '../chains/solana.js';
 import { retry } from '../util.js';
@@ -72,6 +74,7 @@ export function parseMintAccount(data: Uint8Array): MintAuthorities | null {
   const buf = Buffer.from(data);
   const mintAuthorityOption = buf.readUInt32LE(0);
   const freezeAuthorityOption = buf.readUInt32LE(46);
+  if (![0, 1].includes(mintAuthorityOption) || ![0, 1].includes(freezeAuthorityOption) || buf[45] !== 1) return null;
 
   return {
     mintAuthority:
@@ -126,6 +129,21 @@ export function parseTrapExtensions(data: Uint8Array, owner: string): string[] {
     if (getExtensionTypes(mint.tlvData).includes(ExtensionType.NonTransferable)) {
       traps.push('This token is non-transferable and can never be sold');
     }
+    const pausable = getPausableConfig(mint);
+    if (pausable && (pausable.paused || !pausable.authority.equals(PublicKey.default))) {
+      traps.push('A pause authority can stop every transfer for this mint');
+    }
+    const reviewed = new Set([
+      ExtensionType.Uninitialized, ExtensionType.TransferFeeConfig, ExtensionType.MintCloseAuthority,
+      ExtensionType.ConfidentialTransferMint, ExtensionType.DefaultAccountState, ExtensionType.NonTransferable,
+      ExtensionType.InterestBearingConfig, ExtensionType.PermanentDelegate, ExtensionType.TransferHook,
+      ExtensionType.MetadataPointer, ExtensionType.TokenMetadata, ExtensionType.GroupPointer,
+      ExtensionType.TokenGroup, ExtensionType.GroupMemberPointer, ExtensionType.TokenGroupMember,
+      ExtensionType.ScaledUiAmountConfig, ExtensionType.PausableConfig, ExtensionType.PermissionedBurn,
+    ]);
+    if (getExtensionTypes(mint.tlvData).some((type) => !reviewed.has(type))) {
+      traps.push('Token-2022 has an extension whose transfer behavior has not been reviewed');
+    }
   } catch {
     // an unparseable extension block is itself worth saying out loud
     return ['Token-2022 extensions could not be read'];
@@ -140,10 +158,14 @@ export async function getMintAuthorities(mint: string): Promise<MintAuthorities 
     const info = await retry(() => rpc().getAccountInfo(new PublicKey(mint)), { attempts: 2 });
     if (!info) return null;
 
+    const owner = info.owner.toBase58();
+    if (owner !== TOKEN_PROGRAM_ID.toBase58() && owner !== TOKEN_2022_PROGRAM_ID.toBase58()) return null;
+    // The SDK validates account size and the Token-2022 account type byte.
+    unpackMint(new PublicKey(mint), info, info.owner);
+
     const base = parseMintAccount(info.data);
     if (!base) return null;
 
-    const owner = info.owner.toBase58();
     const token2022 = owner === TOKEN_2022_PROGRAM_ID.toBase58();
     return { ...base, token2022, traps: parseTrapExtensions(info.data, owner) };
   } catch {

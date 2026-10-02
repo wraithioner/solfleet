@@ -3,6 +3,7 @@ import bs58 from 'bs58';
 import { endpoints } from '../config.js';
 import { fetchJson, sleep } from '../util.js';
 import { TransactionRejectedError, TransactionSubmissionUnknownError } from './errors.js';
+import { assertExecutionCurrent } from '../services/execution.js';
 
 /**
  * Jito bundle submission. A bundle is an ordered list of up to 5 transactions
@@ -25,6 +26,9 @@ export async function sendBundle(transactions: VersionedTransaction[]): Promise<
   const encoded = transactions.map((tx) => bs58.encode(tx.serialize()));
 
   const firstSignature = bs58.encode(transactions[0]!.signatures[0]!);
+  // Cancellation before dispatch is definite; it must not be labelled an
+  // uncertain submission or retried with a wallet that has been removed.
+  assertExecutionCurrent();
   let res: JitoRpcResponse<string>;
   try {
     res = await fetchJson<JitoRpcResponse<string>>(endpoints.jitoBundles, {

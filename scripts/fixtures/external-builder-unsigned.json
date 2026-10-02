@@ -1,0 +1,112 @@
+{
+  "capturedAt": "2026-10-02T19:01:37.360Z",
+  "source": "Read-only calls to PumpPortal trade-local and Jupiter quote/swap; throwaway public keys. No signing, simulation or broadcasting.",
+  "samples": [
+    {
+      "kind": "pump",
+      "args": {
+        "publicKey": "4rGncwEhSW6AMgqCMhfRK5pBfUaoESHjgmpwCAGNsYDE",
+        "action": "buy",
+        "mint": "2xHkesAQteG9yz48SDaVAtKdFU6Bvdo9sXS3uQCbpump",
+        "amount": 0.01,
+        "denominatedInSol": "true",
+        "slippage": 15,
+        "priorityFee": 0.00005,
+        "pool": "pump"
+      },
+      "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAAQAECzkyXs20dM2amjl+lRw5hmioQC4SfUY/fv4HZt/yLnxhEnvqWvbYD4b44ZlhWWa6ixQE7391Frx1x3IM0yLDXY/rb6PysvNWxjmHB1zP/8RGOhR6ET+OmkOhiqp1dAQNjcc8oHpIk4+2Ri9T0eJs6nNn95Ke+N4rHSCBsAkwmpQbTTVNjwijNdYevGuP4u3CDnyIBvUj1FxxYl6KOjudD/QPFGbS2IKEqsGixmG8rrXa1wzu8prf/DjwGpT2WrSJnSS9k+E8EKOiKyyeyqtnlZPmIqtVu4QZEQeok4D+XAtTAwZGb+UhFzL/7K26csOb57yM5bvF9xJrLEObOkAAAACMlyWPTiSJ8bs9ECkUjg2DC1oTmdr/EIQEjnvY2+n4WR0Fkt1hjxUe83xcBScLDkhYJpbDingwrdqqgeUPNfKP0nty+/Z83CEGFBr590oPCdka7n3mOvjmGdoFX9cToRmdAka9SvYx3vtboZQtbiKD5PGQo28GJ128XBwyGqFp9AQHAAUCEJgCAAcACQPlfAQAAAAAAAgGAAEACQ4PAQEKExALCQIDAQAODwQREhMFFBUGDA0aZjI9EgHa6+pUi3tgTAAAABc7sQAAAAAAMgABaPO83kHcfHKmDOzNhB/dL7SSKVPBqjKzDKSprV71i0MDFh8gCAEICwUCGB0c"
+    },
+    {
+      "kind": "pump",
+      "args": {
+        "publicKey": "4rGncwEhSW6AMgqCMhfRK5pBfUaoESHjgmpwCAGNsYDE",
+        "action": "sell",
+        "mint": "2xHkesAQteG9yz48SDaVAtKdFU6Bvdo9sXS3uQCbpump",
+        "amount": 1000,
+        "denominatedInSol": "false",
+        "slippage": 15,
+        "priorityFee": 0.00005,
+        "pool": "pump"
+      },
+      "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAAQAECjkyXs20dM2amjl+lRw5hmioQC4SfUY/fv4HZt/yLnxhEnvqWvbYD4b44ZlhWWa6ixQE7391Frx1x3IM0yLDXY/rb6PysvNWxjmHB1zP/8RGOhR6ET+OmkOhiqp1dAQNjcc8oHpIk4+2Ri9T0eJs6nNn95Ke+N4rHSCBsAkwmpQbTTVNjwijNdYevGuP4u3CDnyIBvUj1FxxYl6KOjudD/QkvZPhPBCjoissnsqrZ5WT5iKrVbuEGREHqJOA/lwLUwMGRm/lIRcy/+ytunLDm+e8jOW7xfcSayxDmzpAAAAAjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+FkdBZLdYY8VHvN8XAUnCw5IWCaWw4p4MK3aqoHlDzXyj9J7cvv2fNwhBhQa+fdKDwnZGu595jr45hnaBV/XE6EZtD3+JmEGzOCNPfnxIzlG0ySsrCfJR1hPjdm5KWSuInAEBgAFAhCYAgAGAAkD5XwEAAAAAAAHBgABAAgQCgEBCRIRCwgCAwEAEAQKEhMUDA0FDg8iMzKFpAF/g60Aypo7AAAAAAAAAAAAAAAAMgAAAAAAAADwvwFo87zeQdx8cqYM7M2EH90vtJIpU8GqMrMMpKmtXvWLQwYIFhwaHyAFAQsFAh0="
+    },
+    {
+      "kind": "jupiter",
+      "quote": {
+        "inputMint": "So11111111111111111111111111111111111111112",
+        "inAmount": "10000000",
+        "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "outAmount": "1184404",
+        "otherAmountThreshold": "1178482",
+        "swapMode": "ExactIn",
+        "slippageBps": 50,
+        "platformFee": null,
+        "priceImpactPct": "0",
+        "routePlan": [
+          {
+            "swapInfo": {
+              "ammKey": "8sLbNZoA1cfnvMJLPfp98ZLAnFSYCFApfJKMbiXNLwxj",
+              "label": "Raydium CLMM",
+              "inputMint": "So11111111111111111111111111111111111111112",
+              "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+              "inAmount": "10000000",
+              "outAmount": "1184404",
+              "updateContextSlot": "452698335"
+            },
+            "percent": 100,
+            "bps": null
+          }
+        ],
+        "contextSlot": 452698335,
+        "timeTaken": 0.001680653,
+        "swapUsdValue": "1.184274687282227",
+        "mostReliableAmmsQuoteReport": {
+          "info": {
+            "BZtgQEyS6eXUXicYPHecYQ7PybqodXQMvkjUbP4R8mUU": "1184027",
+            "Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE": "1183532"
+          }
+        },
+        "longtailMarketQuoteReport": null,
+        "useIncurredSlippageForQuoting": null,
+        "useRewards": null,
+        "otherRoutePlans": null,
+        "loadedLongtailToken": false,
+        "instructionVersion": null,
+        "transactionVersion": 0
+      },
+      "userPublicKey": "4rGncwEhSW6AMgqCMhfRK5pBfUaoESHjgmpwCAGNsYDE",
+      "priorityFeeSol": 0.00005,
+      "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAAQAGDDkyXs20dM2amjl+lRw5hmioQC4SfUY/fv4HZt/yLnxhBFIvHTy9cU6ZGAEQct8/4RrN/8hf5JAK+kqj6buJxi8VxD2CKFWEkjtOdicB9qjmiD92uF3zOrOdHCODGOpNXRnr8QT5vCtp92ymTmAZ0rwyovTDH+OqpBfAI5yjCiQ5yeUGZWXXPLnkaE0sLeZvSCEmGdUwDiBefu3/47seg0T0sL2Hhh4BbBfYDQMD5XHzKJIaVQgT7dGUjRhFNMFvHQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAwZGb+UhFzL/7K26csOb57yM5bvF9xJrLEObOkAAAAAEedVb8jHAbu50xW7OaBUH/bGy3qP0jlECsc2iVrwTjwbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+Fm0P/on9df2SnTAmx8pWHneSwmrNt/J3VFLMhqns4zl6E6YbftBJWQWE9WRj6d1axAXxHzJZR0wlUorssNB4Ql5CAcABQLAXBUABwAJA4KLAAAAAAAACgYAAwARBgkBAQYCAAMMAgAAAICWmAAAAAAACQEDAREKBgACABQGCQEBCBgJAAMCCBQICwgTABIPAwINDgwJARAEBQgj5RfLl3rjrSoBAAAAGmQAAYCWmAAAAAAAlBISAAAAAAAyAAAJAwMAAAEJAc8rFKNQA6+0Qab0nAoYoa2fxeGDaoO82W7pleCygUXQBY6YkJEZBAOVGBc="
+    },
+    {
+      "kind": "pump-bundle",
+      "args": {
+        "publicKey": "4rGncwEhSW6AMgqCMhfRK5pBfUaoESHjgmpwCAGNsYDE",
+        "action": "buy",
+        "mint": "2xHkesAQteG9yz48SDaVAtKdFU6Bvdo9sXS3uQCbpump",
+        "amount": 0.01,
+        "denominatedInSol": "true",
+        "slippage": 15,
+        "priorityFee": 0.0001,
+        "pool": "pump"
+      },
+      "index": 0,
+      "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAAQAFDTkyXs20dM2amjl+lRw5hmioQC4SfUY/fv4HZt/yLnxhiQd9VaW7EzB2Prdn9V7Ad7QaDQdffeHXP7rKPGPVVHESe+pa9tgPhvjhmWFZZrqLFATvf3UWvHXHcgzTIsNdj+tvo/Ky81bGOYcHXM//xEY6FHoRP46aQ6GKqnV0BA2NxzygekiTj7ZGL1PR4mzqc2f3kp743isdIIGwCTCalBtNNU2PCKM11h68a4/i7cIOfIgG9SPUXHFiXoo6O50P9A8UZtLYgoSqwaLGYbyutdrXDO7ymt/8OPAalPZatImdJL2T4TwQo6IrLJ7Kq2eVk+Yiq1W7hBkRB6iTgP5cC1MDBkZv5SEXMv/srbpyw5vnvIzlu8X3EmssQ5s6QAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+FkdBZLdYY8VHvN8XAUnCw5IWCaWw4p4MK3aqoHlDzXyj9J7cvv2fNwhBhQa+fdKDwnZGu595jr45hnaBV/XE6EZPbZQFo0T+WEBPabBSXxym37lAqH+L4F8d3Xp19bVPJEECAAFAhCYAgAJAgABDAIAAACghgEAAAAAAAoGAAIACwkQAQEMExENCwMEAgAJEAUSExQGFRYHDg8aZjI9EgHa6+pUi3tgTAAAAGBXzgEAAAAAMgABaPO83kHcfHKmDOzNhB/dL7SSKVPBqjKzDKSprV71i0MDFhogBwgLBQIYHRw="
+    },
+    {
+      "kind": "pump-bundle",
+      "args": {
+        "publicKey": "4x3kBwjV6zJxoWTyR9uod7SLqAse1UgNYJgvb3NcGRBe",
+        "action": "buy",
+        "mint": "2xHkesAQteG9yz48SDaVAtKdFU6Bvdo9sXS3uQCbpump",
+        "amount": 0.01,
+        "denominatedInSol": "true",
+        "slippage": 15,
+        "priorityFee": 0,
+        "pool": "pump"
+      },
+      "index": 1,
+      "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAAQAECzqtG9AYP/ChroSor4W8iWEF8TYFkj98PsSbOIuj1v3xqGCazgqCSkp8ByQvxSY5YWDCjeM7NRtW4nOy9zlQzf7rb6PysvNWxjmHB1zP/8RGOhR6ET+OmkOhiqp1dAQNjcc8oHpIk4+2Ri9T0eJs6nNn95Ke+N4rHSCBsAkwmpQbTTVNjwijNdYevGuP4u3CDnyIBvUj1FxxYl6KOjudD/TF7RZ4SuWVPFkztCUg4+nK+JTE6Mzlj7mkpCJkFli2giS9k+E8EKOiKyyeyqtnlZPmIqtVu4QZEQeok4D+XAtTAwZGb+UhFzL/7K26csOb57yM5bvF9xJrLEObOkAAAACMlyWPTiSJ8bs9ECkUjg2DC1oTmdr/EIQEjnvY2+n4WR0Fkt1hjxUe83xcBScLDkhYJpbDingwrdqqgeUPNfKP0nty+/Z83CEGFBr590oPCdka7n3mOvjmGdoFX9cToRk9tlAWjRP5YQE9psFJfHKbfuUCof4vgXx3denX1tU8kQMHAAUCEJgCAAgGAAEACQ4PAQEKExALCQIDAQAODwQREhMFFBUGDA0aZjI9EgHa6+rdUwFUTAAAAGBXzgEAAAAAMgABaPO83kHcfHKmDOzNhB/dL7SSKVPBqjKzDKSprV71i0MDFh8gCAEICwUCGB0c"
+    }
+  ]
+}

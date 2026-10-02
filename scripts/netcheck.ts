@@ -30,7 +30,6 @@ const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 const BONK = 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263';
 const WSOL = 'So11111111111111111111111111111111111111112';
 
-const { endpoints: endpointsForCheck } = await import('../src/config.js');
 
 console.log('\n── Solana RPC ──');
 
@@ -396,13 +395,13 @@ await check('Jupiter covers most tokens still on their curve', async () => {
   let routable = 0;
   let tried = 0;
   for (const c of candidates) {
-    const quote = await fetch(
-      `${endpointsForCheck.jupiterQuote}?inputMint=${WSOL}&outputMint=${c.tokenAddress}` +
-        '&amount=10000000&slippageBps=1500',
-    );
     tried++;
-    if (quote.ok) routable++;
-    await new Promise((r) => setTimeout(r, 150));
+    try {
+      await getQuote({ inputMint: WSOL, outputMint: c.tokenAddress, amount: 10_000_000n, slippageBps: 1500 });
+      routable++;
+    } catch {
+      // A missing route or unavailable response does not prove routability.
+    }
   }
 
   const pct = Math.round((routable / tried) * 100);

@@ -1,12 +1,12 @@
 import type { Context } from 'grammy';
 import { InlineKeyboard } from 'grammy';
 import { config } from '../../config.js';
-import { db, type CopyTarget, type CopyExitMode } from '../../store/db.js';
-import { selectWallets, mainWallet } from '../../store/wallets.js';
+import { db, type CopyTarget, type CopyExitMode, type Settings } from '../../store/db.js';
+import { selectWallets, allWallets, mainWallet } from '../../store/wallets.js';
 import { getTokenInfo, extractTokenAddress } from '../../services/tokeninfo.js';
 import { getSolPrice } from '../../services/prices.js';
 import { positionPnl, formatPnl, formatEntry, exitResult, formatExit } from '../../services/pnl.js';
-import { getMintBalances, getSolBalance, LAMPORTS } from '../../chains/solana.js';
+import { getMintBalances, getMintDecimals, getSolBalance, LAMPORTS } from '../../chains/solana.js';
 import { simulateSequentialBuys, fetchBondingCurve } from '../../trade/curve.js';
 import {
   batchPumpTrade,
@@ -43,8 +43,9 @@ import {
 import { render } from './core.js';
 import { newRuleId, entryPriceSol, describe as describeRule } from '../../services/watcher.js';
 import { priceInSol } from '../../services/price.js';
-import { describeLimits, formatAge, formatHorizon } from '../../services/safety.js';
-import type { TradeRequest } from '../../types.js';
+import { withExecution } from '../../services/execution.js';
+import { describeLimits, formatAge } from '../../services/safety.js';
+import type { TradeRequest, WalletRecord } from '../../types.js';
 
 /**
  * Telegram rate limits message edits hard. Batches of 50 wallets would otherwise
@@ -89,18 +90,21 @@ export async function showTokenCard(ctx: Context, mint: string, replace = false)
     // cost ten sequential round trips to do it.
     let holdsPosition = false;
     let heldRaw = 0n;
+    let holdingKnown = false;
     if (info.chain === 'solana') {
       try {
         const wallets = selectWallets();
-        const held = await getMintBalances(wallets.map((w) => w.address), mint);
-        holdsPosition = held.size > 0;
+        const held = await getMintBalances(allWallets().map((w) => w.address), mint);
+        holdsPosition = wallets.some((w) => (held.get(w.address) ?? 0n) > 0n);
         for (const amount of held.values()) heldRaw += amount;
+        holdingKnown = true;
       } catch {
         /* a failed balance read should not hide the card */
       }
     }
 
-    const heldTokens = Number(heldRaw) / 10 ** (info.decimals ?? 6);
+    const decimals = info.decimals ?? await getMintDecimals(mint).catch(() => undefined);
+    const heldTokens = decimals === undefined ? undefined : Number(heldRaw) / 10 ** decimals;
     const solPriceUsd = await getSolPrice().catch(() => 0);
 
     // judged against the same limits copy trading uses, so the card and the
@@ -109,7 +113,8 @@ export async function showTokenCard(ctx: Context, mint: string, replace = false)
 
     // what this position has cost and returned, if it was bought through here
     const record = db.position(mint);
-    if (record && record.investedSol > 0) {
+    if (record && record.investedSol > 0 && holdingKnown && heldTokens !== undefined &&
+        info.priceUsd !== undefined && solPriceUsd > 0) {
       const heldSol =
         info.priceUsd !== undefined && solPriceUsd > 0
           ? (heldTokens * info.priceUsd) / solPriceUsd
@@ -181,8 +186,8 @@ export async function showHolders(ctx: Context, mint: string): Promise<void> {
 // ── buying ────────────────────────────────────────────────────────────────────
 
 export async function promptBuy(ctx: Context, mint: string, solPerWallet: number): Promise<void> {
-  const settings = db.settings();
-  const wallets = selectWallets();
+  const settings = structuredClone(db.settings());
+  const wallets = structuredClone(selectWallets());
 
   // rejections come first, while the tap can still be answered with an alert
   if (wallets.length === 0) {
@@ -291,7 +296,7 @@ export async function promptBuy(ctx: Context, mint: string, solPerWallet: number
   }
 
   const run = async (confirmCtx: Context) => {
-    await executeBuy(confirmCtx, mint, solPerWallet);
+    await executeBuy(confirmCtx, mint, solPerWallet, wallets, settings);
   };
 
   if (!config.safety.requireConfirmation) {
@@ -303,9 +308,11 @@ export async function promptBuy(ctx: Context, mint: string, solPerWallet: number
   await render(ctx, lines.join('\n'), confirmKeyboard(id, `tokeninfo:${tokenId(mint)}`));
 }
 
-async function executeBuy(ctx: Context, mint: string, solPerWallet: number): Promise<void> {
-  const settings = db.settings();
-  const wallets = selectWallets();
+async function executeBuy(ctx: Context, mint: string, solPerWallet: number, wallets: WalletRecord[], settings: Settings): Promise<void> {
+  return withExecution(() => executeBuyLocked(ctx, mint, solPerWallet, wallets, settings));
+}
+
+async function executeBuyLocked(ctx: Context, mint: string, solPerWallet: number, wallets: WalletRecord[], settings: Settings): Promise<void> {
 
   const request: TradeRequest = {
     action: 'buy',
@@ -322,7 +329,9 @@ async function executeBuy(ctx: Context, mint: string, solPerWallet: number): Pro
   // Tokens received are measured, not quoted: the entry price every auto-sell
   // rule is measured against comes from what the batch actually acquired.
   const buyAddresses = wallets.map((w) => w.address);
-  const heldBefore = await getMintBalances(buyAddresses, mint).catch(() => undefined);
+  const accountAddresses = [...new Set([...buyAddresses, ...allWallets().map((w) => w.address)])];
+  const heldBefore = await getMintBalances(accountAddresses, mint).catch(() => undefined);
+  const decimals = await getMintDecimals(mint).catch(() => undefined);
 
   try {
     const summary = await batchPumpTrade(
@@ -342,10 +351,13 @@ async function executeBuy(ctx: Context, mint: string, solPerWallet: number): Pro
     });
 
     // cost basis: only the wallets that actually filled spent anything
-    const fills = summary.results.filter((r) => r.ok && r.signature).length;
+    const filled = summary.results.filter((r) => r.ok && r.signature);
+    const fills = filled.length;
+    const uncertain = summary.results.some((r) => r.confirmationUnknown);
+    if (uncertain) db.invalidateBasis(mint);
 
     const bought = await getTokenInfo(mint, 'solana').catch(() => null);
-    const tokensGained = await measureTokensGained(buyAddresses, mint, heldBefore, bought?.decimals);
+    const tokensGained = await measureTokensGained(filled.map((r) => r.address), mint, heldBefore, decimals);
 
     db.recordBuy(mint, {
       solSpent: solPerWallet * fills,
@@ -354,12 +366,14 @@ async function executeBuy(ctx: Context, mint: string, solPerWallet: number): Pro
       symbol: bought?.symbol,
       costSol: summary.solSpent,
       freshEntry: isFreshEntry(heldBefore),
-      decimals: bought?.decimals,
+      decimals,
+      quantityComplete: !uncertain,
     });
 
     await render(
       ctx,
-      renderBatchSummary(`🟢 Bought ${solPerWallet} SOL × ${wallets.length}`, summary),
+      renderBatchSummary(`🟢 Bought ${solPerWallet} SOL × ${wallets.length}`, summary) +
+        (uncertain ? '\n\n<i>Some trades may still land. Entry basis is unknown; check the wallets before another order.</i>' : ''),
       new InlineKeyboard()
         .text('🔄 Token', `tokeninfo:${tokenId(mint)}`)
         .text('🪙 Positions', 'positions')
@@ -374,8 +388,8 @@ async function executeBuy(ctx: Context, mint: string, solPerWallet: number): Pro
 // ── selling ───────────────────────────────────────────────────────────────────
 
 export async function promptSell(ctx: Context, mint: string, percent: number): Promise<void> {
-  const settings = db.settings();
-  const wallets = selectWallets();
+  const settings = structuredClone(db.settings());
+  const wallets = structuredClone(selectWallets());
 
   if (wallets.length === 0) {
     await ctx.answerCallbackQuery({ text: 'No Solana wallets selected.', show_alert: true });
@@ -392,7 +406,7 @@ export async function promptSell(ctx: Context, mint: string, percent: number): P
   ];
 
   const run = async (confirmCtx: Context) => {
-    await executeSell(confirmCtx, mint, percent);
+    await executeSell(confirmCtx, mint, percent, wallets, settings);
   };
 
   if (!config.safety.requireConfirmation) {
@@ -404,9 +418,11 @@ export async function promptSell(ctx: Context, mint: string, percent: number): P
   await render(ctx, lines.join('\n'), confirmKeyboard(id, `tokeninfo:${tokenId(mint)}`));
 }
 
-async function executeSell(ctx: Context, mint: string, percent: number): Promise<void> {
-  const settings = db.settings();
-  const wallets = selectWallets();
+async function executeSell(ctx: Context, mint: string, percent: number, wallets: WalletRecord[], settings: Settings): Promise<void> {
+  return withExecution(() => executeSellLocked(ctx, mint, percent, wallets, settings));
+}
+
+async function executeSellLocked(ctx: Context, mint: string, percent: number, wallets: WalletRecord[], settings: Settings): Promise<void> {
 
   const request: TradeRequest = {
     action: 'sell',
@@ -439,15 +455,19 @@ async function executeSell(ctx: Context, mint: string, percent: number): Promise
     // the engine measures this for every sell now, so the manual screen no
     // longer needs its own copy of the arithmetic — and every other exit path
     // gets the recording that only this one used to have
-    const fills = summary.results.filter((r) => r.ok && r.signature).length;
+    const filled = summary.results.filter((r) => r.ok && r.signature);
+    const fills = filled.length;
+    const uncertain = summary.results.some((r) => r.confirmationUnknown);
+    if (uncertain) db.invalidateBasis(mint);
 
     const position = db.position(mint);
-    const tokensSold = await measureTokensSold(addresses, mint, heldBefore, position?.decimals);
+    const decimals = position?.decimals ?? await getMintDecimals(mint).catch(() => undefined);
+    const tokensSold = await measureTokensSold(filled.map((r) => r.address), mint, heldBefore, decimals);
     const sellOutcome =
       summary.solReceived !== undefined ? exitResult(position, tokensSold, summary.solReceived) : null;
 
-    if (summary.solReceived !== undefined && fills > 0) {
-      db.recordSell(mint, summary.solReceived, fills);
+    if (fills > 0) {
+      db.recordSell(mint, summary.solReceived ?? 0, fills, uncertain ? undefined : tokensSold || undefined);
     }
 
     db.appendTradeLog({
@@ -462,6 +482,7 @@ async function executeSell(ctx: Context, mint: string, percent: number): Promise
     await render(
       ctx,
       renderBatchSummary(`🔴 Sold ${percent}% × ${wallets.length}`, summary) +
+        (uncertain ? '\n\n<i>Some trades may still land. Entry basis and proceeds are unknown; check the wallets.</i>' : '') +
         (sellOutcome ? `\n\n${formatExit(sellOutcome)}` : ''),
       new InlineKeyboard()
         .text('🔄 Token', `tokeninfo:${tokenId(mint)}`)
@@ -479,7 +500,7 @@ async function executeSell(ctx: Context, mint: string, percent: number): Promise
 export async function promptSellEverything(ctx: Context): Promise<void> {
   const wallets = selectWallets();
 
-  const run = async (ctx: Context) => {
+  const run = async (ctx: Context) => withExecution(async () => {
     await render(ctx, '<b>🔥 Selling every position…</b>\n\n<i>Discovering token accounts…</i>');
 
     try {
@@ -537,7 +558,7 @@ export async function promptSellEverything(ctx: Context): Promise<void> {
     } catch (err) {
       await render(ctx, `❌ ${h(errMessage(err))}`, backButton());
     }
-  };
+  });
 
   const id = stageConfirmation(ctx.from!.id, 'sell everything', run);
 
@@ -711,13 +732,33 @@ export async function promptFund(ctx: Context, mode: FundMode, sol: number): Pro
     lines.push(`<i>${plan.skipped.length} wallet${plan.skipped.length === 1 ? '' : 's'} skipped — already funded.</i>`);
   }
 
-  const run = async (ctx: Context) => {
+  const run = async (ctx: Context) => withExecution(async () => {
     await render(ctx, `<b>⬇️ Funding ${plan.transfers.length} wallets…</b>`);
 
     try {
+      // A confirmation may wait while trades change both sides of the plan.
+      // Recompute under the operation gate, shrinking a top-up if funds arrived
+      // and refusing a larger transfer than the operator saw on screen.
+      const [balances, source] = await Promise.all([
+        fundingBalances(plan.transfers.map((t) => t.address)),
+        getSolBalance(main.address),
+      ]);
+      const currentPlan = planFunding({
+        targets: plan.transfers.map((t) => ({ id: t.walletId, address: t.address, label: t.label })),
+        balances,
+        mode,
+        sol,
+        sourceLamports: source.lamports,
+        priorityFeeSol: settings.priorityFeeSol,
+        reserveSol: settings.sweepReserveSol,
+      });
+      if (currentPlan.transfers.some((t) =>
+        t.lamports > (plan.transfers.find((old) => old.walletId === t.walletId)?.lamports ?? 0n))) {
+        throw new Error('Wallet balances changed and this needs a larger transfer. Start funding again.');
+      }
       const summary = await executeFunding(
         main,
-        plan,
+        currentPlan,
         settings.priorityFeeSol,
         throttledProgress(ctx, 'Funding wallets'),
       );
@@ -738,7 +779,7 @@ export async function promptFund(ctx: Context, mode: FundMode, sol: number): Pro
     } catch (err) {
       await render(ctx, `❌ ${h(errMessage(err))}`, backButton('fund_menu'));
     }
-  };
+  });
 
   if (!config.safety.requireConfirmation) {
     await run(ctx);
@@ -767,7 +808,7 @@ export async function promptSweepSol(ctx: Context): Promise<void> {
     return;
   }
 
-  const run = async (ctx: Context) => {
+  const run = async (ctx: Context) => withExecution(async () => {
     await render(ctx, `<b>💸 Sweeping ${wallets.length} wallets…</b>`);
     try {
       const summary = await batchSweepSol(wallets, main.address, throttledProgress(ctx, 'Sweeping SOL'));
@@ -788,7 +829,7 @@ export async function promptSweepSol(ctx: Context): Promise<void> {
     } catch (err) {
       await render(ctx, `❌ ${h(errMessage(err))}`, backButton());
     }
-  };
+  });
 
   const id = stageConfirmation(ctx.from!.id, 'sweep SOL', run);
 
@@ -823,6 +864,10 @@ export async function promptSweepToken(ctx: Context): Promise<void> {
 }
 
 export async function executeSweepToken(ctx: Context, mint: string): Promise<void> {
+  return withExecution(() => executeSweepTokenLocked(ctx, mint));
+}
+
+async function executeSweepTokenLocked(ctx: Context, mint: string): Promise<void> {
   const main = mainWallet();
   if (!main) {
     await ctx.reply('Set a main Solana wallet first.');
@@ -1420,7 +1465,6 @@ const TOP10_STEPS = [10, 20, 30, 40, 60, 100];
  * long positions are held rather than how long the contract runs — a copy
  * closed in minutes is not reached by a ninety-day cliff.
  */
-const LOCK_STEPS = [30, 90, 365];
 const DEV_STEPS = [0, 1, 2, 5, 10, 100];
 const LIQ_STEPS = [0, 1_000, 3_000, 10_000, 25_000];
 /*
@@ -1472,12 +1516,10 @@ export async function showCopySafety(ctx: Context): Promise<void> {
       '',
       '<i>Only copy trading is gated. Buying by hand shows you the same warnings and lets you decide.</i>',
       '',
-      '<i>Anything unreadable counts as a failure — a holder query the RPC refused means concentration is unknown, not zero.</i>',
+      '<i>Unreadable on-chain mint, holder or developer-balance data refuses a copy. Optional index checks can have no answer; absence does not certify safety.</i>',
     ].join('\n'),
     new InlineKeyboard()
       .text(`👥 Top 10 max ${limits.maxTop10Pct}%`, 'safety_top10').primary()
-      .row()
-      .text(`🔐 Ignore supply locked ${formatHorizon(limits.lockHorizonDays)}+`, 'safety_lock').primary()
       .row()
       .text(`👤 Dev max ${limits.maxDevPct}%`, 'safety_dev').primary()
       .row()
@@ -1560,7 +1602,6 @@ export async function cycleSafety(ctx: Context, which: string): Promise<void> {
   else if (which === 'insider') limits.maxInsiderPct = cycleStep(INSIDER_STEPS, limits.maxInsiderPct);
   else if (which === 'factory') limits.maxDevMints = cycleStep(DEVMINT_STEPS, limits.maxDevMints);
   else if (which === 'traders') limits.minTraders5m = cycleStep(TRADERS_STEPS, limits.minTraders5m);
-  else if (which === 'lock') limits.lockHorizonDays = cycleStep(LOCK_STEPS, limits.lockHorizonDays);
 
   db.updateSettings({ copySafety: limits });
   await showCopySafety(ctx);

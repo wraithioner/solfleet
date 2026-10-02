@@ -33,17 +33,9 @@ export interface RugcheckReport {
   /** 1 is clean. Anything into the tens is the index objecting to something. */
   score: number;
   risks: RugcheckRisk[];
-  /** Concentration with pools and the launch wallet taken out. */
+  /** Concentration with known pools taken out; the launch wallet stays counted. */
   top10Pct?: number;
-  /**
-   * How much of that concentration is a vesting vault rather than a holder.
-   *
-   * Reported alongside rather than removed, because the index knows an account
-   * is a locker but not for how long. The unlock date is read on chain, and
-   * only what is genuinely locked past the horizon gets discounted — this is
-   * the ceiling on that discount, so a lock outside the counted ten can never
-   * subtract from a number it was not part of.
-   */
+  /** Indexed locker share, retained as evidence without any safety discount. */
   lockerPct?: number;
   /** Share held by wallets the index believes are one person. */
   insiderPct?: number;
@@ -53,6 +45,7 @@ export interface RugcheckReport {
   /** Every wallet, not just the twenty largest. */
   totalHolders?: number;
   creatorPct?: number;
+  creator?: string;
   /** How many tokens this developer has launched before this one. */
   creatorPriorTokens?: number;
   /** The index's own verdict, when it has one. */
@@ -93,8 +86,8 @@ interface RawReport {
  * Holders that are somebody's position, rather than the market itself.
  *
  * A pool holding supply is liquidity, not concentration — it is what you sell
- * into. The launch wallet is counted separately because a limit on the
- * developer is a different question from a limit on the top ten.
+ * into. The launch wallet stays counted even when its independent balance
+ * lookup fails, so a missing developer check cannot hide its concentration.
  */
 function counted(raw: RawReport): RawHolder[] | undefined {
   const holders = raw.topHolders;
@@ -103,10 +96,16 @@ function counted(raw: RawReport): RawHolder[] | undefined {
   const known = raw.knownAccounts ?? {};
   const real = holders.filter((h) => {
     const type = h.owner ? known[h.owner]?.type : undefined;
-    return type !== 'AMM' && type !== 'CREATOR';
+    return type !== 'AMM';
   });
-
-  return real.slice(0, 10);
+  const owners = new Map<string, RawHolder>();
+  for (const h of real) {
+    if (typeof h.owner !== 'string' || !h.owner || typeof h.pct !== 'number' ||
+        !Number.isFinite(h.pct) || h.pct < 0 || h.pct > 100) return undefined;
+    const prior = owners.get(h.owner);
+    owners.set(h.owner, { ...h, pct: (prior?.pct ?? 0) + h.pct });
+  }
+  return [...owners.values()].sort((a, b) => b.pct! - a.pct!).slice(0, 10);
 }
 
 function concentration(raw: RawReport): number | undefined {
@@ -133,7 +132,7 @@ function lockedShare(raw: RawReport): number | undefined {
 
 function insiderShare(raw: RawReport): number | undefined {
   const holders = raw.topHolders;
-  if (!holders) return undefined;
+  if (!holders || holders.some((h) => typeof h.pct !== 'number' || !Number.isFinite(h.pct) || h.pct < 0 || h.pct > 100)) return undefined;
   const known = raw.knownAccounts ?? {};
   const flagged = holders.filter(
     (h) => h.insider && (h.owner ? known[h.owner]?.type : undefined) !== 'AMM',
@@ -173,7 +172,8 @@ export async function getRugcheck(mint: string, timeoutMs = 4000): Promise<Rugch
       insiderNetworks: (raw.insiderNetworks ?? []).length,
       totalHolders: raw.totalHolders,
       creatorPct,
-      creatorPriorTokens: (raw.creatorTokens ?? []).length,
+      creator: typeof raw.creator === 'string' ? raw.creator : undefined,
+      creatorPriorTokens: Array.isArray(raw.creatorTokens) ? raw.creatorTokens.length : undefined,
       rugged: raw.rugged,
       lpLockedPct: raw.markets?.[0]?.lp?.lpLockedPct,
       liquidityUsd: raw.totalMarketLiquidity,

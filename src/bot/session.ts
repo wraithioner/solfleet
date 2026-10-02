@@ -1,5 +1,7 @@
 import crypto from 'node:crypto';
 import type { Context } from 'grammy';
+import { executionEpoch } from '../services/execution.js';
+import { db } from '../store/db.js';
 
 /**
  * In-memory conversational state. Single-operator bot, so a plain Map keyed by
@@ -46,6 +48,8 @@ export interface SessionState {
 export interface ConfirmAction {
   label: string;
   createdAt: number;
+  epoch: number;
+  accountState: string;
   /**
    * Receives the context of the tap that confirmed it, not the one that staged
    * it. A confirmation staged from a typed message has no message to edit, so an
@@ -56,6 +60,20 @@ export interface ConfirmAction {
 }
 
 const sessions = new Map<number, SessionState>();
+
+/** A confirmation must still describe the settings and wallet set on screen. */
+function confirmationState(): string {
+  return JSON.stringify({
+    settings: db.settings(),
+    wallets: db.raw().wallets.map((w) => ({
+      id: w.id,
+      address: w.address,
+      isMain: w.isMain,
+      disabled: w.disabled,
+      groups: w.groups,
+    })),
+  });
+}
 
 /** Never overwrite the action or address referenced by an existing button. */
 function freshId(existing: ReadonlyMap<string, unknown>, bytes: number): string {
@@ -146,7 +164,9 @@ export function stageConfirmation(
     if (action.createdAt < cutoff) s.confirmations.delete(key);
   }
 
-  s.confirmations.set(id, { label, createdAt: Date.now(), run });
+  s.confirmations.set(id, {
+    label, createdAt: Date.now(), epoch: executionEpoch(), accountState: confirmationState(), run,
+  });
   return id;
 }
 
@@ -156,7 +176,7 @@ export function takeConfirmation(userId: number, id: string): ConfirmAction | un
   if (action) s.confirmations.delete(id);
   // Check at the moment of use as well as when staging another action: the
   // operator may return to an old button without creating a newer prompt.
-  if (!action || Date.now() - action.createdAt > CONFIRMATION_TTL_MS) return undefined;
+  if (!action || action.epoch !== executionEpoch() || action.accountState !== confirmationState() || Date.now() - action.createdAt > CONFIRMATION_TTL_MS) return undefined;
   return action;
 }
 
@@ -217,4 +237,13 @@ export function walletFromShortId(id: string): string | undefined {
 
 export function clearSession(userId: number): void {
   sessions.delete(userId);
+}
+
+/** A factory reset invalidates every operator's old prompts and buttons. */
+export function clearAllSessions(): void {
+  sessions.clear();
+  tokenIds.clear();
+  idsByToken.clear();
+  walletIds.clear();
+  idsByWallet.clear();
 }

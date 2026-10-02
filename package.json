@@ -6,14 +6,14 @@
   "private": true,
   "license": "SEE LICENSE IN LICENSE.md",
   "engines": {
-    "node": ">=20.11"
+    "node": ">=20.18"
   },
   "scripts": {
     "start": "tsx src/index.ts",
     "dev": "tsx watch src/index.ts",
     "typecheck": "tsc --noEmit",
     "smoke": "node --import tsx scripts/smoke.ts",
-    "regressions": "node --import tsx scripts/transaction-regressions.ts && node --import tsx scripts/copytrade-regressions.ts && node --import tsx scripts/wallet-regressions.ts && node --import tsx scripts/portfolio-regressions.ts && node --import tsx scripts/reconcile-regressions.ts",
+    "regressions": "node --import tsx scripts/transaction-regressions.ts && node --import tsx scripts/copytrade-regressions.ts && node --import tsx scripts/wallet-regressions.ts && node --import tsx scripts/portfolio-regressions.ts && node --import tsx scripts/reconcile-regressions.ts && node --import tsx scripts/deep-transaction-regressions.ts && node --import tsx scripts/copyevents-regressions.ts && node --import tsx scripts/safety-regressions.ts && node --import tsx scripts/concurrency-regressions.ts && node --import tsx scripts/accounting-regressions.ts && node --import tsx scripts/reconcile-deep-regressions.ts && node --import tsx scripts/client-regressions.ts",
     "test": "npm run smoke && npm run regressions",
     "netcheck": "node --import tsx scripts/netcheck.ts",
     "check": "npm run typecheck && npm test",
@@ -33,5 +33,10 @@
   "devDependencies": {
     "@types/node": "^22.10.2",
     "typescript": "^5.7.2"
+  },
+  "overrides": {
+    "@solana/web3.js": {
+      "jayson": "5.0.0"
+    }
   }
 }

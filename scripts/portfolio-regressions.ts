@@ -10,14 +10,15 @@ process.env.BOT_TOKEN = '123:TEST';
 process.env.OWNER_IDS = '1';
 process.env.DATA_DIR = dataDir;
 process.env.VAULT_AUTOLOCK_MINUTES = '0';
+process.env.JUPITER_REQUEST_INTERVAL_MS = '0';
 
 const { initVaultWithKeyfile, lockVault } = await import('../src/store/vault.js');
 const { generateSolanaWallet } = await import('../src/store/wallets.js');
 const { db } = await import('../src/store/db.js');
 const { rpc, WSOL_MINT } = await import('../src/chains/solana.js');
-const { clearPriceCache } = await import('../src/services/prices.js');
+const { clearPriceCache, getDexscreenerPrice } = await import('../src/services/prices.js');
 const { buildPortfolio } = await import('../src/services/portfolio.js');
-const { showPnl, showPortfolio } = await import('../src/bot/handlers/core.js');
+const { showPnl, showPortfolio, showPositions } = await import('../src/bot/handlers/core.js');
 const { renderPortfolio } = await import('../src/bot/ui.js');
 const { PublicKey } = await import('@solana/web3.js');
 const { TOKEN_PROGRAM_ID } = await import('@solana/spl-token');
@@ -103,10 +104,33 @@ try {
   await showPortfolio(ctx);
   assert.doesNotMatch(rendered, /on .* traded/);
   ok('a wallet group is not compared against the entire account cost basis');
+  await showPositions(ctx);
+  assert.match(rendered, /Group one holdings/);
+  assert.doesNotMatch(rendered, /banked|   in |[+-]\d+\.\d+%/);
+  ok('group position cards withhold account-wide cost and profit');
 
   await showPnl(ctx);
   assert.equal(db.valueMarks().length, 1);
   ok('a complete account still records its value');
+  db.updateSettings({ activeGroup: null });
+  priceTokens = false;
+  clearPriceCache();
+  await showPositions(ctx);
+  assert.match(rendered, /value unavailable/);
+  assert.doesNotMatch(rendered, /banked|   in |[+-]\d+\.\d+%/);
+  ok('unpriced position cards cannot report a false total loss');
+  failTokens = true;
+  await showPositions(ctx);
+  assert.match(rendered, /could not be read completely/);
+  assert.doesNotMatch(rendered, /No token positions/);
+  ok('failed holdings reads cannot report an empty position set');
+  clearPriceCache();
+  globalThis.fetch = async () => new Response(JSON.stringify({ pairs: [
+    { baseToken: { address: WSOL_MINT.toLowerCase() }, priceUsd: '900', liquidity: { usd: 100_000 } },
+    { baseToken: { address: WSOL_MINT }, priceUsd: '100', liquidity: { usd: 1_000 } },
+  ] }));
+  assert.equal(await getDexscreenerPrice(WSOL_MINT), 100);
+  ok('Solana fallback pricing preserves case-sensitive mint identity');
 } finally {
   connection.getMultipleAccountsInfo = originalMultiple;
   connection.getParsedTokenAccountsByOwner = originalTokens;
