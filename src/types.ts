@@ -64,6 +64,8 @@ export interface ExecutionResult {
   address: string;
   ok: boolean;
   signature?: string;
+  /** A submitted transaction may still land. Automatic retries must stop. */
+  confirmationUnknown?: boolean;
   txHash?: string;
   error?: string;
   /** Populated for trades: how much was actually spent/received. */

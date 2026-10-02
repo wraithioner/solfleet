@@ -26,8 +26,7 @@ export function walletById(id: string): WalletRecord | undefined {
 }
 
 export function walletByAddress(address: string): WalletRecord | undefined {
-  const needle = address.toLowerCase();
-  return db.wallets().find((w) => w.address.toLowerCase() === needle);
+  return db.wallets().find((w) => w.address === address);
 }
 
 export function mainWallet(): WalletRecord | undefined {
@@ -122,7 +121,7 @@ function nextLabel(): string {
 function insert(rec: Omit<WalletRecord, 'id' | 'createdAt'>): WalletRecord {
   const wallets = db.wallets();
 
-  const existing = wallets.find((w) => w.address.toLowerCase() === rec.address.toLowerCase());
+  const existing = wallets.find((w) => w.address === rec.address);
   if (existing) throw new Error(`Wallet ${rec.address} is already in the list as "${existing.label}".`);
 
   const full: WalletRecord = { ...rec, id: crypto.randomUUID(), createdAt: Date.now() };
@@ -322,7 +321,11 @@ export function resealAll(
   encrypt: (plain: string) => string,
 ): void {
   const raw = db.raw();
-  for (const w of raw.wallets) w.secret = encrypt(decrypt(w.secret));
-  if (raw.mnemonic) raw.mnemonic = encrypt(decrypt(raw.mnemonic));
+  // Prepare everything before changing the live document. A corrupt later
+  // secret must not leave earlier records sealed under a different key.
+  const secrets = raw.wallets.map((w) => encrypt(decrypt(w.secret)));
+  const mnemonic = raw.mnemonic ? encrypt(decrypt(raw.mnemonic)) : undefined;
+  for (const [index, w] of raw.wallets.entries()) w.secret = secrets[index]!;
+  raw.mnemonic = mnemonic;
   flush();
 }

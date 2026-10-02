@@ -18,8 +18,10 @@ import {
   createCloseAccountInstruction,
 } from '@solana/spl-token';
 import { config } from '../config.js';
+import bs58 from 'bs58';
 import { retry } from '../util.js';
 import type { TokenBalance } from '../types.js';
+import { TransactionRejectedError, TransactionSubmissionUnknownError } from '../trade/errors.js';
 
 export const LAMPORTS = LAMPORTS_PER_SOL;
 export const WSOL_MINT = 'So11111111111111111111111111111111111111112';
@@ -219,9 +221,10 @@ export async function getMintBalances(addresses: string[], mint: string): Promis
 // ── transaction plumbing ──────────────────────────────────────────────────────
 
 export function priorityFeeInstructions(priorityFeeSol: number, computeUnits = 200_000): TransactionInstruction[] {
+  if (!Number.isFinite(priorityFeeSol) || priorityFeeSol < 0) throw new Error('Priority fee must be a non-negative finite amount.');
   const lamports = Math.floor(priorityFeeSol * LAMPORTS);
   // microLamports per compute unit, derived from the total SOL the user is willing to tip
-  const microLamportsPerCu = Math.max(1, Math.floor((lamports * 1_000_000) / computeUnits));
+  const microLamportsPerCu = Math.max(0, Math.floor((lamports * 1_000_000) / computeUnits));
   return [
     ComputeBudgetProgram.setComputeUnitLimit({ units: computeUnits }),
     ComputeBudgetProgram.setComputeUnitPrice({ microLamports: microLamportsPerCu }),
@@ -291,12 +294,22 @@ export async function sendAndConfirm(
   tx: VersionedTransaction,
   opts: { skipPreflight?: boolean; timeoutMs?: number } = {},
 ): Promise<string> {
-  const signature = await sendRpc().sendRawTransaction(tx.serialize(), {
-    skipPreflight: opts.skipPreflight ?? true,
-    maxRetries: 3,
-  });
-  await confirmSignature(signature, opts.timeoutMs ?? 60_000);
-  return signature;
+  // Serialize before dispatch, where a malformed transaction is still a definite
+  // local failure. The signed transaction gives us its identity even if the
+  // provider accepts it and then loses the response.
+  const bytes = tx.serialize();
+  const signature = bs58.encode(tx.signatures[0]!);
+  try {
+    await sendRpc().sendRawTransaction(bytes, {
+      skipPreflight: opts.skipPreflight ?? true,
+      maxRetries: 3,
+    });
+    await confirmSignature(signature, opts.timeoutMs ?? 60_000);
+    return signature;
+  } catch (err) {
+    if (err instanceof TransactionRejectedError) throw err;
+    throw new TransactionSubmissionUnknownError(signature, err);
+  }
 }
 
 /**
@@ -317,11 +330,11 @@ export async function signatureLanded(signature: string): Promise<SignatureState
   try {
     const { value } = await retry(() => rpc().getSignatureStatuses([signature]), { attempts: 3 });
     const status = value[0];
-    if (!status) return 'missing';
-    if (status.err) return 'missing';
-    return status.confirmationStatus === 'confirmed' || status.confirmationStatus === 'finalized'
-      ? 'landed'
-      : 'unknown';
+    // Not visible to this RPC is not proof of failure: the transaction can still
+    // be queued at another provider while its blockhash remains valid.
+    if (!status) return 'unknown';
+    if (status.confirmationStatus !== 'confirmed' && status.confirmationStatus !== 'finalized') return 'unknown';
+    return status.err ? 'missing' : 'landed';
   } catch {
     return 'unknown';
   }
@@ -338,9 +351,9 @@ export async function confirmSignature(signature: string, timeoutMs = 60_000): P
     const { value } = await rpc().getSignatureStatuses([signature]);
     const status = value[0];
 
-    if (status) {
-      if (status.err) throw new Error(explainChainError(status.err));
-      if (status.confirmationStatus === 'confirmed' || status.confirmationStatus === 'finalized') return;
+    if (status && (status.confirmationStatus === 'confirmed' || status.confirmationStatus === 'finalized')) {
+      if (status.err) throw new TransactionRejectedError(explainChainError(status.err), signature);
+      return;
     }
 
     await new Promise((r) => setTimeout(r, 1500));
@@ -450,12 +463,15 @@ export async function sendSplToken(
   priorityFeeSol: number,
   programId = TOKEN_PROGRAM_ID.toBase58(),
   closeAccountAfter = false,
+  sourceTokenAccount?: string,
 ): Promise<string> {
   const mintKey = new PublicKey(mint);
   const destOwner = new PublicKey(to);
   const program = new PublicKey(programId);
 
-  const source = getAssociatedTokenAddressSync(mintKey, from.publicKey, true, program);
+  const source = sourceTokenAccount
+    ? new PublicKey(sourceTokenAccount)
+    : getAssociatedTokenAddressSync(mintKey, from.publicKey, true, program);
   const dest = getAssociatedTokenAddressSync(mintKey, destOwner, true, program);
 
   const ixs: TransactionInstruction[] = [

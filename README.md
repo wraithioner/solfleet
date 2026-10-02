@@ -380,7 +380,7 @@ you can configure.
 | Master key | Random 32 bytes in `data/vault.key` at 0600, held in one closure, zeroed on shutdown |
 | Secrets in chat | Private keys and seed phrases are deleted from the chat on receipt; exports self-destruct after 60s |
 | Logs | A redaction filter strips anything shaped like a private key before it's written |
-| Access | Non-owner updates are dropped without a reply |
+| Access | Only owner updates in private chats are accepted; group and channel updates are dropped |
 | Destructive actions | Every write operation requires a second confirming tap |
 
 **What this does not protect against: anyone who can read the data directory.**
@@ -495,10 +495,10 @@ Past +25% the screen says so in bold.
 npm run check
 ```
 
-Runs three layers:
+Runs offline checks, also enforced on pull requests by GitHub Actions:
 
 - `typecheck` — full TypeScript strict-mode pass
-- `smoke` — 157 offline assertions: vault crypto (round-trip, unique IVs, tamper
+- `smoke` — the existing offline suite: vault crypto (round-trip, unique IVs, tamper
   rejection, dropping a passphrase without losing a key, a key file that is
   wrong or missing being refused loudly, and a vault that opens itself at boot),
   wallet
@@ -514,7 +514,13 @@ Runs three layers:
   caught here rather than in Telegram), a check that every button the keyboards
   emit reaches a route — a dead button looks exactly like a slow one — address
   parsing, concurrency helpers, log redaction
-- `netcheck` — 20 live read-only checks against Solana RPC, DexScreener, Jupiter,
+- `regressions` — mocked transaction responses, automation failures, vault
+  migration write failures, private-chat access, expiring confirmations, and
+  incomplete portfolio reads. These tests never contact Telegram or an RPC.
+
+Run `npm run check:live` to add the network checks, or run them individually:
+
+- `netcheck` — live read-only checks against Solana RPC, DexScreener, Jupiter,
   PumpPortal and the pump.fun program, including that Jupiter can still route a
   token on its bonding curve — a fallback nobody verifies is a fallback that
   fails the first time it is needed

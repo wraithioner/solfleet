@@ -437,13 +437,46 @@ function migrateSettings(stored: Partial<Settings> | undefined): Settings {
  * back over the only copy on the next flush, which turns a bad read into a
  * permanent loss.
  *
- * The backup is written before each replacement, so it is the last document
- * that parsed. Using it costs whatever changed since; ignoring it costs
- * everything.
+ * The backup is written after a completed replacement. It can also recover
+ * a missing primary file; treating that case as a new install would erase it.
  */
+function parseDocument(contents: string): Partial<DbShape> {
+  const parsed: unknown = JSON.parse(contents);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('Wallet store must be a JSON object.');
+  }
+  const document = parsed as Partial<DbShape>;
+  if (document.version !== 1 || !Array.isArray(document.wallets)) {
+    throw new Error('Wallet store has an unsupported version or missing wallet list.');
+  }
+  for (const wallet of document.wallets) {
+    if (!wallet || typeof wallet !== 'object' ||
+        !['id', 'kind', 'address', 'secret'].every((key) =>
+          typeof (wallet as unknown as Record<string, unknown>)[key] === 'string' &&
+          (wallet as unknown as Record<string, unknown>)[key] !== '')) {
+      throw new Error('Wallet store contains an invalid wallet record.');
+    }
+  }
+  for (const key of ['tradeLog', 'rules', 'copyTargets', 'dcaPlans', 'valueMarks', 'copyDecisions'] as const) {
+    if (document[key] !== undefined && !Array.isArray(document[key])) {
+      throw new Error(`Wallet store field ${key} must be an array.`);
+    }
+  }
+  for (const key of ['settings', 'positions'] as const) {
+    const value = document[key];
+    if (value !== undefined && (!value || typeof value !== 'object' || Array.isArray(value))) {
+      throw new Error(`Wallet store field ${key} must be an object.`);
+    }
+  }
+  if (document.mnemonic !== undefined && typeof document.mnemonic !== 'string') {
+    throw new Error('Wallet store mnemonic must be encrypted text.');
+  }
+  return document;
+}
+
 function readDocument(): Partial<DbShape> {
   try {
-    return JSON.parse(fs.readFileSync(dbPath(), 'utf8')) as Partial<DbShape>;
+    return parseDocument(fs.readFileSync(dbPath(), 'utf8'));
   } catch (err) {
     const backup = `${dbPath()}.bak`;
     if (!fs.existsSync(backup)) throw err;
@@ -452,7 +485,7 @@ function readDocument(): Partial<DbShape> {
     // for, and reporting the original failure is more use than reporting this
     let recovered: Partial<DbShape>;
     try {
-      recovered = JSON.parse(fs.readFileSync(backup, 'utf8')) as Partial<DbShape>;
+      recovered = parseDocument(fs.readFileSync(backup, 'utf8'));
     } catch {
       throw err;
     }
@@ -475,7 +508,7 @@ function readDocument(): Partial<DbShape> {
 function load(): DbShape {
   if (cache) return cache;
 
-  if (!fs.existsSync(dbPath())) {
+  if (!fs.existsSync(dbPath()) && !fs.existsSync(`${dbPath()}.bak`)) {
     cache = { version: 1, wallets: [], settings: defaultSettings(), tradeLog: [], positions: {}, rules: [], copyTargets: [], dcaPlans: [], valueMarks: [], copyDecisions: [] };
     return cache;
   }
@@ -823,7 +856,7 @@ export const db = {
    * wallets immediately rather than writing them back out on the next flush.
    */
   wipe(): void {
-    fs.rmSync(dbPath(), { force: true });
+    for (const suffix of ['', '.bak', '.corrupt']) fs.rmSync(`${dbPath()}${suffix}`, { force: true });
     cache = { version: 1, wallets: [], settings: defaultSettings(), tradeLog: [], positions: {}, rules: [], copyTargets: [], dcaPlans: [], valueMarks: [], copyDecisions: [] };
   },
 

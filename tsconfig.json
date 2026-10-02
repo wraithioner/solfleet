@@ -15,5 +15,5 @@
     "noEmit": true,
     "verbatimModuleSyntax": false
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts", "scripts/*-regressions.ts"]
 }

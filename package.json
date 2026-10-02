@@ -12,10 +12,13 @@
     "start": "tsx src/index.ts",
     "dev": "tsx watch src/index.ts",
     "typecheck": "tsc --noEmit",
-    "smoke": "tsx scripts/smoke.ts",
-    "netcheck": "tsx scripts/netcheck.ts",
-    "check": "npm run typecheck && npm run smoke && npm run netcheck",
-    "batchsim": "tsx scripts/batchsim.ts"
+    "smoke": "node --import tsx scripts/smoke.ts",
+    "regressions": "node --import tsx scripts/transaction-regressions.ts && node --import tsx scripts/copytrade-regressions.ts && node --import tsx scripts/wallet-regressions.ts && node --import tsx scripts/portfolio-regressions.ts && node --import tsx scripts/reconcile-regressions.ts",
+    "test": "npm run smoke && npm run regressions",
+    "netcheck": "node --import tsx scripts/netcheck.ts",
+    "check": "npm run typecheck && npm test",
+    "check:live": "npm run check && npm run netcheck",
+    "batchsim": "node --import tsx scripts/batchsim.ts"
   },
   "dependencies": {
     "@solana/spl-token": "^0.4.9",

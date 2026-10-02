@@ -57,6 +57,15 @@ export interface ConfirmAction {
 
 const sessions = new Map<number, SessionState>();
 
+/** Never overwrite the action or address referenced by an existing button. */
+function freshId(existing: ReadonlyMap<string, unknown>, bytes: number): string {
+  let id: string;
+  do {
+    id = crypto.randomBytes(bytes).toString('hex');
+  } while (existing.has(id));
+  return id;
+}
+
 export function session(userId: number): SessionState {
   let s = sessions.get(userId);
   if (!s) {
@@ -75,6 +84,7 @@ export function session(userId: number): SessionState {
  * that a forgotten prompt is gone before the next thing is typed.
  */
 const PENDING_TTL_MS = 5 * 60_000;
+const CONFIRMATION_TTL_MS = 5 * 60_000;
 
 export function setPending(userId: number, pending: PendingInput | undefined): void {
   const s = session(userId);
@@ -128,10 +138,10 @@ export function stageConfirmation(
   run: (ctx: Context) => Promise<void>,
 ): string {
   const s = session(userId);
-  const id = crypto.randomBytes(4).toString('hex');
+  const id = freshId(s.confirmations, 4);
 
   // drop anything the operator walked away from
-  const cutoff = Date.now() - 5 * 60_000;
+  const cutoff = Date.now() - CONFIRMATION_TTL_MS;
   for (const [key, action] of s.confirmations) {
     if (action.createdAt < cutoff) s.confirmations.delete(key);
   }
@@ -144,6 +154,9 @@ export function takeConfirmation(userId: number, id: string): ConfirmAction | un
   const s = session(userId);
   const action = s.confirmations.get(id);
   if (action) s.confirmations.delete(id);
+  // Check at the moment of use as well as when staging another action: the
+  // operator may return to an old button without creating a newer prompt.
+  if (!action || Date.now() - action.createdAt > CONFIRMATION_TTL_MS) return undefined;
   return action;
 }
 
@@ -170,7 +183,7 @@ export function tokenId(mint: string): string {
   const existing = idsByToken.get(mint);
   if (existing) return existing;
 
-  const id = crypto.randomBytes(4).toString('hex');
+  const id = freshId(tokenIds, 4);
   tokenIds.set(id, mint);
   idsByToken.set(mint, id);
 
@@ -191,7 +204,7 @@ const idsByWallet = new Map<string, string>();
 export function shortWalletId(walletId: string): string {
   const existing = idsByWallet.get(walletId);
   if (existing) return existing;
-  const id = crypto.randomBytes(3).toString('hex');
+  const id = freshId(walletIds, 3);
   walletIds.set(id, walletId);
   idsByWallet.set(walletId, id);
   evictOldest(walletIds, idsByWallet, 2000);

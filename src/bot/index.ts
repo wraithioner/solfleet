@@ -44,6 +44,10 @@ export function createBot(): Bot {
       if (id) log.warn(`Ignored update from unauthorised user ${id}`);
       return; // no reply — an unauthorised caller learns nothing, not even that the bot is alive
     }
+    // Wallet keys, seed phrases and imported secrets belong only in the
+    // operator's direct chat. The same owner can also message this bot from a
+    // group, where replying would disclose those secrets to every member.
+    if (ctx.chat?.type !== 'private') return;
     await next();
   });
 
@@ -843,7 +847,7 @@ const LEGACY_PASSPHRASE_PROMPT = [
   '',
   'This vault was made before passphrases were removed, and its keys are still sealed under yours.',
   '',
-  'Send it now. The bot re-seals everything with a key it keeps itself and never asks again.',
+  'Send it now. The bot saves the verified key for future restarts and never asks again.',
 ].join('\n');
 
 /** Remove a message the operator sent that contained a secret. */

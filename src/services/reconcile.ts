@@ -62,6 +62,14 @@ async function paced<T>(fn: () => Promise<T>): Promise<T> {
   return out;
 }
 
+/** Injectable reads and pacing allow history scans to be checked offline. */
+export interface ReconcileServices {
+  rpc: () => Pick<ReturnType<typeof rpc>, 'getSignaturesForAddress' | 'getParsedTransactions'>;
+  paced: typeof paced;
+}
+
+const reconcileServices: ReconcileServices = { rpc, paced };
+
 /**
  * Every sale of every mint one wallet made, in SOL that actually arrived.
  *
@@ -73,10 +81,11 @@ async function paced<T>(fn: () => Promise<T>): Promise<T> {
  * have succeeded returns what was found and says the scan is incomplete, since
  * partial proceeds still beat none — they can only raise the recorded figure.
  */
-async function proceedsByMint(
+export async function proceedsByMint(
   address: string,
   notBefore: number,
   onProgress?: ProgressFn,
+  services: ReconcileServices = reconcileServices,
 ): Promise<{ found: Map<string, number>; scanned: number; complete: boolean }> {
   const found = new Map<string, number>();
   const owner = new PublicKey(address);
@@ -85,12 +94,13 @@ async function proceedsByMint(
   let seen = 0;
   let scanned = 0;
   let pages = 0;
+  let incomplete = false;
 
   while (seen < SIGNATURE_LIMIT) {
     let page;
     try {
-      page = await paced(() =>
-        rpc().getSignaturesForAddress(owner, { limit: SIGNATURE_PAGE, before }),
+      page = await services.paced(() =>
+        services.rpc().getSignaturesForAddress(owner, { limit: SIGNATURE_PAGE, before }),
       );
     } catch (err) {
       // nothing read at all is a failure; a short read is a partial answer
@@ -99,15 +109,15 @@ async function proceedsByMint(
       return { found, scanned, complete: false };
     }
     pages++;
-    if (page.length === 0) break;
+    if (page.length === 0) return { found, scanned, complete: !incomplete };
 
     const usable = page.filter((s) => !s.err).map((s) => s.signature);
 
     for (let i = 0; i < usable.length; i += PARSE_BATCH) {
       let txs;
       try {
-        txs = await paced(() =>
-          rpc().getParsedTransactions(usable.slice(i, i + PARSE_BATCH), {
+        txs = await services.paced(() =>
+          services.rpc().getParsedTransactions(usable.slice(i, i + PARSE_BATCH), {
             maxSupportedTransactionVersion: 0,
           }),
         );
@@ -119,8 +129,14 @@ async function proceedsByMint(
         throw err;
       }
 
+      if (txs.length !== usable.slice(i, i + PARSE_BATCH).length) incomplete = true;
+
       for (const tx of txs) {
-        if (!tx?.meta || tx.meta.err) continue;
+        if (!tx?.meta) {
+          incomplete = true;
+          continue;
+        }
+        if (tx.meta.err) continue;
         scanned++;
 
         const moves = detectTokenMoves(
@@ -163,14 +179,16 @@ async function proceedsByMint(
     // history older than the first position cannot contain one of its sales
     const oldest = page.at(-1)?.blockTime;
     if (oldest !== undefined && oldest !== null && oldest * 1000 < notBefore) {
-      return { found, scanned, complete: true };
+      return { found, scanned, complete: !incomplete };
     }
 
     before = page.at(-1)?.signature;
-    if (page.length < SIGNATURE_PAGE) break;
+    if (page.length < SIGNATURE_PAGE) return { found, scanned, complete: !incomplete };
   }
 
-  return { found, scanned, complete: true };
+  // Hitting the request budget does not establish that the remaining history
+  // contains no sales. Keep the measured proceeds, but report the short scan.
+  return { found, scanned, complete: false };
 }
 
 /**
@@ -180,7 +198,10 @@ async function proceedsByMint(
  * older sale can fall outside it — reading that as "this position returned
  * less than we thought" would replace one wrong number with another.
  */
-export async function rebuildRealised(onProgress?: ProgressFn): Promise<Reconciliation> {
+export async function rebuildRealised(
+  onProgress?: ProgressFn,
+  services: ReconcileServices = reconcileServices,
+): Promise<Reconciliation> {
   const wallets = allWallets();
   const positions = db.positions();
 
@@ -201,7 +222,7 @@ export async function rebuildRealised(onProgress?: ProgressFn): Promise<Reconcil
   for (const w of wallets) {
     try {
       await onProgress?.(`reading ${w.label}`);
-      const result = await proceedsByMint(w.address, notBefore, onProgress);
+      const result = await proceedsByMint(w.address, notBefore, onProgress, services);
       for (const [mint, sol] of result.found) chain.set(mint, (chain.get(mint) ?? 0) + sol);
       transactionsScanned += result.scanned;
       if (!result.complete) complete = false;

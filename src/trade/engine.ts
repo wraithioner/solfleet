@@ -1,7 +1,7 @@
 import bs58 from 'bs58';
 import type { VersionedTransaction, Keypair } from '@solana/web3.js';
 import { config, type ExecutionMode } from '../config.js';
-import { chunk, pMap, errMessage, retry } from '../util.js';
+import { chunk, pMap, errMessage, sleep } from '../util.js';
 import { log } from '../logger.js';
 import { solanaKeypair } from '../store/wallets.js';
 import { db } from '../store/db.js';
@@ -12,7 +12,6 @@ import {
   getSplBalances,
   getTokenBalance,
   getMintBalances,
-  signatureLanded,
   recentPriorityFeeMicroLamports,
   priorityFeeSolFromMicroLamports,
   WSOL_MINT,
@@ -22,6 +21,7 @@ import { sendBundle, waitForBundle, recentJitoTipSol, JITO_MIN_TIP_SOL } from '.
 import { detectPool, PUMP_PROGRAM_ID } from './curve.js';
 import { swapToSol, swapFromSol } from './jupiter.js';
 import { fundingBalances, partitionByBalance, requiredForBuy, exitReserveLamports } from './fund.js';
+import { TransactionRejectedError, TransactionSubmissionUnknownError } from './errors.js';
 
 /**
  * The multiplier an exit is allowed to bid, mirrored from the watcher.
@@ -35,6 +35,15 @@ const LAMPORTS_PER_SOL = 1e9;
 import type { WalletRecord, TradeRequest, ExecutionResult, BatchSummary } from '../types.js';
 
 export type ProgressFn = (done: number, total: number, note?: string) => void | Promise<void>;
+
+async function reportProgress(onProgress: ProgressFn | undefined, done: number, total: number, note?: string): Promise<void> {
+  try {
+    await onProgress?.(done, total, note);
+  } catch (err) {
+    // A Telegram update failing cannot change whether a transaction succeeded.
+    log.warn(`Could not update trade progress: ${errMessage(err)}`);
+  }
+}
 
 function summarise(results: ExecutionResult[], startedAt: number): BatchSummary {
   return {
@@ -121,7 +130,17 @@ function fail(w: WalletRecord, err: unknown): ExecutionResult {
   // watcher has no screen — copy trading reported "❌ 1" and left nothing
   // anywhere to say why. Every failure gets written down.
   log.warn(`${w.label} (${w.address.slice(0, 8)}…) failed: ${errMessage(err)}`);
-  return { walletId: w.id, label: w.label, address: w.address, ok: false, error: errMessage(err) };
+  return {
+    walletId: w.id,
+    label: w.label,
+    address: w.address,
+    ok: false,
+    error: errMessage(err),
+    ...((err instanceof TransactionSubmissionUnknownError || err instanceof TransactionRejectedError)
+      ? { signature: err.signature }
+      : {}),
+    ...(err instanceof TransactionSubmissionUnknownError ? { confirmationUnknown: true } : {}),
+  };
 }
 
 // ── pump.fun batch trading ────────────────────────────────────────────────────
@@ -248,7 +267,7 @@ export async function batchPumpTrade(
         active,
         balances,
         requiredForBuy(req.amount, req.priorityFeeSol, {
-          jitoTipSol: db.settings().executionMode === 'bundle' ? db.settings().jitoTipSol : 0,
+          jitoTipSol: mode === 'bundle' ? settings.jitoTipSol : 0,
           // anything off the curve is an SPL pool, so the buy wraps SOL first
           wrapsSol: detectedPool !== 'pump',
         }),
@@ -468,34 +487,21 @@ async function tradeOneWallet(
   }
 
   try {
-    let lastSignature: string | undefined;
-
-    const signature = await retry(
-      async () => {
-        if (lastSignature) {
-          // a retry after a timeout must not spend again if the first attempt
-          // landed — nor if we simply cannot tell whether it did
-          const state = await signatureLanded(lastSignature);
-          if (state === 'landed') return lastSignature;
-          if (state === 'unknown') {
-            throw new Error(
-              `Sent ${lastSignature.slice(0, 12)}… but could not confirm it. Not retried, ` +
-                'to avoid trading twice — check the wallet before trying again.',
-            );
-          }
-        }
-
-        // rebuilt each attempt so the blockhash is fresh
-        const tx = lastSignature === undefined ? built : await buildTrade(args);
-        const signed = signTx(tx, kp);
-        lastSignature = bs58Signature(signed);
-
-        return sendAndConfirm(signed, { skipPreflight: true });
-      },
-      { attempts: 2, baseDelayMs: 600 },
-    );
-
-    return { walletId: w.id, label: w.label, address: w.address, ok: true, signature };
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const tx = attempt === 0 ? built : await buildTrade(args);
+      const signed = signTx(tx, kp);
+      try {
+        const signature = await sendAndConfirm(signed, { skipPreflight: true });
+        return { walletId: w.id, label: w.label, address: w.address, ok: true, signature };
+      } catch (sendErr) {
+        // Only an explicit chain rejection proves this attempt cannot land.
+        // Missing status, transport errors and timeouts all keep the original
+        // signature and stop, rather than rebuilding a second spend.
+        if (!(sendErr instanceof TransactionRejectedError) || attempt === 1) return fail(w, sendErr);
+        await sleep(600 + Math.random() * 600);
+      }
+    }
+    throw new Error('Trade attempts exhausted.');
   } catch (sendErr) {
     return fail(w, sendErr);
   }
@@ -527,6 +533,9 @@ async function tradeViaJupiter(
     const { signature } = await swapToSol(kp, req.mint, rawAmount, slippageBps, req.priorityFeeSol);
     return { walletId: w.id, label: w.label, address: w.address, ok: true, signature, detail: 'via Jupiter' };
   } catch (jupErr) {
+    if (jupErr instanceof TransactionSubmissionUnknownError) {
+      return { ...fail(w, jupErr), detail: 'via Jupiter · confirmation unknown' };
+    }
     // the pump.fun error is usually the more informative one; keep both
     return {
       ...fail(w, pumpErr),
@@ -551,7 +560,7 @@ async function parallelTrades(
       return fail(w, err);
     } finally {
       done++;
-      await onProgress?.(done, wallets.length);
+      await reportProgress(onProgress, done, wallets.length);
     }
   });
 
@@ -571,6 +580,7 @@ async function bundleTrades(
   let done = 0;
 
   for (const [gi, group] of groups.entries()) {
+    let signed: VersionedTransaction[] | undefined;
     try {
       // PumpPortal takes the first transaction's priority fee as the Jito tip
       // for the whole bundle and ignores the rest, so pay it once up front.
@@ -599,13 +609,14 @@ async function bundleTrades(
         throw new Error(`PumpPortal returned ${unsigned.length} transactions for ${group.length} wallets.`);
       }
 
-      const signed = unsigned.map((tx, i) => signTx(tx, solanaKeypair(group[i]!)));
+      signed = unsigned.map((tx, i) => signTx(tx, solanaKeypair(group[i]!)));
 
       const bundleId = await sendBundle(signed);
-      await onProgress?.(done, wallets.length, `bundle ${gi + 1}/${groups.length} sent`);
+      await reportProgress(onProgress, done, wallets.length, `bundle ${gi + 1}/${groups.length} sent`);
 
       const state = await waitForBundle(bundleId);
       const ok = state === 'Landed';
+      const confirmationUnknown = !ok && state !== 'Failed';
 
       for (const [i, w] of group.entries()) {
         results.push({
@@ -613,16 +624,22 @@ async function bundleTrades(
           label: w.label,
           address: w.address,
           ok,
-          signature: ok ? bs58Signature(signed[i]) : undefined,
-          error: ok ? undefined : `Bundle ${state.toLowerCase()}`,
+          signature: bs58Signature(signed[i]),
+          ...(confirmationUnknown ? { confirmationUnknown: true } : {}),
+          error: ok ? undefined : `Bundle ${state.toLowerCase()}${confirmationUnknown ? ' — check the wallet before retrying' : ''}`,
           detail: `bundle ${bundleId.slice(0, 8)}…`,
         });
       }
     } catch (err) {
-      for (const w of group) results.push(fail(w, err));
+      for (const [i, w] of group.entries()) {
+        results.push({
+          ...fail(w, err),
+          ...(err instanceof TransactionSubmissionUnknownError ? { signature: bs58Signature(signed?.[i]) } : {}),
+        });
+      }
     } finally {
       done += group.length;
-      await onProgress?.(done, wallets.length);
+      await reportProgress(onProgress, done, wallets.length);
     }
   }
 
@@ -744,6 +761,7 @@ export async function batchSweepToken(
         settings.priorityFeeSol,
         holding.programId,
         true, // close the emptied account and reclaim its rent
+        holding.tokenAccount,
       );
 
       return {

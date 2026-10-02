@@ -65,6 +65,7 @@ export function renderPortfolio(p: Portfolio, group: string | null, pnl?: Accoun
 
   // the one number the screen exists to show, given the room to be seen
   lines.push(`<b>${fmtUsd(p.totals.grandTotalUsd)}</b>`);
+  if (p.errors.length > 0) lines.push('<i>Known value only — some balances or prices are unavailable.</i>');
   const split = [
     `${fmtAmount(p.totals.solTotal, 4)} ◎`,
     p.totals.tokenUsd > 0 ? `${fmtUsd(p.totals.tokenUsd)} in tokens` : '',

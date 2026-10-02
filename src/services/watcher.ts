@@ -30,6 +30,23 @@ import { log } from '../logger.js';
 
 export type Notifier = (text: string) => Promise<void>;
 
+/** Injectable trade services let the execution paths be checked without signing. */
+export interface WatcherTradeServices {
+  selectWallets: typeof selectWallets;
+  getMintBalances: typeof getMintBalances;
+  batchPumpTrade: typeof batchPumpTrade;
+  measureTokensGained: typeof measureTokensGained;
+  measureTokensSold: typeof measureTokensSold;
+}
+
+const tradeServices: WatcherTradeServices = {
+  selectWallets,
+  getMintBalances,
+  batchPumpTrade,
+  measureTokensGained,
+  measureTokensSold,
+};
+
 const TICK_MS = 20_000;
 
 /** Hourly. The store keeps a month of these; more resolution buys nothing. */
@@ -303,7 +320,12 @@ async function rearm(rule: AutoRule, reason: string, notify: Notifier): Promise<
   ).catch(() => {});
 }
 
-async function fire(rule: AutoRule, price: number, notify: Notifier): Promise<void> {
+export async function fire(
+  rule: AutoRule,
+  price: number,
+  notify: Notifier,
+  services: WatcherTradeServices = tradeServices,
+): Promise<void> {
   // Marked before the attempt, never after: a crash between here and the sell
   // must not leave a rule that fires again on the next tick. A batch that comes
   // back having landed nothing is a different thing entirely, and `rearm` puts
@@ -315,6 +337,11 @@ async function fire(rule: AutoRule, price: number, notify: Notifier): Promise<vo
   const movePct = entry && entry > 0 ? ((price - entry) / entry) * 100 : 0;
 
   log.info(`Rule ${rule.kind} fired for ${rule.mint} at ${price.toExponential(4)} SOL`);
+
+  // Once execution begins, a thrown error cannot prove that nothing was sent.
+  // Confirmed fills also stay fired if a later ledger write or notification fails.
+  let tradeStarted = false;
+  let confirmedFills = 0;
 
   try {
     /*
@@ -330,15 +357,16 @@ async function fire(rule: AutoRule, price: number, notify: Notifier): Promise<vo
      * of a group. Closing a position is not a choice about which wallets.
      */
     const buying = rule.kind === 'limit_buy';
-    const wallets = buying ? selectWallets() : selectWallets({ group: null });
+    const wallets = buying ? services.selectWallets() : services.selectWallets({ group: null });
     const settings = db.settings();
 
     if (rule.kind === 'limit_buy') {
       // read first, so the fill can be measured and the position gets a basis
       const addresses = wallets.map((w) => w.address);
-      const heldBefore = await getMintBalances(addresses, rule.mint).catch(() => undefined);
+      const heldBefore = await services.getMintBalances(addresses, rule.mint).catch(() => undefined);
 
-      const summary = await batchPumpTrade(wallets, {
+      tradeStarted = true;
+      const summary = await services.batchPumpTrade(wallets, {
         action: 'buy',
         mint: rule.mint,
         amount: rule.buySol ?? 0,
@@ -349,15 +377,20 @@ async function fire(rule: AutoRule, price: number, notify: Notifier): Promise<vo
       });
 
       const fills = summary.results.filter((r) => r.ok && r.signature).length;
+      confirmedFills = fills;
 
       // an order that bought nothing has not been filled, and retiring it here
       // is how a limit buy silently stops existing at the price it was set for
       if (fills === 0) {
+        if (summary.results.some((r) => r.confirmationUnknown)) {
+          await reportUncertainRule(rule, firstFailure(summary) ?? 'confirmation is unavailable', notify);
+          return;
+        }
         await rearm(rule, firstFailure(summary) ?? 'every wallet failed to buy', notify);
         return;
       }
 
-      const gained = await measureTokensGained(addresses, rule.mint, heldBefore, undefined);
+      const gained = await services.measureTokensGained(addresses, rule.mint, heldBefore, undefined);
       db.recordBuy(rule.mint, {
         solSpent: (rule.buySol ?? 0) * fills,
         fills,
@@ -366,6 +399,7 @@ async function fire(rule: AutoRule, price: number, notify: Notifier): Promise<vo
         costSol: summary.solSpent,
         freshEntry: isFreshEntry(heldBefore),
       });
+      if (rule.failedAttempts) db.updateRule(rule.id, { failedAttempts: 0 });
       db.appendTradeLog({
         at: Date.now(),
         action: `limit buy ${rule.buySol} SOL`,
@@ -383,17 +417,21 @@ async function fire(rule: AutoRule, price: number, notify: Notifier): Promise<vo
           `Price reached ${price.toExponential(4)} SOL`,
           `Bought ${rule.buySol} SOL × ${wallets.length} wallets`,
           `✅ ${summary.succeeded}   ❌ ${summary.failed}`,
+          ...(summary.results.some((r) => r.confirmationUnknown)
+            ? ['Some trades may still land. Check the wallets before placing another order.']
+            : []),
         ].join('\n'),
-      );
+      ).catch(() => {});
       return;
     }
 
-    const holders = await getMintBalances(wallets.map((w) => w.address), rule.mint).catch(() => new Map());
+    const holders = await services.getMintBalances(wallets.map((w) => w.address), rule.mint);
     if (holders.size === 0) {
-      await notify(`⚠️ <b>${label}</b>: ${describe(rule)} triggered, but no wallet holds it any more.`);
+      await notify(`⚠️ <b>${label}</b>: ${describe(rule)} triggered, but no wallet holds it any more.`).catch(() => {});
       return;
     }
-    const summary = await batchPumpTrade(wallets, {
+    tradeStarted = true;
+    const summary = await services.batchPumpTrade(wallets, {
       action: 'sell',
       mint: rule.mint,
       amount: rule.sellPercent,
@@ -407,9 +445,14 @@ async function fire(rule: AutoRule, price: number, notify: Notifier): Promise<vo
     // keeps its whole cost and none of its proceeds, and a stop loss that saved
     // most of the money reports as having lost all of it
     const fills = summary.results.filter((r) => r.ok && r.signature).length;
+    confirmedFills = fills;
 
     // nothing landed, so the protection did not run — put it back
     if (fills === 0) {
+      if (summary.results.some((r) => r.confirmationUnknown)) {
+        await reportUncertainRule(rule, firstFailure(summary) ?? 'confirmation is unavailable', notify);
+        return;
+      }
       await rearm(rule, firstFailure(summary) ?? 'every wallet failed to sell', notify);
       return;
     }
@@ -419,7 +462,7 @@ async function fire(rule: AutoRule, price: number, notify: Notifier): Promise<vo
      * changes the position the profit is measured against.
      */
     const position = db.position(rule.mint);
-    const tokensSold = await measureTokensSold(
+    const tokensSold = await services.measureTokensSold(
       wallets.map((w) => w.address),
       rule.mint,
       holders,
@@ -450,14 +493,34 @@ async function fire(rule: AutoRule, price: number, notify: Notifier): Promise<vo
         `Price: ${price.toExponential(4)} SOL${entry ? ` (${movePct >= 0 ? '+' : ''}${movePct.toFixed(1)}% from entry)` : ''}`,
         `Sold ${rule.sellPercent}% across ${summary.results.length} wallets`,
         `✅ ${summary.succeeded}   ❌ ${summary.failed}`,
+        ...(summary.results.some((r) => r.confirmationUnknown)
+          ? ['Some trades may still land. Check the wallets before placing another order.']
+          : []),
         ...(outcome ? [formatExit(outcome)] : []),
       ].join('\n'),
-    );
+    ).catch(() => {});
   } catch (err) {
-    // a throw here happens before any transaction is sent — the wallet set,
-    // the balances and the settings are all read first — so nothing landed
-    await rearm(rule, errMessage(err), notify);
+    if (!tradeStarted) {
+      await rearm(rule, errMessage(err), notify);
+    } else if (confirmedFills > 0) {
+      log.warn(`Rule ${rule.id} filled, but follow-up processing failed: ${errMessage(err)}`);
+      await notify(
+        `⚠️ <b>${describe(rule)} traded, but its follow-up failed — ${label}</b>\n\n` +
+          `<i>${h(errMessage(err))}</i>\n\nIt will not trade again. Check the position and trade history.`,
+      ).catch(() => {});
+    } else {
+      await reportUncertainRule(rule, errMessage(err), notify);
+    }
   }
+}
+
+async function reportUncertainRule(rule: AutoRule, reason: string, notify: Notifier): Promise<void> {
+  log.warn(`Rule ${rule.id} may have submitted a trade; automatic retry withheld: ${reason}`);
+  await notify(
+    `⚠️ <b>${describe(rule)} needs a confirmation check — ${h(rule.symbol ?? rule.mint.slice(0, 8))}</b>\n\n` +
+      `<i>${h(reason)}</i>\n\nA trade may still land. This rule will not retry automatically; ` +
+      'check the wallet before placing another order.',
+  ).catch(() => {});
 }
 
 /** The first distinct reason the wallets gave, for a message worth reading. */
@@ -478,15 +541,19 @@ export function describe(rule: AutoRule): string {
 /**
  * Run any averaging-in rounds that have come due.
  *
- * A round that fails still advances the schedule. Retrying a missed buy at the
- * next tick would bunch the purchases together, which is the opposite of what
- * averaging in is for.
+ * A definitely failed round is returned for a retry. An uncertain submission
+ * keeps its round claimed and pauses the plan until the operator checks it.
  */
-async function runDueDca(notify: Notifier): Promise<void> {
+export async function runDueDca(
+  notify: Notifier,
+  services: WatcherTradeServices = tradeServices,
+): Promise<void> {
   for (const plan of db.dueDcaPlans()) {
-    const wallets = selectWallets();
+    const wallets = services.selectWallets();
     const settings = db.settings();
-    const round = plan.roundsDone + 1;
+    // The store mutates plan in place, so keep the previous count by value.
+    const previousRoundsDone = plan.roundsDone;
+    const round = previousRoundsDone + 1;
 
     /*
      * Counted before the buy, so a crash cannot spend the round twice — and
@@ -501,11 +568,15 @@ async function runDueDca(notify: Notifier): Promise<void> {
       nextRunAt: Date.now() + plan.intervalMinutes * 60_000,
     });
 
+    let tradeStarted = false;
+    let confirmedFills = 0;
+
     try {
       const addresses = wallets.map((w) => w.address);
-      const heldBefore = await getMintBalances(addresses, plan.mint).catch(() => undefined);
+      const heldBefore = await services.getMintBalances(addresses, plan.mint).catch(() => undefined);
 
-      const summary = await batchPumpTrade(wallets, {
+      tradeStarted = true;
+      const summary = await services.batchPumpTrade(wallets, {
         action: 'buy',
         mint: plan.mint,
         amount: plan.buySol,
@@ -516,11 +587,21 @@ async function runDueDca(notify: Notifier): Promise<void> {
       });
 
       const fills = summary.results.filter((r) => r.ok && r.signature).length;
+      confirmedFills = fills;
+      const confirmationUnknown = summary.results.some((r) => r.confirmationUnknown);
+      if (confirmationUnknown) db.updateDcaPlan(plan.id, { enabled: false });
 
       if (fills === 0) {
+        if (confirmationUnknown) {
+          await notify(
+            `⚠️ <b>DCA round ${round}/${plan.roundsTotal} needs a confirmation check</b>\n\n` +
+              'A trade may still land. The plan is paused; check the wallet before resuming it.',
+          ).catch(() => {});
+          continue;
+        }
         // put the round back and try it on the next tick rather than the next
         // interval — a congested block should cost seconds, not an hour
-        db.updateDcaPlan(plan.id, { roundsDone: plan.roundsDone, nextRunAt: Date.now() });
+        db.updateDcaPlan(plan.id, { roundsDone: previousRoundsDone, nextRunAt: Date.now() });
         log.warn(`DCA round ${round}/${plan.roundsTotal} for ${plan.mint} bought nothing; round returned.`);
         await notify(
           `⚠️ <b>DCA round ${round}/${plan.roundsTotal} did not go through</b>\n\n` +
@@ -529,7 +610,7 @@ async function runDueDca(notify: Notifier): Promise<void> {
         continue;
       }
 
-      const gained = await measureTokensGained(addresses, plan.mint, heldBefore, undefined);
+      const gained = await services.measureTokensGained(addresses, plan.mint, heldBefore, undefined);
       db.recordBuy(plan.mint, {
         solSpent: plan.buySol * fills,
         fills,
@@ -554,11 +635,23 @@ async function runDueDca(notify: Notifier): Promise<void> {
           `🔁 <b>DCA round ${round}/${plan.roundsTotal} — ${h(plan.symbol ?? plan.mint.slice(0, 8))}</b>`,
           `Bought ${plan.buySol} SOL × ${wallets.length} wallets`,
           `✅ ${summary.succeeded}   ❌ ${summary.failed}`,
-          done ? '\n<i>Plan complete.</i>' : `\n<i>Next round in ${plan.intervalMinutes} minutes.</i>`,
+          confirmationUnknown
+            ? '\n<i>Some trades may still land. The plan is paused; check the wallets before resuming it.</i>'
+            : done ? '\n<i>Plan complete.</i>' : `\n<i>Next round in ${plan.intervalMinutes} minutes.</i>`,
         ].join('\n'),
-      );
+      ).catch(() => {});
     } catch (err) {
-      await notify(`❌ DCA round ${round} failed: <i>${errMessage(err)}</i>`).catch(() => {});
+      if (!tradeStarted) {
+        db.updateDcaPlan(plan.id, { roundsDone: previousRoundsDone, nextRunAt: Date.now() });
+      } else if (confirmedFills === 0) {
+        db.updateDcaPlan(plan.id, { enabled: false });
+      }
+      await notify(
+        `❌ DCA round ${round} failed: <i>${h(errMessage(err))}</i>` +
+          (tradeStarted && confirmedFills === 0
+            ? '\n\nA trade may still land. The plan is paused; check the wallet before resuming it.'
+            : ''),
+      ).catch(() => {});
     }
   }
 }

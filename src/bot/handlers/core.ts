@@ -71,7 +71,7 @@ export async function showHome(ctx: Context): Promise<void> {
         '',
         'This vault was made before passphrases were removed, and its keys are still sealed under yours.',
         '',
-        'Send it now. Everything gets re-sealed with a key the bot keeps itself, and you will never be asked again.',
+        'Send it now. The verified key is saved so the bot can open your wallets after a restart, and you will never be asked again.',
       ].join('\n'),
       { parse_mode: 'HTML' },
     );
@@ -137,10 +137,12 @@ export async function showPortfolio(ctx: Context): Promise<void> {
 
   try {
     const portfolio = await buildPortfolio({ group: settings.activeGroup, includeTokens: true });
-    // marked from the wallets on screen, so the line agrees with the number
-    // above it; the dedicated screen always reads the whole account
+    // The ledger is account-wide. A filtered or unreadable set of holdings
+    // cannot be compared to its full cost without inventing losses.
     const held = openValueSol(portfolio);
-    const pnl = accountPnl(db.positions(), held.marks, portfolio.totals.solPriceUsd, held.unpriced);
+    const pnl = settings.activeGroup === null && portfolio.errors.length === 0
+      ? accountPnl(db.positions(), held.marks, portfolio.totals.solPriceUsd, held.unpriced)
+      : undefined;
 
     await render(
       ctx,
@@ -252,6 +254,9 @@ export async function showPnl(ctx: Context): Promise<void> {
 
   try {
     const portfolio = await buildPortfolio({ group: null, includeTokens: true });
+    if (portfolio.errors.length > 0) {
+      throw new Error(`Incomplete portfolio: ${portfolio.errors.slice(0, 3).join(' | ')} Try refreshing when balances and prices are available.`);
+    }
     const held = openValueSol(portfolio);
     const pnl = accountPnl(db.positions(), held.marks, portfolio.totals.solPriceUsd, held.unpriced);
 

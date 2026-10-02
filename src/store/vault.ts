@@ -98,14 +98,47 @@ function open(key: Buffer, blob: string): Buffer {
 // ── vault file lifecycle ──────────────────────────────────────────────────────
 
 export function vaultExists(): boolean {
-  return fs.existsSync(vaultPath());
+  return fs.existsSync(vaultPath()) || fs.existsSync(`${vaultPath()}.bak`);
+}
+
+function parseVaultFile(contents: string): VaultFile {
+  const parsed: unknown = JSON.parse(contents);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Invalid vault metadata.');
+  const file = parsed as VaultFile;
+  if (file.version !== 1) throw new Error(`Unsupported vault version ${file.version}.`);
+  if (file.mode !== undefined && file.mode !== 'passphrase' && file.mode !== 'keyfile') {
+    throw new Error('Invalid vault mode.');
+  }
+  if (typeof file.verifier !== 'string' || Buffer.from(file.verifier, 'base64').length < 29 ||
+      !Number.isFinite(file.createdAt)) throw new Error('Invalid vault verifier or creation time.');
+  if ((file.mode ?? 'passphrase') === 'passphrase') {
+    const kdf = file.kdf;
+    if (!kdf || kdf.algo !== 'scrypt' || kdf.keyLen !== KDF.keyLen ||
+        ![kdf.N, kdf.r, kdf.p].every((value) => Number.isSafeInteger(value) && value > 0) ||
+        typeof kdf.salt !== 'string' || Buffer.from(kdf.salt, 'base64').length < 16) {
+      throw new Error('Invalid vault key derivation metadata.');
+    }
+  }
+  return file;
 }
 
 function readVaultFile(): VaultFile {
-  const raw = fs.readFileSync(vaultPath(), 'utf8');
-  const parsed = JSON.parse(raw) as VaultFile;
-  if (parsed.version !== 1) throw new Error(`Unsupported vault version ${parsed.version}.`);
-  return parsed;
+  try {
+    return parseVaultFile(fs.readFileSync(vaultPath(), 'utf8'));
+  } catch (err) {
+    let recovered: VaultFile;
+    try {
+      recovered = parseVaultFile(fs.readFileSync(`${vaultPath()}.bak`, 'utf8'));
+    } catch {
+      throw err;
+    }
+    if (fs.existsSync(vaultPath())) {
+      try { fs.copyFileSync(vaultPath(), `${vaultPath()}.corrupt`); } catch { /* best effort */ }
+    }
+    writeAtomic(vaultPath(), JSON.stringify(recovered, null, 2));
+    log.warn('Vault metadata recovered from its backup.');
+    return recovered;
+  }
 }
 
 /** Which mode the stored vault uses. Vaults predating keyfile mode are passphrase. */
@@ -205,37 +238,29 @@ export function unlockFromKeyfile(): boolean {
 }
 
 /**
- * Drop the passphrase: re-seal every secret under a fresh random key and write
- * that key to disk. Requires an unlocked vault, so only somebody who already
- * knows the passphrase can trade it away.
+ * Drop the passphrase by saving the verified master key to disk. Keeping the
+ * same encryption key means every wallet and its backup remains decryptable
+ * if the process stops between the key-file and metadata writes.
+ * Requires an unlocked vault, so the old passphrase must be known first.
  */
 export function removePassphrase(
-  reseal: (decrypt: (blob: string) => string, encrypt: (plain: string) => string) => void,
+  // Retained for callers of the earlier rotation API. No secrets need resealing.
+  _reseal: (decrypt: (blob: string) => string, encrypt: (plain: string) => string) => void,
 ): void {
-  const oldKey = requireKey();
+  const key = requireKey();
   if (vaultMode() === 'keyfile') throw new Error('This vault already has no passphrase.');
-
-  const newKey = crypto.randomBytes(KDF.keyLen);
-
-  // secrets are re-sealed before the vault file changes, so a crash in the
-  // middle leaves a vault that still opens with the old passphrase
-  reseal(
-    (blob) => open(oldKey, blob).toString('utf8'),
-    (plain) => seal(newKey, plain),
-  );
 
   const file: VaultFile = {
     version: 1,
     mode: 'keyfile',
-    verifier: seal(newKey, VERIFIER_PLAINTEXT),
+    verifier: seal(key, VERIFIER_PLAINTEXT),
     createdAt: readVaultFile().createdAt,
   };
 
-  writeAtomic(keyfilePath(), newKey.toString('base64'));
+  // A failure here leaves the original vault metadata and ciphertext intact.
+  // Once the key file is durable, switching the mode is one atomic write.
+  writeAtomic(keyfilePath(), key.toString('base64'));
   writeAtomic(vaultPath(), JSON.stringify(file, null, 2));
-
-  oldKey.fill(0);
-  masterKey = newKey;
   if (autolockTimer) {
     clearTimeout(autolockTimer);
     autolockTimer = null;
@@ -307,9 +332,8 @@ export function isUnlocked(): boolean {
 /**
  * Unlock an old passphrase vault and immediately convert it.
  *
- * The only remaining reason to type a passphrase: a vault created before
- * passphrases were dropped still has its secrets sealed under one, and moving
- * them needs the key that opens them. This is asked once and then never again.
+ * The only remaining reason to type a passphrase: an older vault still needs
+ * its master key derived once before that key can be saved for future boots.
  */
 export async function unlockAndConvert(
   passphrase: string,
@@ -376,15 +400,20 @@ export function writeAtomic(file: string, contents: string): void {
    * carrying for the sake of one syscall.
    */
   const tmp = `${file}.${process.pid}.tmp`;
-  const fd = fs.openSync(tmp, 'w', 0o600);
   try {
-    fs.writeFileSync(fd, contents);
-    fs.fsyncSync(fd);
-  } finally {
-    fs.closeSync(fd);
+    const fd = fs.openSync(tmp, 'w', 0o600);
+    try {
+      fs.writeFileSync(fd, contents);
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+    fs.renameSync(tmp, file);
+  } catch (err) {
+    // A failed replacement must not leave another copy of the master key.
+    try { fs.rmSync(tmp, { force: true }); } catch { /* retain the original error */ }
+    throw err;
   }
-
-  fs.renameSync(tmp, file);
 
   // and the rename itself, so the directory entry is as durable as the file
   try {
@@ -426,9 +455,11 @@ export function writeAtomic(file: string, contents: string): void {
  */
 export function destroyVault(): void {
   lockVault();
-  fs.rmSync(vaultPath(), { force: true });
-  // the key file goes too, or the next vault inherits a stale one
-  fs.rmSync(keyfilePath(), { force: true });
+  // Remove recovery copies too, so a deliberate reset cannot restore the old
+  // vault or leave its plaintext master key behind.
+  for (const file of [vaultPath(), keyfilePath()]) {
+    for (const suffix of ['', '.bak', '.corrupt']) fs.rmSync(`${file}${suffix}`, { force: true });
+  }
   log.warn('Vault destroyed. Every stored key is now unrecoverable.');
 }
 
@@ -441,6 +472,9 @@ export function destroyVault(): void {
  */
 export function openAtBoot(hasSecrets: boolean): 'opened' | 'created' | 'needs-passphrase' {
   if (!vaultExists()) {
+    if (hasSecrets) {
+      throw new Error('Vault metadata is missing while encrypted wallet secrets still exist. Restore vault.json from a backup before starting; no new key was created.');
+    }
     initVaultWithKeyfile();
     return 'created';
   }

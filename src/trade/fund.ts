@@ -9,6 +9,7 @@ import {
 import { solanaKeypair } from '../store/wallets.js';
 import { chunk, errMessage } from '../util.js';
 import { log } from '../logger.js';
+import { TransactionRejectedError, TransactionSubmissionUnknownError } from './errors.js';
 import type { WalletRecord, ExecutionResult, BatchSummary } from '../types.js';
 import type { ProgressFn } from './engine.js';
 
@@ -189,6 +190,10 @@ export async function executeFunding(
           address: t.address,
           ok: false,
           error: errMessage(err),
+          ...((err instanceof TransactionSubmissionUnknownError || err instanceof TransactionRejectedError)
+            ? { signature: err.signature }
+            : {}),
+          ...(err instanceof TransactionSubmissionUnknownError ? { confirmationUnknown: true } : {}),
         });
       }
     } finally {

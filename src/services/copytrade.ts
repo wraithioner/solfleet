@@ -800,14 +800,31 @@ function entriesSoFar(target: CopyTarget, mint: string): number {
   return target.copiedMints.includes(mint) ? 1 : 0;
 }
 
-async function mirrorBuy(
+export interface CopyBuyServices {
+  selectWallets: typeof selectWallets;
+  getMintBalances: typeof getMintBalances;
+  screenToken: typeof screenToken;
+  batchPumpTrade: typeof batchPumpTrade;
+  measureTokensGained: typeof measureTokensGained;
+}
+
+const buyServices: CopyBuyServices = {
+  selectWallets,
+  getMintBalances,
+  screenToken,
+  batchPumpTrade,
+  measureTokensGained,
+};
+
+export async function mirrorBuy(
   target: CopyTarget,
   move: TokenMove,
   theirSol: number,
   notify: Notifier,
+  services: CopyBuyServices = buyServices,
 ): Promise<void> {
   // every decision below reads state that a concurrent copy would change
-  return withMintLock(move.mint, () => mirrorBuyLocked(target, move, theirSol, notify));
+  return withMintLock(move.mint, () => mirrorBuyLocked(target, move, theirSol, notify, services));
 }
 
 async function mirrorBuyLocked(
@@ -815,6 +832,7 @@ async function mirrorBuyLocked(
   move: TokenMove,
   theirSol: number,
   notify: Notifier,
+  services: CopyBuyServices,
 ): Promise<void> {
   // a token this target was already refused is not reconsidered: the answer
   // will not have changed, and re-reading it turns one bad coin into a stream
@@ -840,7 +858,7 @@ async function mirrorBuyLocked(
     return;
   }
 
-  const wallets = selectWallets();
+  const wallets = services.selectWallets();
   if (wallets.length === 0) return;
 
   const perWallet = copyBuySol(target, theirSol, wallets.length, config.safety.maxBuySolPerWallet);
@@ -888,7 +906,7 @@ async function mirrorBuyLocked(
    * An unhandled rejection ends the process on this runtime, which would turn
    * a token that could not be read into the whole bot going down.
    */
-  const screening = screenToken(move.mint).catch(
+  const screening = services.screenToken(move.mint).catch(
     (err: unknown): { verdict: SafetyVerdict; info?: TokenInfo } => ({
       verdict: {
         safe: false,
@@ -898,10 +916,17 @@ async function mirrorBuyLocked(
     }),
   );
 
-  const heldBefore = await getMintBalances(wallets.map((w) => w.address), move.mint).catch(
+  const heldBefore = await services.getMintBalances(wallets.map((w) => w.address), move.mint).catch(
     () => undefined,
   );
-  const holding = heldBefore !== undefined && [...heldBefore.values()].some((v) => v > 0n);
+  if (heldBefore === undefined) {
+    // Unknown holdings cannot establish room under either position limit, and
+    // must not reset the cost basis as though this were an empty position.
+    log.warn(`Skipped copying ${target.label} into ${move.mint}: holdings could not be read.`);
+    noted(target, move.mint, 'Your token balances could not be read — exposure limits cannot be checked');
+    return;
+  }
+  const holding = [...heldBefore.values()].some((v) => v > 0n);
   const openSol = openExposureSol(move.mint, holding);
 
   /*
@@ -1061,7 +1086,7 @@ async function mirrorBuyLocked(
   ).catch(() => {});
 
   try {
-    const summary = await batchPumpTrade(wallets, {
+    const summary = await services.batchPumpTrade(wallets, {
       action: 'buy',
       mint: move.mint,
       amount: perWallet,
@@ -1075,7 +1100,7 @@ async function mirrorBuyLocked(
 
     // the token count is the cost basis: without it there is no entry price,
     // and without an entry price a take-profit or stop-loss cannot fire at all
-    const tokensGained = await measureTokensGained(addresses, move.mint, heldBefore, info?.decimals);
+    const tokensGained = await services.measureTokensGained(addresses, move.mint, heldBefore, info?.decimals);
     db.recordBuy(move.mint, {
       solSpent: perWallet * fills,
       fills,

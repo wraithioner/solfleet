@@ -132,7 +132,7 @@ removePassphrase(wallets.resealAll);
 assert.equal(vaultMode(), 'keyfile', 'the vault is now opened by its key file');
 assert.deepEqual(wallets.allWallets().map((w) => w.address), beforeAddrs, 'no wallet lost or changed');
 assert.equal(wallets.solanaKeypair(wallets.allWallets()[0]!).publicKey.toBase58(), beforeAddrs[0]);
-ok('every key survives being re-sealed without a passphrase');
+ok('every key survives removing the passphrase');
 
 // the whole point: a restart must not shut anyone out
 lockVault();
@@ -2047,7 +2047,7 @@ ok('a rule that eventually works stops carrying its failures');
  * buy and never given back, so a plan configured for ten rounds could buy
  * seven and report itself finished.
  */
-assert.match(watcherSrc, /roundsDone: plan\.roundsDone, nextRunAt: Date\.now\(\)/, 'a failed round is returned');
+assert.match(watcherSrc, /roundsDone: previousRoundsDone, nextRunAt: Date\.now\(\)/, 'a failed round is returned');
 ok('a DCA round that bought nothing is put back rather than spent');
 
 console.log('\n[34] A copied entry does not wait like a card does');
@@ -2157,7 +2157,7 @@ console.log('\n[37] An exit reaches wherever the position is');
  * The position is still there and no longer has a stop.
  */
 const wSrc2 = fs.readFileSync('src/services/watcher.ts', 'utf8');
-assert.match(wSrc2, /buying \? selectWallets\(\) : selectWallets\(\{ group: null \}\)/, 'exits see every wallet');
+assert.match(wSrc2, /buying \? services\.selectWallets\(\) : services\.selectWallets\(\{ group: null \}\)/, 'exits see every wallet');
 ok('a rule selling a position looks in every wallet, not the group in use');
 
 // but an entry still respects the group, which is what a group is for
@@ -2272,7 +2272,7 @@ console.log('\n[40] Nothing on the entry path waits for something it does not ne
 const ct = fs.readFileSync('src/services/copytrade.ts', 'utf8');
 const body = ct.slice(ct.indexOf('async function mirrorBuyLocked'), ct.indexOf('async function mirrorSell'));
 assert.ok(
-  body.indexOf('const screening = screenToken') < body.indexOf('await getMintBalances'),
+  body.indexOf('const screening = services.screenToken') < body.indexOf('await services.getMintBalances'),
   'the screen is started before the balances are awaited',
 );
 assert.match(body, /const \{ verdict, info \} = await screening;/, 'and awaited only where it is needed');

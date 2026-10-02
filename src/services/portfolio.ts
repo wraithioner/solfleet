@@ -101,6 +101,7 @@ async function loadSolana(
       b.tokens = await getSplBalances(b.address);
     } catch (err) {
       b.error = errMessage(err);
+      errors.push(`Token balances for ${b.label}: ${b.error}`);
     }
   });
 
@@ -121,6 +122,7 @@ async function computeTotals(
   } catch (err) {
     errors.push(`SOL price: ${errMessage(err)}`);
   }
+  if (solPrice <= 0) errors.push('SOL price unavailable; USD totals are incomplete.');
 
   for (const b of solana) b.nativeUsd = b.native * solPrice;
 
@@ -132,6 +134,10 @@ async function computeTotals(
   if (mints.size > 0) {
     try {
       const prices = await getSolanaPrices([...mints]);
+      const unpriced = [...mints].filter((mint) => !prices.has(mint));
+      if (unpriced.length > 0) {
+        errors.push(`${unpriced.length} token price${unpriced.length === 1 ? '' : 's'} unavailable; USD totals are incomplete.`);
+      }
       for (const b of solana) {
         for (const t of b.tokens) {
           const p = prices.get(t.mint);
@@ -143,6 +149,7 @@ async function computeTotals(
       }
     } catch (err) {
       log.warn('Token pricing failed', err);
+      errors.push(`Token prices: ${errMessage(err)}`);
     }
   }
 

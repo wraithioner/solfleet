@@ -2,6 +2,7 @@ import { VersionedTransaction } from '@solana/web3.js';
 import bs58 from 'bs58';
 import { endpoints } from '../config.js';
 import { fetchJson, sleep } from '../util.js';
+import { TransactionRejectedError, TransactionSubmissionUnknownError } from './errors.js';
 
 /**
  * Jito bundle submission. A bundle is an ordered list of up to 5 transactions
@@ -23,15 +24,23 @@ export async function sendBundle(transactions: VersionedTransaction[]): Promise<
 
   const encoded = transactions.map((tx) => bs58.encode(tx.serialize()));
 
-  const res = await fetchJson<JitoRpcResponse<string>>(endpoints.jitoBundles, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'sendBundle', params: [encoded] }),
-    timeoutMs: 20_000,
-  });
+  const firstSignature = bs58.encode(transactions[0]!.signatures[0]!);
+  let res: JitoRpcResponse<string>;
+  try {
+    res = await fetchJson<JitoRpcResponse<string>>(endpoints.jitoBundles, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'sendBundle', params: [encoded] }),
+      timeoutMs: 20_000,
+    });
+  } catch (err) {
+    throw new TransactionSubmissionUnknownError(firstSignature, err);
+  }
 
-  if (res.error) throw new Error(`Jito rejected the bundle: ${res.error.message}`);
-  if (!res.result) throw new Error('Jito accepted the request but returned no bundle id.');
+  if (res.error) throw new TransactionRejectedError(`Jito rejected the bundle: ${res.error.message}`);
+  if (!res.result) {
+    throw new TransactionSubmissionUnknownError(firstSignature, 'Jito returned no bundle id.');
+  }
   return res.result;
 }
 
@@ -49,9 +58,22 @@ export async function getBundleStatus(bundleId: string): Promise<BundleState> {
       },
     );
 
+    if (res.error) return 'Unknown';
     const entry = res.result?.value?.[0];
     if (!entry) return 'Pending';
-    if (entry.err) return 'Failed';
+    // Jito serializes a successful Rust Result as { Ok: null }, not just null.
+    // Treating that object as an error hides real fills and can rearm an order
+    // which has already traded. An explicit Err always takes precedence.
+    const err = entry.err;
+    const success =
+      err === null ||
+      err === undefined ||
+      (typeof err === 'object' &&
+        !Array.isArray(err) &&
+        Object.keys(err).length === 1 &&
+        'Ok' in err &&
+        err.Ok === null);
+    if (!success) return 'Failed';
     if (entry.confirmation_status === 'confirmed' || entry.confirmation_status === 'finalized') return 'Landed';
     return 'Pending';
   } catch {
