@@ -1,6 +1,18 @@
 import { createHash } from 'node:crypto';
-import { ComputeBudgetProgram, Keypair, PublicKey, SystemProgram, VersionedTransaction } from '@solana/web3.js';
-import { getAssociatedTokenAddressSync, NATIVE_MINT, TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID } from '@solana/spl-token';
+import {
+  ComputeBudgetProgram,
+  type Keypair,
+  PublicKey,
+  SystemProgram,
+  VersionedTransaction,
+} from '@solana/web3.js';
+import {
+  getAssociatedTokenAddressSync,
+  NATIVE_MINT,
+  TOKEN_PROGRAM_ID,
+  TOKEN_2022_PROGRAM_ID,
+  ASSOCIATED_TOKEN_PROGRAM_ID,
+} from '@solana/spl-token';
 import type { TradeRequest } from '../types.js';
 
 const MAX_COMPUTE_UNITS = 1_400_000;
@@ -34,7 +46,10 @@ export function assertWalletSigner(tx: VersionedTransaction, wallet: PublicKey):
 }
 
 /** Never preserve signatures supplied by a transaction builder. */
-export function signExternalTransaction(tx: VersionedTransaction, signer: Keypair): VersionedTransaction {
+export function signExternalTransaction(
+  tx: VersionedTransaction,
+  signer: Keypair,
+): VersionedTransaction {
   assertWalletSigner(tx, signer.publicKey);
   const policy = validatedTrades.get(tx);
   if (!policy) refuse('the message has not passed the external builder checks.');
@@ -97,31 +112,58 @@ function anchorVariant(program: string, names: string[], minBytes = 24): SwapVar
   return { program, prefixes: names.map(anchor), minBytes };
 }
 
-export function pumpSwapVariants(pool: TradeRequest['pool'], action: 'buy' | 'sell'): SwapVariant[] {
-  const pump = anchorVariant(PUMP, action === 'buy' ? ['buy', 'buy_exact_sol_in', 'buy_v2', 'buy_exact_quote_in_v2'] : ['sell', 'sell_v2']);
-  const amm = anchorVariant(PUMP_AMM, action === 'buy' ? ['buy', 'buy_exact_quote_in', 'buy_v2', 'buy_exact_quote_in_v2'] : ['sell', 'sell_v2']);
+export function pumpSwapVariants(
+  pool: TradeRequest['pool'],
+  action: 'buy' | 'sell',
+): SwapVariant[] {
+  const pump = anchorVariant(
+    PUMP,
+    action === 'buy'
+      ? ['buy', 'buy_exact_sol_in', 'buy_v2', 'buy_exact_quote_in_v2']
+      : ['sell', 'sell_v2'],
+  );
+  const amm = anchorVariant(
+    PUMP_AMM,
+    action === 'buy'
+      ? ['buy', 'buy_exact_quote_in', 'buy_v2', 'buy_exact_quote_in_v2']
+      : ['sell', 'sell_v2'],
+  );
   // AMM v4 uses a one-byte tag followed by two u64 amounts (9 / 11).
   const raydium = { program: RAYDIUM_AMM, prefixes: ['09', '0b', '10', '11'], minBytes: 17 };
   const cpmm = anchorVariant(RAYDIUM_CPMM, ['swap_base_input', 'swap_base_output']);
   const clmm = anchorVariant(RAYDIUM_CLMM, ['swap', 'swap_v2', 'swap_router_base_in']);
-  const launch = anchorVariant(LAUNCHLAB, action === 'buy' ? ['buy_exact_in', 'buy_exact_out'] : ['sell_exact_in', 'sell_exact_out']);
+  const launch = anchorVariant(
+    LAUNCHLAB,
+    action === 'buy' ? ['buy_exact_in', 'buy_exact_out'] : ['sell_exact_in', 'sell_exact_out'],
+  );
   const wrapper = { program: PUMPPORTAL_WRAPPER, prefixes: [''], minBytes: 8 };
   switch (pool) {
-    case 'pump': return [pump, wrapper];
-    case 'pump-amm': return [amm, wrapper];
-    case 'raydium': return [raydium, cpmm, clmm, wrapper];
-    case 'raydium-cpmm': return [cpmm, wrapper];
+    case 'pump':
+      return [pump, wrapper];
+    case 'pump-amm':
+      return [amm, wrapper];
+    case 'raydium':
+      return [raydium, cpmm, clmm, wrapper];
+    case 'raydium-cpmm':
+      return [cpmm, wrapper];
     case 'launchlab':
-    case 'bonk': return [launch, wrapper];
-    case 'auto': return [pump, amm, raydium, cpmm, clmm, launch, wrapper];
+    case 'bonk':
+      return [launch, wrapper];
+    case 'auto':
+      return [pump, amm, raydium, cpmm, clmm, launch, wrapper];
   }
 }
 
 // Swap V1 requests use the V1 route instruction by default. The V2 variants
 // are also published by Jupiter. No token-ledger mode is requested by this bot.
 // Source: jup-ag/instruction-parser/src/idl/jupiter.ts and Jupiter's changelog.
-export const jupiterSwapVariants: SwapVariant[] = [anchorVariant(JUPITER_PROGRAM,
-  ['route', 'shared_accounts_route', 'route_v2', 'shared_accounts_route_v2'], 12)];
+export const jupiterSwapVariants: SwapVariant[] = [
+  anchorVariant(
+    JUPITER_PROGRAM,
+    ['route', 'shared_accounts_route', 'route_v2', 'shared_accounts_route_v2'],
+    12,
+  ),
+];
 
 interface TradePolicy {
   wallet: string;
@@ -144,23 +186,25 @@ const validatedTrades = new WeakMap<VersionedTransaction, TradePolicy>();
  * Top-level wallet transfers/authority changes are checked separately below;
  * this still does not establish the swap's CPI behavior or full spend intent.
  */
-export function assertExternalTrade(
-  tx: VersionedTransaction,
-  params: TradePolicy,
-): void {
+export function assertExternalTrade(tx: VersionedTransaction, params: TradePolicy): void {
   assertWalletSigner(tx, new PublicKey(params.wallet));
   const maxFee = priorityFeeLamports(params.priorityFeeSol);
   const keys = tx.message.staticAccountKeys;
-  const totalAccounts = keys.length + (tx.message.version === 0 ? tx.message.numAccountKeysFromLookups : 0);
+  const totalAccounts =
+    keys.length + (tx.message.version === 0 ? tx.message.numAccountKeysFromLookups : 0);
   let computeUnits = MAX_COMPUTE_UNITS;
   let microLamports = 0n;
   const seenBudgetTags = new Set<number>();
   let swapFound = false;
   const wallet = new PublicKey(params.wallet);
   const wrappedSol = getAssociatedTokenAddressSync(NATIVE_MINT, wallet);
-  const allowedAtas = new Set(params.mints.flatMap((mint) =>
-    [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID].map((program) =>
-      getAssociatedTokenAddressSync(new PublicKey(mint), wallet, false, program).toBase58())));
+  const allowedAtas = new Set(
+    params.mints.flatMap(mint =>
+      [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID].map(program =>
+        getAssociatedTokenAddressSync(new PublicKey(mint), wallet, false, program).toBase58(),
+      ),
+    ),
+  );
   let wrappedSolFunded = 0n;
   let tips = 0n;
 
@@ -169,7 +213,11 @@ export function assertExternalTrade(
     // A loaded program could hide a compute-price instruction. Do not silently
     // skip it. Ordinary loaded trade accounts remain supported without RPC reads.
     if (!program) refuse('a program ID is unresolved in an address lookup table.');
-    if (ix.accountKeyIndexes.some((index) => !Number.isInteger(index) || index < 0 || index >= totalAccounts)) {
+    if (
+      ix.accountKeyIndexes.some(
+        index => !Number.isInteger(index) || index < 0 || index >= totalAccounts,
+      )
+    ) {
       refuse('an instruction refers to an invalid account index.');
     }
     const data = Buffer.from(ix.data);
@@ -183,24 +231,35 @@ export function assertExternalTrade(
       // Wrapping native SOL and a requested Jito tip are the only top-level
       // System transfers this bot asks external builders to include. Refuse
       // nonce, assignment and account-creation variants rather than guess.
-      if (data.length !== 12 || data.readUInt32LE(0) !== 2 || ix.accountKeyIndexes.length !== 2 || !account(0).equals(wallet)) {
+      if (
+        data.length !== 12 ||
+        data.readUInt32LE(0) !== 2 ||
+        ix.accountKeyIndexes.length !== 2 ||
+        !account(0).equals(wallet)
+      ) {
         refuse('unsupported top-level System instruction.');
       }
       const destination = account(1);
       const lamports = data.readBigUInt64LE(4);
       if (destination.equals(wrappedSol)) {
         wrappedSolFunded += lamports;
-        if (wrappedSolFunded > (params.wrappedSolLamports ?? 0n)) refuse('native SOL funding exceeds the requested input.');
+        if (wrappedSolFunded > (params.wrappedSolLamports ?? 0n))
+          refuse('native SOL funding exceeds the requested input.');
       } else if (JITO_TIP_ACCOUNTS.has(destination.toBase58())) {
         tips += lamports;
-        if (tips > (params.jitoTipLamports ?? 0n)) refuse('Jito tip exceeds the requested bundle tip.');
+        if (tips > (params.jitoTipLamports ?? 0n))
+          refuse('Jito tip exceeds the requested bundle tip.');
       } else {
         refuse('unexpected direct SOL transfer destination.');
       }
     }
     if (program.equals(ASSOCIATED_TOKEN_PROGRAM_ID)) {
-      if (!(data.length === 0 || (data.length === 1 && data[0] === 1)) ||
-        !account(0).equals(wallet) || !account(2).equals(wallet) || !allowedAtas.has(account(1).toBase58())) {
+      if (
+        !(data.length === 0 || (data.length === 1 && data[0] === 1)) ||
+        !account(0).equals(wallet) ||
+        !account(2).equals(wallet) ||
+        !allowedAtas.has(account(1).toBase58())
+      ) {
         refuse('unexpected associated-token-account operation.');
       }
     }
@@ -208,41 +267,69 @@ export function assertExternalTrade(
       // Actual trade transfers are invoked by the swap program. Top-level
       // setup/cleanup only needs SyncNative and CloseAccount for wallet ATAs.
       // This rejects direct token transfers, approvals and authority changes.
-      const sync = data.length === 1 && data[0] === 17 && ix.accountKeyIndexes.length === 1 && account(0).equals(wrappedSol);
-      const close = data.length === 1 && data[0] === 9 && ix.accountKeyIndexes.length === 3 &&
-        allowedAtas.has(account(0).toBase58()) && account(1).equals(wallet) && account(2).equals(wallet);
-      if (!sync && !close) refuse('unexpected direct token transfer, authority change or setup instruction.');
+      const sync =
+        data.length === 1 &&
+        data[0] === 17 &&
+        ix.accountKeyIndexes.length === 1 &&
+        account(0).equals(wrappedSol);
+      const close =
+        data.length === 1 &&
+        data[0] === 9 &&
+        ix.accountKeyIndexes.length === 3 &&
+        allowedAtas.has(account(0).toBase58()) &&
+        account(1).equals(wallet) &&
+        account(2).equals(wallet);
+      if (!sync && !close)
+        refuse('unexpected direct token transfer, authority change or setup instruction.');
     }
     if (program.equals(ComputeBudgetProgram.programId)) {
       const tag = data[0];
-      if (tag === undefined || ![1, 2, 3, 4].includes(tag) || data.length !== (tag === 3 ? 9 : 5) || ix.accountKeyIndexes.length !== 0) {
+      if (
+        tag === undefined ||
+        ![1, 2, 3, 4].includes(tag) ||
+        data.length !== (tag === 3 ? 9 : 5) ||
+        ix.accountKeyIndexes.length !== 0
+      ) {
         refuse('unsupported or malformed compute-budget instruction.');
       }
       if (seenBudgetTags.has(tag)) refuse('duplicate compute-budget instruction.');
       seenBudgetTags.add(tag);
       if (tag === 2) {
         computeUnits = data.readUInt32LE(1);
-        if (computeUnits === 0 || computeUnits > MAX_COMPUTE_UNITS) refuse('invalid compute-unit limit.');
+        if (computeUnits === 0 || computeUnits > MAX_COMPUTE_UNITS)
+          refuse('invalid compute-unit limit.');
       }
       if (tag === 3) microLamports = data.readBigUInt64LE(1);
     }
     const programId = program.toBase58();
-    const isSwap = params.swaps.some((variant) => variant.program === programId && data.length >= variant.minBytes &&
-      variant.prefixes.some((prefix) => data.subarray(0, prefix.length / 2).toString('hex') === prefix));
+    const isSwap = params.swaps.some(
+      variant =>
+        variant.program === programId &&
+        data.length >= variant.minBytes &&
+        variant.prefixes.some(
+          prefix => data.subarray(0, prefix.length / 2).toString('hex') === prefix,
+        ),
+    );
     if (isSwap) {
       swapFound = true;
     }
-    const isSetup = program.equals(ComputeBudgetProgram.programId) || program.equals(SystemProgram.programId) ||
-      program.equals(ASSOCIATED_TOKEN_PROGRAM_ID) || program.equals(TOKEN_PROGRAM_ID) || program.equals(TOKEN_2022_PROGRAM_ID);
-    if (!isSwap && !isSetup) refuse('unexpected top-level program or unsupported swap instruction.');
+    const isSetup =
+      program.equals(ComputeBudgetProgram.programId) ||
+      program.equals(SystemProgram.programId) ||
+      program.equals(ASSOCIATED_TOKEN_PROGRAM_ID) ||
+      program.equals(TOKEN_PROGRAM_ID) ||
+      program.equals(TOKEN_2022_PROGRAM_ID);
+    if (!isSwap && !isSetup)
+      refuse('unexpected top-level program or unsupported swap instruction.');
   }
 
   const fee = (BigInt(computeUnits) * microLamports + MICRO_LAMPORTS - 1n) / MICRO_LAMPORTS;
-  if (fee > maxFee) refuse(`compute priority fee ${fee} lamports exceeds the requested ${maxFee} lamports.`);
+  if (fee > maxFee)
+    refuse(`compute priority fee ${fee} lamports exceeds the requested ${maxFee} lamports.`);
   if (params.jitoTipLamports !== undefined && fee + tips > maxFee) {
     refuse('combined compute fee and explicit Jito tip exceed the requested bundle budget.');
   }
   if (!swapFound) refuse('no recognized swap instruction for the requested venue and action.');
-  if (tx.serialize().length > 1232) refuse('transaction exceeds Solana\'s packet size.');
+  if (tx.serialize().length > 1232) refuse("transaction exceeds Solana's packet size.");
   validatedTrades.set(tx, params);
 }

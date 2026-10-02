@@ -31,12 +31,14 @@ function stamp(): string {
 
 export const log = {
   info(msg: string, meta?: unknown) {
-    console.log(`[${stamp()}] ${redact(msg)}${meta === undefined ? '' : ' ' + redact(meta)}`);
+    console.log(`[${stamp()}] ${redact(msg)}${meta === undefined ? '' : ` ${redact(meta)}`}`);
   },
   warn(msg: string, meta?: unknown) {
-    console.warn(`[${stamp()}] WARN ${redact(msg)}${meta === undefined ? '' : ' ' + redact(meta)}`);
+    console.warn(`[${stamp()}] WARN ${redact(msg)}${meta === undefined ? '' : ` ${redact(meta)}`}`);
   },
   error(msg: string, meta?: unknown) {
-    console.error(`[${stamp()}] ERROR ${redact(msg)}${meta === undefined ? '' : ' ' + redact(meta)}`);
+    console.error(
+      `[${stamp()}] ERROR ${redact(msg)}${meta === undefined ? '' : ` ${redact(meta)}`}`,
+    );
   },
 };

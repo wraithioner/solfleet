@@ -1,6 +1,6 @@
 import {
   Connection,
-  Keypair,
+  type Keypair,
   PublicKey,
   SystemProgram,
   ComputeBudgetProgram,
@@ -49,7 +49,10 @@ let sendConnection: Connection | null = null;
  */
 const RPC_TIMEOUT_MS = 12_000;
 
-async function timeoutFetch(input: Parameters<typeof fetch>[0], init?: RequestInit): Promise<Response> {
+async function timeoutFetch(
+  input: Parameters<typeof fetch>[0],
+  init?: RequestInit,
+): Promise<Response> {
   const deadline = AbortSignal.timeout(RPC_TIMEOUT_MS);
   // web3.js cancels some requests itself; honour both reasons to give up
   const signal = init?.signal ? AbortSignal.any([init.signal, deadline]) : deadline;
@@ -98,7 +101,7 @@ export async function getSolBalance(address: string): Promise<{ sol: number; lam
 /** Batched SOL balances. getMultipleAccounts caps at 100 keys per call. */
 export async function getSolBalances(addresses: string[]): Promise<Map<string, bigint>> {
   const out = new Map<string, bigint>();
-  const keys = addresses.map((a) => new PublicKey(a));
+  const keys = addresses.map(a => new PublicKey(a));
 
   for (let i = 0; i < keys.length; i += 100) {
     const slice = keys.slice(i, i + 100);
@@ -162,11 +165,17 @@ interface ParsedTokenInfo {
 function assertPublicTokenBalance(info: ParsedTokenInfo): void {
   const amount = info.tokenAmount?.amount;
   const decimals = info.tokenAmount?.decimals;
-  if (typeof amount !== 'string' || !/^\d{1,20}$/.test(amount) || BigInt(amount) > (1n << 64n) - 1n ||
-      !Number.isInteger(decimals) || decimals < 0 || decimals > 255) {
+  if (
+    typeof amount !== 'string' ||
+    !/^\d{1,20}$/.test(amount) ||
+    BigInt(amount) > (1n << 64n) - 1n ||
+    !Number.isInteger(decimals) ||
+    decimals < 0 ||
+    decimals > 255
+  ) {
     throw new Error('Token balance response contains an invalid raw amount or decimals.');
   }
-  if (info.extensions?.some((ext) => ext.extension === 'confidentialTransferAccount')) {
+  if (info.extensions?.some(ext => ext.extension === 'confidentialTransferAccount')) {
     throw new Error('Confidential token balances cannot be valued by public RPC reads.');
   }
 }
@@ -174,12 +183,12 @@ function assertPublicTokenBalance(info: ParsedTokenInfo): void {
 /** First account of one mint, retained for callers needing an account address. */
 export async function getTokenBalance(address: string, mint: string): Promise<SplHolding | null> {
   const all = await getSplBalances(address);
-  return all.find((h) => h.mint === mint) ?? null;
+  return all.find(h => h.mint === mint) ?? null;
 }
 
 /** Every account for a mint; a wallet can own several, including non-ATAs. */
 export async function getTokenAccounts(address: string, mint: string): Promise<SplHolding[]> {
-  return (await getSplBalances(address)).filter((h) => h.mint === mint);
+  return (await getSplBalances(address)).filter(h => h.mint === mint);
 }
 
 /** Decimals are immutable mint metadata, never a six-decimal assumption. */
@@ -213,35 +222,49 @@ export function parseTokenAccountAmount(data: Uint8Array): bigint {
  * position. The mint filter covers either token program in one read per owner;
  * bounded concurrency prevents a large wallet set from flooding the RPC.
  */
-export async function getMintBalances(addresses: string[], mint: string): Promise<Map<string, bigint>> {
+export async function getMintBalances(
+  addresses: string[],
+  mint: string,
+): Promise<Map<string, bigint>> {
   const out = new Map<string, bigint>();
   if (addresses.length === 0) return out;
 
   const mintKey = new PublicKey(mint);
   const owners = [...new Set(addresses)];
   let next = 0;
-  await Promise.all(Array.from({ length: Math.min(5, owners.length) }, async () => {
-    while (next < owners.length) {
-      const address = owners[next++]!;
-      const result = await retry(() => rpc().getParsedTokenAccountsByOwner(new PublicKey(address), { mint: mintKey }), { attempts: 2 });
-      let total = 0n;
-      for (const account of result.value) {
-        const info = (account.account.data as never as { parsed: { info: ParsedTokenInfo } }).parsed.info;
-        assertPublicTokenBalance(info);
-        if (info.mint !== mint) throw new Error('Token balance response contains a different mint.');
-        total += BigInt(info.tokenAmount.amount);
+  await Promise.all(
+    Array.from({ length: Math.min(5, owners.length) }, async () => {
+      while (next < owners.length) {
+        const address = owners[next++]!;
+        const result = await retry(
+          () => rpc().getParsedTokenAccountsByOwner(new PublicKey(address), { mint: mintKey }),
+          { attempts: 2 },
+        );
+        let total = 0n;
+        for (const account of result.value) {
+          const info = (account.account.data as never as { parsed: { info: ParsedTokenInfo } })
+            .parsed.info;
+          assertPublicTokenBalance(info);
+          if (info.mint !== mint)
+            throw new Error('Token balance response contains a different mint.');
+          total += BigInt(info.tokenAmount.amount);
+        }
+        if (total > 0n) out.set(address, total);
       }
-      if (total > 0n) out.set(address, total);
-    }
-  }));
+    }),
+  );
 
   return out;
 }
 
 // ── transaction plumbing ──────────────────────────────────────────────────────
 
-export function priorityFeeInstructions(priorityFeeSol: number, computeUnits = 200_000): TransactionInstruction[] {
-  if (!Number.isFinite(priorityFeeSol) || priorityFeeSol < 0) throw new Error('Priority fee must be a non-negative finite amount.');
+export function priorityFeeInstructions(
+  priorityFeeSol: number,
+  computeUnits = 200_000,
+): TransactionInstruction[] {
+  if (!Number.isFinite(priorityFeeSol) || priorityFeeSol < 0)
+    throw new Error('Priority fee must be a non-negative finite amount.');
   const lamports = Math.floor(priorityFeeSol * LAMPORTS);
   // microLamports per compute unit, derived from the total SOL the user is willing to tip
   const microLamportsPerCu = Math.max(0, Math.floor((lamports * 1_000_000) / computeUnits));
@@ -354,7 +377,8 @@ export async function signatureLanded(signature: string): Promise<SignatureState
     // Not visible to this RPC is not proof of failure: the transaction can still
     // be queued at another provider while its blockhash remains valid.
     if (!status) return 'unknown';
-    if (status.confirmationStatus !== 'confirmed' && status.confirmationStatus !== 'finalized') return 'unknown';
+    if (status.confirmationStatus !== 'confirmed' && status.confirmationStatus !== 'finalized')
+      return 'unknown';
     return status.err ? 'missing' : 'landed';
   } catch {
     return 'unknown';
@@ -372,12 +396,15 @@ export async function confirmSignature(signature: string, timeoutMs = 60_000): P
     const { value } = await rpc().getSignatureStatuses([signature]);
     const status = value[0];
 
-    if (status && (status.confirmationStatus === 'confirmed' || status.confirmationStatus === 'finalized')) {
+    if (
+      status &&
+      (status.confirmationStatus === 'confirmed' || status.confirmationStatus === 'finalized')
+    ) {
       if (status.err) throw new TransactionRejectedError(explainChainError(status.err), signature);
       return;
     }
 
-    await new Promise((r) => setTimeout(r, 1500));
+    await new Promise(r => setTimeout(r, 1500));
   }
 
   throw new Error(`Timed out waiting for confirmation of ${signature}`);
@@ -430,7 +457,7 @@ export async function sendSolBatch(
 
   const ixs = [
     ...priorityFeeInstructions(priorityFeeSol, 10_000 + 5_000 * transfers.length),
-    ...transfers.map((t) =>
+    ...transfers.map(t =>
       SystemProgram.transfer({
         fromPubkey: from.publicKey,
         toPubkey: new PublicKey(t.to),
@@ -499,8 +526,23 @@ export async function sendSplToken(
     ...priorityFeeInstructions(priorityFeeSol, 80_000),
     // idempotent: costs nothing extra if the destination ATA already exists,
     // and avoids a separate round trip to check
-    createAssociatedTokenAccountIdempotentInstruction(from.publicKey, dest, destOwner, mintKey, program),
-    createTransferCheckedInstruction(source, mintKey, dest, from.publicKey, rawAmount, decimals, [], program),
+    createAssociatedTokenAccountIdempotentInstruction(
+      from.publicKey,
+      dest,
+      destOwner,
+      mintKey,
+      program,
+    ),
+    createTransferCheckedInstruction(
+      source,
+      mintKey,
+      dest,
+      from.publicKey,
+      rawAmount,
+      decimals,
+      [],
+      program,
+    ),
   ];
 
   // reclaim the ~0.002 SOL rent sitting in the now-empty token account
@@ -528,8 +570,13 @@ export function isValidSolanaAddress(address: string): boolean {
   }
 }
 
-export function estimateSweepableSol(lamports: bigint, reserveSol: number, priorityFeeSol: number): number {
-  const cost = BigInt(BASE_FEE_LAMPORTS) + BigInt(Math.floor((reserveSol + priorityFeeSol) * LAMPORTS));
+export function estimateSweepableSol(
+  lamports: bigint,
+  reserveSol: number,
+  priorityFeeSol: number,
+): number {
+  const cost =
+    BigInt(BASE_FEE_LAMPORTS) + BigInt(Math.floor((reserveSol + priorityFeeSol) * LAMPORTS));
   const net = lamports - cost;
   return net > 0n ? Number(net) / LAMPORTS : 0;
 }
@@ -547,14 +594,22 @@ export function estimateSweepableSol(lamports: bigint, reserveSol: number, prior
  * rate. Returns null when the sample is empty or the call fails, so the caller
  * keeps its configured fee rather than defaulting to something reckless.
  */
-export async function recentPriorityFeeMicroLamports(accounts: string[] = []): Promise<number | null> {
+export async function recentPriorityFeeMicroLamports(
+  accounts: string[] = [],
+): Promise<number | null> {
   try {
-    const keys = accounts.slice(0, 128).map((a) => new PublicKey(a));
-    const samples = await retry(() => rpc().getRecentPrioritizationFees({ lockedWritableAccounts: keys }), {
-      attempts: 2,
-    });
+    const keys = accounts.slice(0, 128).map(a => new PublicKey(a));
+    const samples = await retry(
+      () => rpc().getRecentPrioritizationFees({ lockedWritableAccounts: keys }),
+      {
+        attempts: 2,
+      },
+    );
 
-    const fees = samples.map((s) => s.prioritizationFee).filter((f) => f > 0).sort((a, b) => a - b);
+    const fees = samples
+      .map(s => s.prioritizationFee)
+      .filter(f => f > 0)
+      .sort((a, b) => a - b);
     if (fees.length === 0) return null;
 
     return fees[Math.min(fees.length - 1, Math.floor(fees.length * 0.75))] ?? null;

@@ -74,11 +74,15 @@ export function parseMintAccount(data: Uint8Array): MintAuthorities | null {
   const buf = Buffer.from(data);
   const mintAuthorityOption = buf.readUInt32LE(0);
   const freezeAuthorityOption = buf.readUInt32LE(46);
-  if (![0, 1].includes(mintAuthorityOption) || ![0, 1].includes(freezeAuthorityOption) || buf[45] !== 1) return null;
+  if (
+    ![0, 1].includes(mintAuthorityOption) ||
+    ![0, 1].includes(freezeAuthorityOption) ||
+    buf[45] !== 1
+  )
+    return null;
 
   return {
-    mintAuthority:
-      mintAuthorityOption === 1 ? new PublicKey(buf.subarray(4, 36)).toBase58() : null,
+    mintAuthority: mintAuthorityOption === 1 ? new PublicKey(buf.subarray(4, 36)).toBase58() : null,
     supplyRaw: buf.readBigUInt64LE(36),
     decimals: buf.readUInt8(44),
     freezeAuthority:
@@ -97,7 +101,11 @@ export function parseTrapExtensions(data: Uint8Array, owner: string): string[] {
 
   const traps: string[] = [];
   try {
-    const mint = unpackMint(PublicKey.default, { data: Buffer.from(data), owner: TOKEN_2022_PROGRAM_ID } as never, TOKEN_2022_PROGRAM_ID);
+    const mint = unpackMint(
+      PublicKey.default,
+      { data: Buffer.from(data), owner: TOKEN_2022_PROGRAM_ID } as never,
+      TOKEN_2022_PROGRAM_ID,
+    );
 
     const fee = getTransferFeeConfig(mint);
     if (fee) {
@@ -134,14 +142,26 @@ export function parseTrapExtensions(data: Uint8Array, owner: string): string[] {
       traps.push('A pause authority can stop every transfer for this mint');
     }
     const reviewed = new Set([
-      ExtensionType.Uninitialized, ExtensionType.TransferFeeConfig, ExtensionType.MintCloseAuthority,
-      ExtensionType.ConfidentialTransferMint, ExtensionType.DefaultAccountState, ExtensionType.NonTransferable,
-      ExtensionType.InterestBearingConfig, ExtensionType.PermanentDelegate, ExtensionType.TransferHook,
-      ExtensionType.MetadataPointer, ExtensionType.TokenMetadata, ExtensionType.GroupPointer,
-      ExtensionType.TokenGroup, ExtensionType.GroupMemberPointer, ExtensionType.TokenGroupMember,
-      ExtensionType.ScaledUiAmountConfig, ExtensionType.PausableConfig, ExtensionType.PermissionedBurn,
+      ExtensionType.Uninitialized,
+      ExtensionType.TransferFeeConfig,
+      ExtensionType.MintCloseAuthority,
+      ExtensionType.ConfidentialTransferMint,
+      ExtensionType.DefaultAccountState,
+      ExtensionType.NonTransferable,
+      ExtensionType.InterestBearingConfig,
+      ExtensionType.PermanentDelegate,
+      ExtensionType.TransferHook,
+      ExtensionType.MetadataPointer,
+      ExtensionType.TokenMetadata,
+      ExtensionType.GroupPointer,
+      ExtensionType.TokenGroup,
+      ExtensionType.GroupMemberPointer,
+      ExtensionType.TokenGroupMember,
+      ExtensionType.ScaledUiAmountConfig,
+      ExtensionType.PausableConfig,
+      ExtensionType.PermissionedBurn,
     ]);
-    if (getExtensionTypes(mint.tlvData).some((type) => !reviewed.has(type))) {
+    if (getExtensionTypes(mint.tlvData).some(type => !reviewed.has(type))) {
       traps.push('Token-2022 has an extension whose transfer behavior has not been reviewed');
     }
   } catch {
@@ -159,7 +179,8 @@ export async function getMintAuthorities(mint: string): Promise<MintAuthorities 
     if (!info) return null;
 
     const owner = info.owner.toBase58();
-    if (owner !== TOKEN_PROGRAM_ID.toBase58() && owner !== TOKEN_2022_PROGRAM_ID.toBase58()) return null;
+    if (owner !== TOKEN_PROGRAM_ID.toBase58() && owner !== TOKEN_2022_PROGRAM_ID.toBase58())
+      return null;
     // The SDK validates account size and the Token-2022 account type byte.
     unpackMint(new PublicKey(mint), info, info.owner);
 

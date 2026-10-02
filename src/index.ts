@@ -1,13 +1,13 @@
 import fs from 'node:fs';
 import { config } from './config.js';
 import { log } from './logger.js';
-import { errMessage } from './util.js';
 import { createBot, registerMenu } from './bot/index.js';
 import { openAtBoot, lockVault } from './store/vault.js';
 import { flush } from './store/db.js';
 import { allWallets, hasSealedSecrets } from './store/wallets.js';
 import { startWatcher, stopWatcher } from './services/watcher.js';
 import { db } from './store/db.js';
+import { createNotifier } from './services/notifications.js';
 
 async function main(): Promise<void> {
   fs.mkdirSync(config.dataDir, { recursive: true });
@@ -18,8 +18,12 @@ async function main(): Promise<void> {
   log.info(`Solana RPC: ${new URL(config.solana.rpcUrl).host}`);
 
   if (config.solana.rpcUrl.includes('api.mainnet-beta.solana.com')) {
-    log.warn('Using the public Solana RPC. Batch operations across many wallets will hit rate limits —');
-    log.warn('set SOLANA_RPC_URL to a private endpoint (Helius, QuickNode, Triton) before trading.');
+    log.warn(
+      'Using the public Solana RPC. Batch operations across many wallets will hit rate limits —',
+    );
+    log.warn(
+      'set SOLANA_RPC_URL to a private endpoint (Helius, QuickNode, Triton) before trading.',
+    );
   }
 
   warnIfStorageIsEphemeral();
@@ -31,7 +35,9 @@ async function main(): Promise<void> {
    */
   switch (openAtBoot(hasSealedSecrets())) {
     case 'created':
-      log.info('Vault created. The key is at data/vault.key on this volume — back it up with the wallets.');
+      log.info(
+        'Vault created. The key is at data/vault.key on this volume — back it up with the wallets.',
+      );
       break;
     case 'opened':
       log.info(`Vault open. ${allWallets().length} wallets loaded.`);
@@ -61,19 +67,7 @@ async function main(): Promise<void> {
      * is escaped at the source; this is the layer that does not depend on
      * remembering to. Formatting is what gets dropped, never the message.
      */
-    startWatcher(async (text) => {
-      try {
-        await bot.api.sendMessage(owner, text, { parse_mode: 'HTML' });
-      } catch (err) {
-        const reason = errMessage(err);
-        try {
-          await bot.api.sendMessage(owner, text.replace(/<[^>]+>/g, ''));
-          log.warn(`Alert sent without formatting — Telegram rejected the markup: ${reason}`);
-        } catch (plainErr) {
-          log.warn(`Could not deliver a watcher alert: ${errMessage(plainErr)} (first: ${reason})`);
-        }
-      }
-    });
+    startWatcher(createNotifier(bot.api, owner));
 
     const armed = db.activeRules().length;
     if (armed > 0) log.info(`${armed} auto-sell rule(s) restored and armed.`);
@@ -92,14 +86,14 @@ async function main(): Promise<void> {
   process.once('SIGINT', () => shutdown('SIGINT'));
   process.once('SIGTERM', () => shutdown('SIGTERM'));
 
-  process.on('unhandledRejection', (reason) => {
+  process.on('unhandledRejection', reason => {
     log.error('Unhandled promise rejection', reason);
   });
 
   await registerMenu(bot);
 
   await bot.start({
-    onStart: (info) => {
+    onStart: info => {
       log.info(`Bot online as @${info.username}`);
       log.info(`Authorised operator IDs: ${config.ownerIds.join(', ')}`);
       log.info('─────────────────────────────────────────────');
@@ -119,7 +113,10 @@ async function main(): Promise<void> {
 function warnIfStorageIsEphemeral(): void {
   // Railway exports these; other container hosts are close enough in spirit
   const onContainerHost = Boolean(
-    process.env.RAILWAY_ENVIRONMENT ?? process.env.RAILWAY_PROJECT_ID ?? process.env.RENDER ?? process.env.FLY_APP_NAME,
+    process.env.RAILWAY_ENVIRONMENT ??
+      process.env.RAILWAY_PROJECT_ID ??
+      process.env.RENDER ??
+      process.env.FLY_APP_NAME,
   );
   if (!onContainerHost) return;
 
@@ -147,11 +144,13 @@ function warnIfStorageIsEphemeral(): void {
   log.warn('══════════════════════════════════════════════════════════════');
 
   if (allWallets().length > 0) {
-    log.error(`${allWallets().length} wallets are already stored here. Export their keys NOW, before the next deploy.`);
+    log.error(
+      `${allWallets().length} wallets are already stored here. Export their keys NOW, before the next deploy.`,
+    );
   }
 }
 
-main().catch((err) => {
+main().catch(err => {
   log.error('Fatal startup error', err);
   process.exit(1);
 });

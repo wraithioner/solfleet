@@ -98,13 +98,13 @@ export async function getDexscreenerPrice(mint: string): Promise<number | undefi
 
     // priceUsd describes the pair's BASE token, so a pair where our mint is the
     // quote side would quote a completely unrelated token
-    const pairs = (res.pairs ?? []).filter(
-      (p) => p.baseToken?.address === mint,
-    );
+    const pairs = (res.pairs ?? []).filter(p => p.baseToken?.address === mint);
     if (pairs.length === 0) return undefined;
 
     // pick the deepest pool; thin pools quote nonsense
-    const best = pairs.reduce((a, b) => ((b.liquidity?.usd ?? 0) > (a.liquidity?.usd ?? 0) ? b : a));
+    const best = pairs.reduce((a, b) =>
+      (b.liquidity?.usd ?? 0) > (a.liquidity?.usd ?? 0) ? b : a,
+    );
     const price = Number(best.priceUsd);
     return Number.isFinite(price) ? store(key, price) : undefined;
   } catch {

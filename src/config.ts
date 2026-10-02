@@ -3,7 +3,8 @@ import path from 'node:path';
 
 function req(name: string): string {
   const v = process.env[name]?.trim();
-  if (!v) throw new Error(`Missing required env var ${name}. Copy .env.example to .env and fill it in.`);
+  if (!v)
+    throw new Error(`Missing required env var ${name}. Copy .env.example to .env and fill it in.`);
   return v;
 }
 
@@ -19,7 +20,9 @@ function num(name: string, fallback: number, min: number, max: number, integer =
   }
   const n = Number(raw);
   if (!Number.isFinite(n) || n < min || n > max || (integer && !Number.isSafeInteger(n))) {
-    throw new Error(`${name} must be ${integer ? 'an integer' : 'a finite number'} between ${min} and ${max}.`);
+    throw new Error(
+      `${name} must be ${integer ? 'an integer' : 'a finite number'} between ${min} and ${max}.`,
+    );
   }
   return n;
 }
@@ -54,9 +57,13 @@ function executionMode(): ExecutionMode {
 }
 
 function ownerIds(): number[] {
-  const ids = req('OWNER_IDS').split(',').map((s) => s.trim());
-  if (ids.some((id) => !/^\d+$/.test(id) || !Number.isSafeInteger(Number(id)) || Number(id) <= 0)) {
-    throw new Error('OWNER_IDS must contain only positive integer Telegram user IDs, separated by commas.');
+  const ids = req('OWNER_IDS')
+    .split(',')
+    .map(s => s.trim());
+  if (ids.some(id => !/^\d+$/.test(id) || !Number.isSafeInteger(Number(id)) || Number(id) <= 0)) {
+    throw new Error(
+      'OWNER_IDS must contain only positive integer Telegram user IDs, separated by commas.',
+    );
   }
   return [...new Set(ids.map(Number))];
 }
@@ -64,9 +71,22 @@ function ownerIds(): number[] {
 function jupiterBaseUrl(): string {
   const raw = opt('JUPITER_API_BASE_URL', 'https://api.jup.ag');
   let url: URL;
-  try { url = new URL(raw); } catch { throw new Error('JUPITER_API_BASE_URL must be an HTTPS origin.'); }
-  if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash || url.pathname !== '/') {
-    throw new Error('JUPITER_API_BASE_URL must be an HTTPS origin without credentials, a path, query, or fragment.');
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error('JUPITER_API_BASE_URL must be an HTTPS origin.');
+  }
+  if (
+    url.protocol !== 'https:' ||
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash ||
+    url.pathname !== '/'
+  ) {
+    throw new Error(
+      'JUPITER_API_BASE_URL must be an HTTPS origin without credentials, a path, query, or fragment.',
+    );
   }
   return url.origin;
 }
@@ -91,7 +111,6 @@ export const config = {
      */
     isPublicRpc: !opt('SOLANA_RPC_URL'),
   },
-
 
   vault: {
     /**
@@ -122,7 +141,13 @@ export const config = {
     apiKey: jupiterApiKey,
     // The new gateway permits 0.5 requests/sec without a key, or 1/sec on
     // the free keyed plan. Operators on other plans can set their interval.
-    requestIntervalMs: num('JUPITER_REQUEST_INTERVAL_MS', jupiterApiKey ? 1_000 : 2_000, 0, 60_000, true),
+    requestIntervalMs: num(
+      'JUPITER_REQUEST_INTERVAL_MS',
+      jupiterApiKey ? 1_000 : 2_000,
+      0,
+      60_000,
+      true,
+    ),
   },
 } as const;
 

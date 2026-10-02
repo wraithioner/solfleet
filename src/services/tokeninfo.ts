@@ -3,7 +3,12 @@ import { rpc, getMintBalances } from '../chains/solana.js';
 import { endpoints, EVM_LOOKUP_CHAINS } from '../config.js';
 import { fetchJson, errMessage } from '../util.js';
 import { log } from '../logger.js';
-import { fetchBondingCurve, curveMarketCapSol, curveProgress, bondingCurvePda } from '../trade/curve.js';
+import {
+  fetchBondingCurve,
+  curveMarketCapSol,
+  curveProgress,
+  bondingCurvePda,
+} from '../trade/curve.js';
 import { getSolPrice } from './prices.js';
 import { getTokenMetadata } from './metadata.js';
 import { getMintAuthorities } from './mintauth.js';
@@ -138,12 +143,17 @@ const SOLANA_MINT_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 const EVM_ADDR_RE = /^0x[a-fA-F0-9]{40}$/;
 
 /** Pull a token address out of arbitrary pasted text, if there is one. */
-export function extractTokenAddress(text: string): { address: string; kind: 'solana' | 'evm' } | null {
+export function extractTokenAddress(
+  text: string,
+): { address: string; kind: 'solana' | 'evm' } | null {
   const cleaned = text.trim();
 
   // handle pasted links: pump.fun/coin/<mint>, dexscreener.com/solana/<pair>, ...
-  const fromUrl = cleaned.match(/(?:coin|token|solana|ethereum|base|bsc|arbitrum|polygon)\/([1-9A-HJ-NP-Za-km-z]{32,44}|0x[a-fA-F0-9]{40})/);
-  const candidate = fromUrl?.[1] ?? cleaned.split(/\s+/).find((w) => SOLANA_MINT_RE.test(w) || EVM_ADDR_RE.test(w));
+  const fromUrl = cleaned.match(
+    /(?:coin|token|solana|ethereum|base|bsc|arbitrum|polygon)\/([1-9A-HJ-NP-Za-km-z]{32,44}|0x[a-fA-F0-9]{40})/,
+  );
+  const candidate =
+    fromUrl?.[1] ?? cleaned.split(/\s+/).find(w => SOLANA_MINT_RE.test(w) || EVM_ADDR_RE.test(w));
 
   if (!candidate) return null;
   if (EVM_ADDR_RE.test(candidate)) return { address: candidate, kind: 'evm' };
@@ -206,9 +216,13 @@ async function fetchPairsOnChain(chainId: string, address: string): Promise<DexP
       { timeoutMs: 12_000 },
     );
     const pairs = Array.isArray(res) ? res : (res.pairs ?? []);
-    return pairs.filter((p) => p.chainId === chainId && (chainId === 'solana'
-      ? p.baseToken?.address === address
-      : p.baseToken?.address?.toLowerCase() === address.toLowerCase()));
+    return pairs.filter(
+      p =>
+        p.chainId === chainId &&
+        (chainId === 'solana'
+          ? p.baseToken?.address === address
+          : p.baseToken?.address?.toLowerCase() === address.toLowerCase()),
+    );
   } catch {
     return [];
   }
@@ -232,14 +246,17 @@ async function fetchPairsAnywhere(address: string): Promise<DexPair[]> {
       { timeoutMs: 12_000 },
     );
     return (res.pairs ?? []).filter(
-      (p) => p.baseToken?.address?.toLowerCase() === address.toLowerCase(),
+      p => p.baseToken?.address?.toLowerCase() === address.toLowerCase(),
     );
   } catch {
     return [];
   }
 }
 
-async function loadMarketData(address: string, kind: 'solana' | 'evm'): Promise<Partial<TokenInfo>> {
+async function loadMarketData(
+  address: string,
+  kind: 'solana' | 'evm',
+): Promise<Partial<TokenInfo>> {
   try {
     // An EVM address is not unique across chains — forks reuse the exact same
     // contract address — so search each chain explicitly instead of trusting an
@@ -247,7 +264,7 @@ async function loadMarketData(address: string, kind: 'solana' | 'evm'): Promise<
     let pairs =
       kind === 'solana'
         ? await fetchPairsOnChain('solana', address)
-        : (await Promise.all(EVM_LOOKUP_CHAINS.map((c) => fetchPairsOnChain(c, address)))).flat();
+        : (await Promise.all(EVM_LOOKUP_CHAINS.map(c => fetchPairsOnChain(c, address)))).flat();
 
     // nothing on any chain we know by name — widen the search rather than
     // reporting a token that plainly exists as "unknown"
@@ -258,7 +275,9 @@ async function loadMarketData(address: string, kind: 'solana' | 'evm'): Promise<
     if (pairs.length === 0) return {};
 
     // the deepest pool is the one whose price and market cap mean anything
-    const best = pairs.reduce((a, b) => ((b.liquidity?.usd ?? 0) > (a.liquidity?.usd ?? 0) ? b : a));
+    const best = pairs.reduce((a, b) =>
+      (b.liquidity?.usd ?? 0) > (a.liquidity?.usd ?? 0) ? b : a,
+    );
 
     /*
      * Age comes from the FIRST market, not the deepest one.
@@ -274,8 +293,8 @@ async function loadMarketData(address: string, kind: 'solana' | 'evm'): Promise<
      * A copy-trade age limit built on that number would wave through precisely
      * the coins it exists to refuse, so it is built on the oldest pair instead.
      */
-    const firstMarket = pairs.reduce(
-      (a, b) => ((b.pairCreatedAt ?? Infinity) < (a.pairCreatedAt ?? Infinity) ? b : a),
+    const firstMarket = pairs.reduce((a, b) =>
+      (b.pairCreatedAt ?? Infinity) < (a.pairCreatedAt ?? Infinity) ? b : a,
     );
 
     /*
@@ -311,15 +330,15 @@ async function loadMarketData(address: string, kind: 'solana' | 'evm'): Promise<
       marketCap: best.marketCap,
       fdv: best.fdv,
       liquidityUsd: best.liquidity?.usd,
-      volume24h: sum((p) => p.volume?.h24),
-      volume1h: sum((p) => p.volume?.h1),
-      buys24h: sum((p) => p.txns?.h24?.buys),
-      sells24h: sum((p) => p.txns?.h24?.sells),
+      volume24h: sum(p => p.volume?.h24),
+      volume1h: sum(p => p.volume?.h1),
+      buys24h: sum(p => p.txns?.h24?.buys),
+      sells24h: sum(p => p.txns?.h24?.sells),
       pairCreatedAt: firstMarket.pairCreatedAt,
       dex: best.dexId,
       imageUrl: best.info?.imageUrl,
-      websites: best.info?.websites?.map((w) => w.url),
-      socials: best.info?.socials?.map((s) => s.url),
+      websites: best.info?.websites?.map(w => w.url),
+      socials: best.info?.socials?.map(s => s.url),
     };
   } catch (err) {
     log.warn(`DexScreener lookup failed for ${address}: ${errMessage(err)}`);
@@ -381,7 +400,7 @@ async function poolOwners(owners: string[]): Promise<Set<string>> {
   if (owners.length === 0) return pools;
 
   try {
-    const infos = await rpc().getMultipleAccountsInfo(owners.map((o) => new PublicKey(o)));
+    const infos = await rpc().getMultipleAccountsInfo(owners.map(o => new PublicKey(o)));
     owners.forEach((owner, i) => {
       const program = infos[i]?.owner?.toBase58();
       if (program && POOL_PROGRAMS.has(program)) pools.add(owner);
@@ -393,8 +412,11 @@ async function poolOwners(owners: string[]): Promise<Set<string>> {
   return pools;
 }
 
-async function loadSolanaHolders(mint: string, deadlineMs = HOLDER_DEADLINE_MS): Promise<Partial<TokenInfo>> {
-  const timeout = new Promise<Partial<TokenInfo>>((resolve) =>
+async function loadSolanaHolders(
+  mint: string,
+  deadlineMs = HOLDER_DEADLINE_MS,
+): Promise<Partial<TokenInfo>> {
+  const timeout = new Promise<Partial<TokenInfo>>(resolve =>
     setTimeout(() => resolve({ holdersUnavailable: true }), deadlineMs).unref?.(),
   );
   return Promise.race([readSolanaHolders(mint), timeout]);
@@ -410,19 +432,25 @@ async function readSolanaHolders(mint: string): Promise<Partial<TokenInfo>> {
     ]);
 
     const decimals = supplyRes.value.decimals;
-    if (!Number.isInteger(decimals) || decimals < 0 || decimals > 255) throw new Error('Invalid mint decimals');
+    if (!Number.isInteger(decimals) || decimals < 0 || decimals > 255)
+      throw new Error('Invalid mint decimals');
     const supplyRaw = BigInt(supplyRes.value.amount);
     const totalSupply = Number(supplyRaw) / 10 ** decimals;
     if (supplyRaw <= 0n) return { totalSupply: 0, decimals, holders: [], holdersUnavailable: true };
 
     const accounts = largest.value.slice(0, 20);
-    if (accounts.length === 0) return { totalSupply, decimals, holders: [], holdersUnavailable: true };
+    if (accounts.length === 0)
+      return { totalSupply, decimals, holders: [], holdersUnavailable: true };
 
     // getTokenLargestAccounts returns token accounts, not owners — resolve them
-    const parsed = await rpc().getMultipleParsedAccounts(accounts.map((a) => a.address));
+    const parsed = await rpc().getMultipleParsedAccounts(accounts.map(a => a.address));
 
     const curvePda = bondingCurvePda(mint).toBase58();
-    const ourAddresses = new Set(allWallets().filter((w) => w.kind === 'solana').map((w) => w.address));
+    const ourAddresses = new Set(
+      allWallets()
+        .filter(w => w.kind === 'solana')
+        .map(w => w.address),
+    );
 
     const grouped = new Map<string, { raw: bigint; tag?: string }>();
     const sampledAccounts = new Set<string>();
@@ -457,7 +485,8 @@ async function readSolanaHolders(mint: string): Promise<Partial<TokenInfo>> {
     });
 
     const holders: HolderInfo[] = [...grouped].map(([owner, h]) => ({
-      owner, amount: Number(h.raw) / 10 ** decimals,
+      owner,
+      amount: Number(h.raw) / 10 ** decimals,
       // Round the ratio upward so precision loss cannot understate a risk.
       pctOfSupply: Number((h.raw * 100_000_000n + supplyRaw - 1n) / supplyRaw) / 1_000_000,
       tag: h.tag,
@@ -467,22 +496,27 @@ async function readSolanaHolders(mint: string): Promise<Partial<TokenInfo>> {
 
     // the curve is one kind of market; a graduated coin's pool is the other,
     // and it is far larger — see POOL_PROGRAMS
-    const pools = await poolOwners(holders.filter((h) => !h.tag).map((h) => h.owner));
+    const pools = await poolOwners(holders.filter(h => !h.tag).map(h => h.owner));
     for (const h of holders) if (pools.has(h.owner)) h.tag = 'pool';
 
     // liquidity sitting in the curve or a pool is not concentration risk, so
     // exclude it from the "top holders" number that actually matters
-    const realHolders = holders.filter((h) => h.tag !== 'bonding curve' && h.tag !== 'pool');
+    const realHolders = holders.filter(h => h.tag !== 'bonding curve' && h.tag !== 'pool');
     const top10Pct = realHolders.slice(0, 10).reduce((sum, h) => sum + h.pctOfSupply, 0);
     // Twenty accounts cannot establish the ten largest wallets: an owner can
     // split across arbitrarily many accounts. Treat every unsampled token as
     // belonging to those wallets to obtain a safe upper bound, without an
     // unbounded full-mint scan. Pool accounts still count towards coverage.
-    const knownTop10Raw = realHolders.slice(0, 10).reduce((sum, h) => sum + grouped.get(h.owner)!.raw, 0n);
+    const knownTop10Raw = realHolders
+      .slice(0, 10)
+      .reduce((sum, h) => sum + grouped.get(h.owner)!.raw, 0n);
     const boundRaw = knownTop10Raw + supplyRaw - sampledRaw;
-    const top10PctUpperBound = Math.min(100, Number((boundRaw * 100_000_000n + supplyRaw - 1n) / supplyRaw) / 1_000_000);
+    const top10PctUpperBound = Math.min(
+      100,
+      Number((boundRaw * 100_000_000n + supplyRaw - 1n) / supplyRaw) / 1_000_000,
+    );
 
-    const owned = holders.filter((h) => h.tag === 'you');
+    const owned = holders.filter(h => h.tag === 'you');
     const ownedAmount = owned.reduce((s, h) => s + h.amount, 0);
 
     return {
@@ -599,7 +633,8 @@ export async function getTokenInfo(
     // DexScreener wins on market cap once a pool exists; before that the curve
     // is the only source, so only let it fill an empty field
     const merged: TokenInfo = { ...base, ...curve, ...holders, ...market, chain: 'solana' };
-    if (market.marketCap === undefined && curve.marketCap !== undefined) merged.marketCap = curve.marketCap;
+    if (market.marketCap === undefined && curve.marketCap !== undefined)
+      merged.marketCap = curve.marketCap;
 
     if (authorities) {
       merged.mintAuthority = authorities.mintAuthority;
@@ -628,7 +663,7 @@ export async function getTokenInfo(
      */
     if (rug) {
       merged.rugcheckScore = rug.score;
-      merged.rugcheckRisks = rug.risks.map((r) => ({ name: r.name, level: r.level }));
+      merged.rugcheckRisks = rug.risks.map(r => ({ name: r.name, level: r.level }));
       merged.insiderPct = rug.insiderPct;
       merged.insiderWallets = rug.insiderWallets;
       merged.holderCount = rug.totalHolders;
@@ -645,9 +680,11 @@ export async function getTokenInfo(
        * claim a holder list it did not have. A failed chain read remains a
        * refusal even when an index supplies a concentration estimate.
        */
-      if (rug.top10Pct !== undefined) merged.top10Pct = Math.max(merged.top10Pct ?? 0, rug.top10Pct);
+      if (rug.top10Pct !== undefined)
+        merged.top10Pct = Math.max(merged.top10Pct ?? 0, rug.top10Pct);
       if (rug.lockerPct !== undefined) merged.lockerPct = rug.lockerPct;
-      if (rug.creatorPct !== undefined) merged.creatorHoldsPct = Math.max(merged.creatorHoldsPct ?? 0, rug.creatorPct);
+      if (rug.creatorPct !== undefined)
+        merged.creatorHoldsPct = Math.max(merged.creatorHoldsPct ?? 0, rug.creatorPct);
       merged.creator ??= rug.creator;
       if (merged.liquidityUsd === undefined && rug.liquidityUsd !== undefined) {
         merged.liquidityUsd = rug.liquidityUsd;
@@ -668,7 +705,8 @@ export async function getTokenInfo(
       merged.organicPct5m = jup.organicPct5m;
       merged.organicScoreLabel = jup.organicScoreLabel;
       merged.holderCount ??= jup.holderCount;
-      if (jup.topHoldersPct !== undefined) merged.top10Pct = Math.max(merged.top10Pct ?? 0, jup.topHoldersPct);
+      if (jup.topHoldersPct !== undefined)
+        merged.top10Pct = Math.max(merged.top10Pct ?? 0, jup.topHoldersPct);
       if (merged.creatorPriorTokens === undefined && jup.devMints !== undefined) {
         // devMints counts this token too; prior launches are one fewer
         merged.creatorPriorTokens = Math.max(0, jup.devMints - 1);
@@ -685,16 +723,21 @@ export async function getTokenInfo(
     // Its reported percentage is evidence of a larger holding, never proof of zero.
     if (merged.creator && !curve.creator) {
       try {
-        if (!authorities || authorities.supplyRaw <= 0n) throw new Error('No validated mint supply');
+        if (!authorities || authorities.supplyRaw <= 0n)
+          throw new Error('No validated mint supply');
         const held = await Promise.race([
           getMintBalances([merged.creator], address),
-          new Promise<never>((_, reject) => setTimeout(
-            () => reject(new Error('Creator balance lookup exceeded its deadline')),
-            opts.fast ? FAST_HOLDER_DEADLINE_MS : HOLDER_DEADLINE_MS,
-          ).unref()),
+          new Promise<never>((_, reject) =>
+            setTimeout(
+              () => reject(new Error('Creator balance lookup exceeded its deadline')),
+              opts.fast ? FAST_HOLDER_DEADLINE_MS : HOLDER_DEADLINE_MS,
+            ).unref(),
+          ),
         ]);
         const raw = held.get(merged.creator) ?? 0n;
-        const pct = Number((raw * 100_000_000n + authorities.supplyRaw - 1n) / authorities.supplyRaw) / 1_000_000;
+        const pct =
+          Number((raw * 100_000_000n + authorities.supplyRaw - 1n) / authorities.supplyRaw) /
+          1_000_000;
         merged.creatorHoldsPct = Math.max(merged.creatorHoldsPct ?? 0, pct);
       } catch {
         merged.creatorBalanceUnavailable = true;
@@ -732,11 +775,15 @@ function addWarnings(info: TokenInfo): void {
   }
 
   if (info.chain === 'solana' && info.freezeAuthority === undefined) {
-    info.warnings.push('Could not read the mint authorities — freeze and mint risk are unknown, not absent.');
+    info.warnings.push(
+      'Could not read the mint authorities — freeze and mint risk are unknown, not absent.',
+    );
   }
 
   if (info.holdersUnavailable) {
-    info.warnings.push('Holder distribution unavailable — the RPC rejected the query (rate limit?). Concentration is unknown, not zero.');
+    info.warnings.push(
+      'Holder distribution unavailable — the RPC rejected the query (rate limit?). Concentration is unknown, not zero.',
+    );
   }
 
   // An end date alone does not prove that a vesting balance is unavailable.
@@ -766,7 +813,9 @@ function addWarnings(info: TokenInfo): void {
   }
 
   if (info.liquidityUsd !== undefined && info.liquidityUsd < 5_000 && !info.isPumpFun) {
-    info.warnings.push(`Only ${Math.round(info.liquidityUsd).toLocaleString()} USD of liquidity — expect severe slippage.`);
+    info.warnings.push(
+      `Only ${Math.round(info.liquidityUsd).toLocaleString()} USD of liquidity — expect severe slippage.`,
+    );
   }
 
   if (info.pairCreatedAt) {
@@ -774,7 +823,11 @@ function addWarnings(info: TokenInfo): void {
     if (ageHours < 1) info.warnings.push(`Pair is ${Math.round(ageHours * 60)} minutes old.`);
   }
 
-  if (info.volume24h !== undefined && info.liquidityUsd && info.volume24h > info.liquidityUsd * 50) {
+  if (
+    info.volume24h !== undefined &&
+    info.liquidityUsd &&
+    info.volume24h > info.liquidityUsd * 50
+  ) {
     info.warnings.push('Volume is very large relative to liquidity — possible wash trading.');
   }
 

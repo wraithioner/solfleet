@@ -18,24 +18,47 @@ const { proceedsByMint, rebuildRealised } = await import('../src/services/reconc
 const owner = '11111111111111111111111111111111';
 const mint = 'offline-reconciliation-mint';
 const sale = {
-  transaction: { message: {
-    accountKeys: [{ pubkey: owner, signer: true }, { pubkey: 'token-account' }],
-    instructions: [{
-      programId: '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P',
-      accounts: [owner, 'token-account'],
-      data: bs58.encode(createHash('sha256').update('global:sell').digest().subarray(0, 8)),
-    }],
-  } },
+  transaction: {
+    message: {
+      accountKeys: [{ pubkey: owner, signer: true }, { pubkey: 'token-account' }],
+      instructions: [
+        {
+          programId: '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P',
+          accounts: [owner, 'token-account'],
+          data: bs58.encode(createHash('sha256').update('global:sell').digest().subarray(0, 8)),
+        },
+      ],
+    },
+  },
   meta: {
     err: null,
-    preTokenBalances: [{ accountIndex: 1, mint, owner, uiTokenAmount: { amount: '100', decimals: 0, uiAmount: 100 } }],
-    postTokenBalances: [{ accountIndex: 1, mint, owner, uiTokenAmount: { amount: '0', decimals: 0, uiAmount: 0 } }],
+    preTokenBalances: [
+      {
+        accountIndex: 1,
+        mint,
+        owner,
+        uiTokenAmount: { amount: '100', decimals: 0, uiAmount: 100 },
+      },
+    ],
+    postTokenBalances: [
+      { accountIndex: 1, mint, owner, uiTokenAmount: { amount: '0', decimals: 0, uiAmount: 0 } },
+    ],
     preBalances: [0, 2_039_280],
     postBalances: [100_000_000, 2_039_280],
-    innerInstructions: [{ index: 0, instructions: [{
-      programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
-      parsed: { type: 'transfer', info: { source: 'token-account', destination: 'pool-token-account', amount: '100' } },
-    }] }],
+    innerInstructions: [
+      {
+        index: 0,
+        instructions: [
+          {
+            programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+            parsed: {
+              type: 'transfer',
+              info: { source: 'token-account', destination: 'pool-token-account', amount: '100' },
+            },
+          },
+        ],
+      },
+    ],
   },
 } as unknown as ParsedTransactionWithMeta;
 const page = (prefix: string, count: number, blockTime = 10_000): ConfirmedSignatureInfo[] =>
@@ -58,10 +81,10 @@ const mocks = (
         assert.equal(options?.limit, 100);
         return pages[nextPage++] ?? [];
       },
-      getParsedTransactions: async (signatures) => signatures.map(parse),
+      getParsedTransactions: async signatures => signatures.map(parse),
     }),
     // Production still retries and spaces reads; tests execute only their mocks.
-    paced: async (fn) => fn(),
+    paced: async fn => fn(),
   };
 };
 let passed = 0;
@@ -96,15 +119,25 @@ try {
   }
 
   {
-    const pages = Array.from({ length: 12 }, (_, i) => page(`boundary-${i}`, 100, i === 11 ? 8_000 : 10_000));
+    const pages = Array.from({ length: 12 }, (_, i) =>
+      page(`boundary-${i}`, 100, i === 11 ? 8_000 : 10_000),
+    );
     const result = await proceedsByMint(owner, 9_000_000, undefined, mocks(pages));
-    assert.equal(result.scanned, 1100, 'transactions before the history boundary are excluded individually');
-    assert.equal(result.complete, true, 'the history boundary was established at the budget boundary');
+    assert.equal(
+      result.scanned,
+      1100,
+      'transactions before the history boundary are excluded individually',
+    );
+    assert.equal(
+      result.complete,
+      true,
+      'the history boundary was established at the budget boundary',
+    );
     check('the signature budget still permits a proven complete history boundary');
   }
 
   {
-    const services = mocks([page('missing', 3)], (signature) => {
+    const services = mocks([page('missing', 3)], signature => {
       if (signature.endsWith('-1')) return null;
       if (signature.endsWith('-2')) return { ...sale, meta: null };
       return sale;
@@ -117,7 +150,7 @@ try {
   }
 
   {
-    const services = mocks([page('first', 100), page('last', 1)], (signature) =>
+    const services = mocks([page('first', 100), page('last', 1)], signature =>
       signature === 'first-0' ? null : sale,
     );
     const result = await proceedsByMint(owner, 9_000_000, undefined, services);
@@ -151,14 +184,23 @@ try {
 
   {
     db.addWallet({
-      id: 'offline-wallet', kind: 'solana', address: owner, label: 'Offline wallet',
-      secret: '', groups: [], isMain: false, disabled: false, createdAt: 1,
+      id: 'offline-wallet',
+      kind: 'solana',
+      address: owner,
+      label: 'Offline wallet',
+      secret: '',
+      groups: [],
+      isMain: false,
+      disabled: false,
+      createdAt: 1,
     });
     db.recordBuy(mint, { solSpent: 0.2, fills: 1, tokensBought: 100 });
-    const result = await rebuildRealised(undefined, mocks(
-      [page('repair', 2, Math.floor(Date.now() / 1000))],
-      (signature) => signature.endsWith('-0') ? sale : null,
-    ));
+    const result = await rebuildRealised(
+      undefined,
+      mocks([page('repair', 2, Math.floor(Date.now() / 1000))], signature =>
+        signature.endsWith('-0') ? sale : null,
+      ),
+    );
     assert.equal(result.complete, false);
     assert.equal(result.walletsRead, 1);
     assert.equal(result.repaired.length, 1);

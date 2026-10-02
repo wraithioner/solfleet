@@ -235,7 +235,7 @@ export function accountPnl(
       unpricedCostSol += cost;
     }
     const open = value > 0 || unpriced;
-    if (cost > 0 || pos.realisedSol > 0) (open ? openCount++ : closedCount++);
+    if (cost > 0 || pos.realisedSol > 0) open ? openCount++ : closedCount++;
 
     const netSol = pos.realisedSol + value - cost;
     if (cost > 0 && !unpriced) {

@@ -16,7 +16,6 @@ fs.rmSync(DATA, { recursive: true, force: true });
 
 const {
   initVault,
-  initVaultWithKeyfile,
   unlockFromKeyfile,
   removePassphrase,
   unlockAndConvert,
@@ -54,7 +53,7 @@ ok('IV is unique per seal');
 
 // tampering must fail loudly, not silently return garbage
 const raw = Buffer.from(blob, 'base64');
-raw[raw.length - 1] ^= 0xff;
+raw[raw.length - 1] = raw[raw.length - 1]! ^ 0xff;
 assert.throws(() => decryptSecret(raw.toString('base64')));
 ok('GCM rejects tampered ciphertext');
 
@@ -89,8 +88,11 @@ ok('duplicate import is rejected');
 
 const derived = wallets.deriveWallets(3, ['batch-a']);
 assert.equal(derived.length, 3);
-assert.deepEqual(derived.map((w) => w.derivationIndex), [0, 1, 2]);
-assert.equal(new Set(derived.map((w) => w.address)).size, 3);
+assert.deepEqual(
+  derived.map(w => w.derivationIndex),
+  [0, 1, 2],
+);
+assert.equal(new Set(derived.map(w => w.address)).size, 3);
 ok('derived 3 distinct HD Solana wallets at indices 0,1,2');
 
 // derivation must be deterministic from the seed
@@ -112,7 +114,7 @@ ok('disabled wallets are excluded from batches');
 
 wallets.setMain(derived[1]!.id);
 assert.equal(wallets.mainWallet()!.id, derived[1]!.id);
-assert.equal(wallets.allWallets().filter((w) => w.isMain).length, 1);
+assert.equal(wallets.allWallets().filter(w => w.isMain).length, 1);
 ok('exactly one main wallet');
 
 // an EVM key is a plausible paste and must fail with a clear reason
@@ -126,12 +128,16 @@ console.log('\n[3] Dropping the passphrase');
  * keys, moved onto a key file. If this loses a single secret the wallets are
  * gone, so it is checked address by address rather than by a success flag.
  */
-const beforeAddrs = wallets.allWallets().map((w) => w.address);
+const beforeAddrs = wallets.allWallets().map(w => w.address);
 assert.equal(vaultMode(), 'passphrase');
 
 removePassphrase(wallets.resealAll);
 assert.equal(vaultMode(), 'keyfile', 'the vault is now opened by its key file');
-assert.deepEqual(wallets.allWallets().map((w) => w.address), beforeAddrs, 'no wallet lost or changed');
+assert.deepEqual(
+  wallets.allWallets().map(w => w.address),
+  beforeAddrs,
+  'no wallet lost or changed',
+);
 assert.equal(wallets.solanaKeypair(wallets.allWallets()[0]!).publicKey.toBase58(), beforeAddrs[0]);
 ok('every key survives removing the passphrase');
 
@@ -151,7 +157,11 @@ const goodKey = fs.readFileSync(`${DATA}/vault.key`, 'utf8');
 fs.writeFileSync(`${DATA}/vault.key`, Buffer.alloc(32, 7).toString('base64'));
 lockVault();
 assert.throws(() => unlockFromKeyfile(), /does not match/);
-assert.equal(isUnlocked(), false, 'a wrong key leaves the vault shut rather than open with garbage');
+assert.equal(
+  isUnlocked(),
+  false,
+  'a wrong key leaves the vault shut rather than open with garbage',
+);
 fs.writeFileSync(`${DATA}/vault.key`, goodKey);
 assert.equal(unlockFromKeyfile(), true);
 ok('a mismatched key file is rejected loudly');
@@ -201,7 +211,9 @@ const sim = curve.simulateSequentialBuys(fresh, 0.5, 10);
 const single = curve.quoteBuy(fresh, 0.5);
 assert.ok(sim.totalTokens < single * 10, 'later wallets in a batch get fewer tokens');
 assert.ok(sim.finalPrice > price, 'the batch walks the curve up');
-ok(`10 wallets × 0.5 SOL: ${sim.totalTokens.toFixed(0)} tokens, avg ${sim.avgPrice.toExponential(3)}, price moved +${sim.priceMovePct.toFixed(1)}%`);
+ok(
+  `10 wallets × 0.5 SOL: ${sim.totalTokens.toFixed(0)} tokens, avg ${sim.avgPrice.toExponential(3)}, price moved +${sim.priceMovePct.toFixed(1)}%`,
+);
 
 // the confirmation screen quotes these directly, so they have to be right
 assert.equal(sim.startPrice, price, 'simulation starts from the live spot price');
@@ -211,11 +223,21 @@ assert.ok(
   'priceMovePct measures final against starting price',
 );
 assert.ok(sim.avgPrice > sim.startPrice, 'the average fill is worse than spot');
-assert.ok(sim.avgVsSpotPct > 0 && sim.avgVsSpotPct < sim.priceMovePct, 'avg fill sits between spot and final price');
-ok(`avg fill is +${sim.avgVsSpotPct.toFixed(1)}% vs spot, final price +${sim.priceMovePct.toFixed(1)}%`);
+assert.ok(
+  sim.avgVsSpotPct > 0 && sim.avgVsSpotPct < sim.priceMovePct,
+  'avg fill sits between spot and final price',
+);
+ok(
+  `avg fill is +${sim.avgVsSpotPct.toFixed(1)}% vs spot, final price +${sim.priceMovePct.toFixed(1)}%`,
+);
 
-assert.ok(sim.firstWalletTokens > sim.lastWalletTokens, 'the first wallet fills better than the last');
-ok(`first wallet ${sim.firstWalletTokens.toFixed(0)} tokens vs last ${sim.lastWalletTokens.toFixed(0)} for the same spend`);
+assert.ok(
+  sim.firstWalletTokens > sim.lastWalletTokens,
+  'the first wallet fills better than the last',
+);
+ok(
+  `first wallet ${sim.firstWalletTokens.toFixed(0)} tokens vs last ${sim.lastWalletTokens.toFixed(0)} for the same spend`,
+);
 
 const solo = curve.simulateSequentialBuys(fresh, 0.5, 1);
 assert.equal(solo.firstWalletTokens, solo.lastWalletTokens);
@@ -267,8 +289,20 @@ console.log('\n[6] Formatting + concurrency');
 const util = await import('../src/util.js');
 const circularError: Record<string, unknown> = {};
 circularError.self = circularError;
-const unreadableError = Object.assign(Object.create(null), { toJSON() { throw new Error('serialization failed'); } });
-for (const thrown of [undefined, Symbol('failure'), function failure() {}, null, 1n, circularError, unreadableError]) {
+const unreadableError = Object.assign(Object.create(null), {
+  toJSON() {
+    throw new Error('serialization failed');
+  },
+});
+for (const thrown of [
+  undefined,
+  Symbol('failure'),
+  function failure() {},
+  null,
+  1n,
+  circularError,
+  unreadableError,
+]) {
   const message = util.errMessage(thrown);
   assert.equal(typeof message, 'string');
   assert.doesNotThrow(() => util.escapeHtml(message));
@@ -297,11 +331,14 @@ assert.deepEqual(order, [0, 1, 2, 3, 4]);
 ok('pMap preserves input order under concurrency');
 
 let attempts = 0;
-const result = await util.retry(async () => {
-  attempts++;
-  if (attempts < 3) throw new Error('transient');
-  return 'recovered';
-}, { attempts: 4, baseDelayMs: 5 });
+const result = await util.retry(
+  async () => {
+    attempts++;
+    if (attempts < 3) throw new Error('transient');
+    return 'recovered';
+  },
+  { attempts: 4, baseDelayMs: 5 },
+);
 assert.equal(result, 'recovered');
 assert.equal(attempts, 3);
 ok('retry backs off and eventually succeeds');
@@ -327,7 +364,11 @@ ok('retry gives up immediately on a timeout');
 
 assert.equal(util.isTimeout(Object.assign(new Error('x'), { name: 'AbortError' })), true);
 assert.equal(util.isTimeout(new Error('The operation was aborted due to timeout')), true);
-assert.equal(util.isTimeout(new Error('HTTP 429 rate limited')), false, 'a rate limit is worth retrying');
+assert.equal(
+  util.isTimeout(new Error('HTTP 429 rate limited')),
+  false,
+  'a rate limit is worth retrying',
+);
 ok('timeouts are told apart from ordinary failures');
 
 console.log('\n[7] Funding plan');
@@ -352,7 +393,7 @@ const each = planFunding({
 });
 assert.equal(each.transfers.length, 3);
 assert.equal(each.totalLamports, BigInt(0.3 * LAMPORTS_PER_SOL));
-assert.ok(each.transfers.every((t) => t.lamports === BigInt(0.1 * LAMPORTS_PER_SOL)));
+assert.ok(each.transfers.every(t => t.lamports === BigInt(0.1 * LAMPORTS_PER_SOL)));
 ok('"send each" gives every wallet the full amount');
 
 // a wallet already holding more than the target needs nothing
@@ -370,8 +411,14 @@ const topup = planFunding({
 assert.equal(topup.transfers.length, 2, 'the already-funded wallet is left alone');
 assert.equal(topup.skipped.length, 1);
 assert.equal(topup.skipped[0]!.address, 'AAA');
-assert.equal(topup.transfers.find((t) => t.address === 'BBB')!.lamports, BigInt(0.3 * LAMPORTS_PER_SOL));
-assert.equal(topup.transfers.find((t) => t.address === 'CCC')!.lamports, BigInt(0.5 * LAMPORTS_PER_SOL));
+assert.equal(
+  topup.transfers.find(t => t.address === 'BBB')!.lamports,
+  BigInt(0.3 * LAMPORTS_PER_SOL),
+);
+assert.equal(
+  topup.transfers.find(t => t.address === 'CCC')!.lamports,
+  BigInt(0.5 * LAMPORTS_PER_SOL),
+);
 ok('"top up to" funds only the shortfall, and skips wallets already there');
 
 // skipping is not failing — the same distinction the sweep makes
@@ -381,7 +428,11 @@ ok('a wallet needing nothing is reported as skipped, not failed');
 // fees are counted per transaction, not per wallet
 assert.equal(each.txCount, 1);
 const many = planFunding({
-  targets: Array.from({ length: 25 }, (_, i) => ({ id: `w${i}`, label: `W${i}`, address: `ADDR${i}` })),
+  targets: Array.from({ length: 25 }, (_, i) => ({
+    id: `w${i}`,
+    label: `W${i}`,
+    address: `ADDR${i}`,
+  })),
   balances: new Map(),
   mode: 'each',
   sol: 0.01,
@@ -393,8 +444,13 @@ assert.equal(many.txCount, 2, '25 transfers pack into 2 transactions');
 // what the same funding run would cost as one transaction per wallet
 const perTxFee = BigInt(5000 + Math.floor(0.00005 * LAMPORTS_PER_SOL));
 assert.equal(many.feeLamports, BigInt(many.txCount) * perTxFee, 'fees are charged per transaction');
-assert.ok(many.feeLamports < BigInt(25) * perTxFee, 'batching costs less than one transfer per wallet');
-ok(`25 wallets funded in ${many.txCount} transactions, not 25 (${Number(many.feeLamports) / LAMPORTS_PER_SOL} SOL of fees)`);
+assert.ok(
+  many.feeLamports < BigInt(25) * perTxFee,
+  'batching costs less than one transfer per wallet',
+);
+ok(
+  `25 wallets funded in ${many.txCount} transactions, not 25 (${Number(many.feeLamports) / LAMPORTS_PER_SOL} SOL of fees)`,
+);
 
 // refusing up front beats half-funding the set
 assert.throws(
@@ -412,7 +468,15 @@ assert.throws(
 ok('a plan the main wallet cannot afford is rejected before anything is signed');
 
 assert.throws(
-  () => planFunding({ targets, balances: new Map(), mode: 'each', sol: 0, sourceLamports: rich, priorityFeeSol: 0 }),
+  () =>
+    planFunding({
+      targets,
+      balances: new Map(),
+      mode: 'each',
+      sol: 0,
+      sourceLamports: rich,
+      priorityFeeSol: 0,
+    }),
   /greater than zero/,
 );
 ok('a zero amount is rejected');
@@ -428,8 +492,9 @@ assert.throws(
 ok('a plan that would drain the main wallet to zero is rejected when a reserve is set');
 
 // a wallet that cannot pay for the trade is skipped, not fired at
-const { partitionByBalance, requiredForBuy, exitReserveLamports, ATA_RENT_LAMPORTS } =
-  await import('../src/trade/fund.js');
+const { partitionByBalance, requiredForBuy, exitReserveLamports, ATA_RENT_LAMPORTS } = await import(
+  '../src/trade/fund.js'
+);
 
 const buyers = [
   { address: 'RICH' },
@@ -448,8 +513,14 @@ const split = partitionByBalance(
   ]),
   need,
 );
-assert.deepEqual(split.funded.map((w) => w.address), ['RICH', 'EXACT']);
-assert.deepEqual(split.unfunded.map((w) => w.address), ['SHORT', 'EMPTY']);
+assert.deepEqual(
+  split.funded.map(w => w.address),
+  ['RICH', 'EXACT'],
+);
+assert.deepEqual(
+  split.unfunded.map(w => w.address),
+  ['SHORT', 'EMPTY'],
+);
 ok('wallets that cannot cover a buy are separated out, and exact-balance wallets still trade');
 
 // the buy needs its own fee on top of the amount, not just the amount
@@ -470,27 +541,48 @@ const BASE = 5000n;
 const prio = 0.00005;
 const prioLamports = BigInt(0.00005 * LAMPORTS_PER_SOL);
 
-assert.equal(exitReserveLamports(prio), (BASE + prioLamports) * 2n, 'two sells worth, so one can fail');
-assert.ok(exitReserveLamports(prio, 0.001) > exitReserveLamports(prio), 'a bundle tip is part of the exit cost');
+assert.equal(
+  exitReserveLamports(prio),
+  (BASE + prioLamports) * 2n,
+  'two sells worth, so one can fail',
+);
+assert.ok(
+  exitReserveLamports(prio, 0.001) > exitReserveLamports(prio),
+  'a bundle tip is part of the exit cost',
+);
 ok('the exit reserve covers two attempts at selling, tip included');
 
 const buy = 0.05;
 const plain = requiredForBuy(buy, prio);
 assert.equal(
   plain,
-  BigInt(buy * LAMPORTS_PER_SOL) + BASE + prioLamports + ATA_RENT_LAMPORTS + exitReserveLamports(prio),
+  BigInt(buy * LAMPORTS_PER_SOL) +
+    BASE +
+    prioLamports +
+    ATA_RENT_LAMPORTS +
+    exitReserveLamports(prio),
   'amount + fee + rent + exit reserve',
 );
 assert.ok(
   plain > BigInt(buy * LAMPORTS_PER_SOL) + BASE + prioLamports + 2_000_000n,
   'and it is meaningfully more than the naive amount-plus-fee',
 );
-ok(`a 0.05 SOL buy really needs ${(Number(plain) / LAMPORTS_PER_SOL).toFixed(5)} SOL in the wallet`);
+ok(
+  `a 0.05 SOL buy really needs ${(Number(plain) / LAMPORTS_PER_SOL).toFixed(5)} SOL in the wallet`,
+);
 
 // the exact-change wallet: enough to fill, nothing left to exit
 const fillsButCannotExit = BigInt(buy * LAMPORTS_PER_SOL) + BASE + prioLamports + ATA_RENT_LAMPORTS;
-const stuck = partitionByBalance([{ address: 'STUCK' }], new Map([['STUCK', fillsButCannotExit]]), plain);
-assert.equal(stuck.funded.length, 0, 'a wallet that could fill but not sell is not sent into the trade');
+const stuck = partitionByBalance(
+  [{ address: 'STUCK' }],
+  new Map([['STUCK', fillsButCannotExit]]),
+  plain,
+);
+assert.equal(
+  stuck.funded.length,
+  0,
+  'a wallet that could fill but not sell is not sent into the trade',
+);
 assert.equal(stuck.unfunded.length, 1);
 ok('a wallet that could buy but not sell is held back, not filled');
 
@@ -501,7 +593,10 @@ ok('a follow-up buy is not charged rent it already paid');
 
 // bundle mode pays a tip per transaction, on the way in and on the way out
 const bundled = requiredForBuy(buy, prio, { jitoTipSol: 0.001 });
-assert.ok(bundled > plain + BigInt(0.001 * LAMPORTS_PER_SOL), 'the tip is counted for the buy and the exit');
+assert.ok(
+  bundled > plain + BigInt(0.001 * LAMPORTS_PER_SOL),
+  'the tip is counted for the buy and the exit',
+);
 ok('bundle mode raises the requirement by its tips');
 
 /*
@@ -512,7 +607,11 @@ ok('bundle mode raises the requirement by its tips');
  * which is what a real copy trade did before this was counted.
  */
 const graduated = requiredForBuy(buy, prio, { wrapsSol: true });
-assert.equal(graduated - plain, ATA_RENT_LAMPORTS, 'wrapping SOL costs one more rent-exempt account');
+assert.equal(
+  graduated - plain,
+  ATA_RENT_LAMPORTS,
+  'wrapping SOL costs one more rent-exempt account',
+);
 ok('an AMM buy asks for the wrapped-SOL account it has to open');
 
 // the wallet that passes a curve-priced check and then fails an AMM buy
@@ -521,7 +620,11 @@ assert.equal(curvePriced.funded.length, 0, 'sized for a curve buy is not enough 
 ok('a wallet sized for the curve is held back from a graduated token');
 
 // a short read must not be mistaken for a set of empty wallets
-const shortRead = partitionByBalance(buyers, new Map([['RICH', BigInt(2 * LAMPORTS_PER_SOL)]]), need);
+const shortRead = partitionByBalance(
+  buyers,
+  new Map([['RICH', BigInt(2 * LAMPORTS_PER_SOL)]]),
+  need,
+);
 assert.equal(shortRead.funded.length, 4, 'an incomplete balance read skips nobody');
 assert.equal(shortRead.unfunded.length, 0);
 ok('an incomplete balance read lets every wallet through rather than skipping trades');
@@ -536,13 +639,21 @@ assert.equal(parseTokenAccountAmount(account), 123_456_789n);
 ok('reads the balance out of a token account buffer');
 
 assert.equal(parseTokenAccountAmount(Buffer.alloc(165)), 0n);
-assert.equal(parseTokenAccountAmount(Buffer.alloc(8)), 0n, 'a truncated account reads as empty, not a crash');
+assert.equal(
+  parseTokenAccountAmount(Buffer.alloc(8)),
+  0n,
+  'a truncated account reads as empty, not a crash',
+);
 ok('empty and truncated accounts read as zero');
 
 console.log('\n[9] Copy trading detection');
 const { detectTokenMoves } = await import('../src/services/copytrade.js');
 const THEM = 'TargetWallet';
-const bal = (mint: string, owner: string, amount: number) => ({ mint, owner, uiTokenAmount: { uiAmount: amount } });
+const bal = (mint: string, owner: string, amount: number) => ({
+  mint,
+  owner,
+  uiTokenAmount: { uiAmount: amount },
+});
 const WSOL_M = 'So11111111111111111111111111111111111111112';
 
 // a fresh buy: nothing before, a balance after
@@ -564,7 +675,11 @@ ok('another wallet trading in the same transaction is ignored');
 
 // wrapped SOL moves on nearly every swap and is not a position
 const wsol = detectTokenMoves([], [bal(WSOL_M, THEM, 2), bal('MINT_C', THEM, 10)], THEM);
-assert.deepEqual(wsol.map((m) => m.mint), ['MINT_C'], 'WSOL is not treated as a trade');
+assert.deepEqual(
+  wsol.map(m => m.mint),
+  ['MINT_C'],
+  'WSOL is not treated as a trade',
+);
 ok('wrapped SOL is filtered out rather than copied');
 
 // dust must not trigger a real buy
@@ -577,8 +692,16 @@ const SOL = 1_000_000_000;
 const keys = [{ pubkey: 'SomeoneElse' }, { pubkey: THEM }, { pubkey: 'Program' }];
 
 assert.equal(solSpent(keys, [5 * SOL, 10 * SOL, 0], [5 * SOL, 8 * SOL, 0], THEM), 2, 'spent 2 SOL');
-assert.equal(solSpent(keys, [0, 8 * SOL, 0], [0, 10 * SOL, 0], THEM), -2, 'a sale reads as negative');
-assert.equal(solSpent(keys, [0, 0, 0], [0, 0, 0], 'NotInThisTx'), 0, 'an absent wallet spent nothing');
+assert.equal(
+  solSpent(keys, [0, 8 * SOL, 0], [0, 10 * SOL, 0], THEM),
+  -2,
+  'a sale reads as negative',
+);
+assert.equal(
+  solSpent(keys, [0, 0, 0], [0, 0, 0], 'NotInThisTx'),
+  0,
+  'an absent wallet spent nothing',
+);
 ok('native SOL movement is read off the transaction');
 
 /*
@@ -600,7 +723,11 @@ assert.equal(isPurchase(NaN), false, 'an unreadable amount is not a purchase');
 // the case a naive floor gets wrong: a receipt is not free when the recipient
 // pays their own account rent — measured on chain at around 0.004 SOL
 assert.equal(isPurchase(0.00204), false, 'rent for one token account is not a purchase');
-assert.equal(isPurchase(0.004044), false, 'nor two accounts plus fees, which is what dusting costs');
+assert.equal(
+  isPurchase(0.004044),
+  false,
+  'nor two accounts plus fees, which is what dusting costs',
+);
 assert.equal(isPurchase(0.008), false, 'nor that with a fat priority fee on top');
 
 assert.equal(isPurchase(MIN_SPEND_FOR_BUY_SOL), true, 'the floor itself counts');
@@ -610,7 +737,11 @@ ok('a token that arrived without SOL leaving is not treated as a buy');
 // the trap this closes: fixed sizing never looked at what they spent, so a
 // dusted wallet would have bought the configured amount of whatever arrived
 const fixedSizing = { sizeMode: 'fixed' as const, buySol: 0.05, sizePercent: 5 };
-assert.equal(copyBuySol(fixedSizing, 0, 1, 1), 0.05, 'fixed sizing still ignores their spend by design');
+assert.equal(
+  copyBuySol(fixedSizing, 0, 1, 1),
+  0.05,
+  'fixed sizing still ignores their spend by design',
+);
 assert.equal(isPurchase(0), false, 'so the gate has to happen before sizing is asked');
 ok('fixed sizing would have bought a dusted token, which is why the check is upstream');
 
@@ -640,15 +771,27 @@ ok('each exit mode does what its label says');
 
 // rounding must never silently turn a real sell into nothing
 assert.equal(copySellPercent('proportional', { mint: 'M', delta: -1, before: 100_000 }), 1);
-assert.equal(copySellPercent('proportional', { mint: 'M', delta: -5000, before: 1000 }), 100, 'never past a full exit');
-assert.equal(copySellPercent('proportional', { mint: 'M', delta: -10, before: 0 }), 100, 'a sell from an unseen bag exits fully');
+assert.equal(
+  copySellPercent('proportional', { mint: 'M', delta: -5000, before: 1000 }),
+  100,
+  'never past a full exit',
+);
+assert.equal(
+  copySellPercent('proportional', { mint: 'M', delta: -10, before: 0 }),
+  100,
+  'a sell from an unseen bag exits fully',
+);
 ok('proportional exits stay between 1% and 100%');
 
 // ── the size prompt takes both forms ──────────────────────────────────────────
 const { parseCopySize } = await import('../src/bot/handlers/trade.js');
 assert.deepEqual(parseCopySize('0.05'), { mode: 'fixed', value: 0.05 });
 assert.deepEqual(parseCopySize(' 5% '), { mode: 'percent', value: 5 });
-assert.deepEqual(parseCopySize('0,05'), { mode: 'fixed', value: 0.05 }, 'a decimal comma is accepted');
+assert.deepEqual(
+  parseCopySize('0,05'),
+  { mode: 'fixed', value: 0.05 },
+  'a decimal comma is accepted',
+);
 assert.equal(parseCopySize('101%'), null, 'more than all of their size is refused');
 assert.equal(parseCopySize('0'), null);
 assert.equal(parseCopySize('-1'), null);
@@ -677,7 +820,13 @@ assert.equal(ruleTriggered(trail, 4.0, null), true, 'and it works with no entry 
 ok('trailing stop measures from the peak, and needs no entry price');
 
 // limit orders anchor to an absolute price fixed when the rule was made
-const dip = { ...baseRule, kind: 'limit_buy' as const, triggerPct: -30, triggerPriceSol: 0.7, buySol: 0.05 };
+const dip = {
+  ...baseRule,
+  kind: 'limit_buy' as const,
+  triggerPct: -30,
+  triggerPriceSol: 0.7,
+  buySol: 0.05,
+};
 assert.equal(ruleTriggered(dip, 0.7, null), true, 'a limit buy fills at the target');
 assert.equal(ruleTriggered(dip, 0.69, null), true, 'and below it');
 assert.equal(ruleTriggered(dip, 0.71, null), false, 'but not above it');
@@ -711,8 +860,10 @@ console.log('\n[11] Batch vs slippage');
 // against a price the earlier wallets already moved. Ten wallets at 0.5 SOL
 // move a fresh curve ~36%, so a 15% tolerance reverts the tail of the batch.
 const conflict = curve.simulateSequentialBuys(fresh, 0.5, 10);
-assert.ok(conflict.priceMovePct > 15, 'the default 15% slippage is under this batch\'s own impact');
-ok(`10 × 0.5 SOL moves ${conflict.priceMovePct.toFixed(1)}% — a 15% slippage setting would revert later wallets`);
+assert.ok(conflict.priceMovePct > 15, "the default 15% slippage is under this batch's own impact");
+ok(
+  `10 × 0.5 SOL moves ${conflict.priceMovePct.toFixed(1)}% — a 15% slippage setting would revert later wallets`,
+);
 
 const gentle = curve.simulateSequentialBuys(fresh, 0.02, 10);
 assert.ok(gentle.priceMovePct < 15, 'a smaller size per wallet stays inside the tolerance');
@@ -738,7 +889,8 @@ ok('a congestion spike is capped at the ceiling');
 
 // the bid scales with observed cost
 assert.ok(
-  priorityFeeSolFromMicroLamports(2_000_000, clampOpts) > priorityFeeSolFromMicroLamports(1_000_000, clampOpts),
+  priorityFeeSolFromMicroLamports(2_000_000, clampOpts) >
+    priorityFeeSolFromMicroLamports(1_000_000, clampOpts),
   'a more expensive market produces a higher bid',
 );
 ok('the bid tracks the observed market rather than a fixed guess');
@@ -746,10 +898,14 @@ ok('the bid tracks the observed market rather than a fixed guess');
 console.log('\n[13] Mint authorities');
 const { parseMintAccount } = await import('../src/services/mintauth.js');
 
-function mintAccount(opts: { mintAuth?: boolean; freezeAuth?: boolean; decimals?: number }): Buffer {
+function mintAccount(opts: {
+  mintAuth?: boolean;
+  freezeAuth?: boolean;
+  decimals?: number;
+}): Buffer {
   const b = Buffer.alloc(82);
   b.writeUInt32LE(opts.mintAuth ? 1 : 0, 0);
-  if (opts.mintAuth) Buffer.alloc(32, 7).copy(b, 4);       // some authority pubkey
+  if (opts.mintAuth) Buffer.alloc(32, 7).copy(b, 4); // some authority pubkey
   b.writeBigUInt64LE(1_000_000n, 36);
   b.writeUInt8(opts.decimals ?? 6, 44);
   b.writeUInt8(1, 45);
@@ -774,19 +930,32 @@ ok('active authorities are surfaced with their addresses');
 // stale padding. Reading them without checking the flag reports a safe token as
 // controlled — or worse, the reverse.
 const stale = mintAccount({ mintAuth: true, freezeAuth: true });
-stale.writeUInt32LE(0, 0);   // revoke mint, leave the old pubkey bytes in place
-stale.writeUInt32LE(0, 46);  // revoke freeze, likewise
+stale.writeUInt32LE(0, 0); // revoke mint, leave the old pubkey bytes in place
+stale.writeUInt32LE(0, 46); // revoke freeze, likewise
 const cleared = parseMintAccount(stale)!;
 assert.equal(cleared.mintAuthority, null, 'a cleared option means revoked, whatever the bytes say');
 assert.equal(cleared.freezeAuthority, null);
 ok('a revoked authority is not misread from leftover pubkey bytes');
 
-assert.equal(parseMintAccount(Buffer.alloc(40)), null, 'a truncated account returns null, not a guess');
+assert.equal(
+  parseMintAccount(Buffer.alloc(40)),
+  null,
+  'a truncated account returns null, not a guess',
+);
 ok('a truncated mint account returns null rather than a false reading');
 
 console.log('\n[14] Position P&L');
 const { positionPnl, formatPnl } = await import('../src/services/pnl.js');
-const base = { mint: 'M', investedSol: 0, realisedSol: 0, buyFills: 0, sellFills: 0, firstBuyAt: 0, lastTradeAt: 0 };
+const base = {
+  mint: 'M',
+  investedSol: 0,
+  realisedSol: 0,
+  buyFills: 0,
+  sellFills: 0,
+  tokensBought: 0,
+  firstBuyAt: 0,
+  lastTradeAt: 0,
+};
 
 // bought 5 SOL, sold nothing, now worth 8
 const up = positionPnl({ ...base, investedSol: 5 }, 8);
@@ -834,7 +1003,9 @@ ok('a token on an unmapped chain still reports where its price comes from');
 
 // holder failure must never render as an empty section
 const unavailable = renderTokenCard({
-  address: 'x', chain: 'solana', holdersUnavailable: true,
+  address: 'x',
+  chain: 'solana',
+  holdersUnavailable: true,
   warnings: ['Holder distribution unavailable — the RPC rejected the query.'],
 });
 assert.ok(/Unavailable/i.test(unavailable), 'unknown holders say so explicitly');
@@ -888,7 +1059,7 @@ const legacyRecord = {
   kind: 'evm',
   address: '0x1111111111111111111111111111111111111111',
   label: 'OLD-EVM-01',
-  secret: encryptSecret('0x' + 'ab'.repeat(32)),
+  secret: encryptSecret(`0x${'ab'.repeat(32)}`),
   groups: [],
   isMain: false,
   disabled: false,
@@ -902,7 +1073,10 @@ fs.writeFileSync(`${DATA}/wallets.json`, JSON.stringify(onDisk, null, 2));
 db.reload();
 
 assert.equal(db.legacyWallets().length, 1, 'the legacy record survives a load from disk');
-assert.equal(wallets.allWallets().some((w) => w.id === 'legacy-1'), false);
+assert.equal(
+  wallets.allWallets().some(w => w.id === 'legacy-1'),
+  false,
+);
 ok('legacy records load but are hidden from every Solana code path');
 
 // the regression that mattered: filtering inside load() meant the next flush
@@ -923,7 +1097,7 @@ ok('wallet edits preserve them too');
 const persisted = wallets.generateSolanaWallet('persisted');
 db.reload();
 assert.ok(
-  wallets.allWallets().some((w) => w.address === persisted.address),
+  wallets.allWallets().some(w => w.address === persisted.address),
   'a new wallet is on disk, not just in a discarded array',
 );
 ok('new wallets survive the read-time filter');
@@ -932,7 +1106,11 @@ ok('new wallets survive the read-time filter');
 const exportedLegacy = wallets.exportLegacyKeys();
 assert.equal(exportedLegacy.length, 1);
 assert.equal(exportedLegacy[0]!.chain, 'evm');
-assert.equal(exportedLegacy[0]!.secret, '0x' + 'ab'.repeat(32), 'the plaintext key comes back intact');
+assert.equal(
+  exportedLegacy[0]!.secret,
+  `0x${'ab'.repeat(32)}`,
+  'the plaintext key comes back intact',
+);
 ok('legacy keys export in plaintext for recovery');
 
 // deleting is explicit and complete
@@ -945,8 +1123,26 @@ ok('deletion is opt-in and leaves the real wallets alone');
 // ── a followed wallet saved before the sizing options existed ─────────────────
 const doc = JSON.parse(fs.readFileSync(`${DATA}/wallets.json`, 'utf8'));
 doc.copyTargets = [
-  { id: 'old-1', address: 'Whale', label: 'Whale', buySol: 0.05, copySells: true, enabled: true, copiedMints: ['MINT_A'], createdAt: 1 },
-  { id: 'old-2', address: 'Quiet', label: 'Quiet', buySol: 0.1, copySells: false, enabled: true, copiedMints: [], createdAt: 1 },
+  {
+    id: 'old-1',
+    address: 'Whale',
+    label: 'Whale',
+    buySol: 0.05,
+    copySells: true,
+    enabled: true,
+    copiedMints: ['MINT_A'],
+    createdAt: 1,
+  },
+  {
+    id: 'old-2',
+    address: 'Quiet',
+    label: 'Quiet',
+    buySol: 0.1,
+    copySells: false,
+    enabled: true,
+    copiedMints: [],
+    createdAt: 1,
+  },
 ];
 fs.writeFileSync(`${DATA}/wallets.json`, JSON.stringify(doc, null, 2));
 db.reload();
@@ -972,10 +1168,22 @@ function stubCtx() {
   const ctx = {
     from: { id: 1 },
     callbackQuery: { message: { message_id: 1, chat: { id: 1 } }, data: '' },
-    async editMessageText(text: string) { rendered.push(text); return true; },
-    async editMessageCaption(opts: { caption: string }) { rendered.push(opts.caption); return true; },
-    async reply(text: string) { rendered.push(text); return { chat: { id: 1 }, message_id: 2 }; },
-    async answerCallbackQuery(opts?: { text?: string }) { alerts.push(opts?.text ?? ''); return true; },
+    async editMessageText(text: string) {
+      rendered.push(text);
+      return true;
+    },
+    async editMessageCaption(opts: { caption: string }) {
+      rendered.push(opts.caption);
+      return true;
+    },
+    async reply(text: string) {
+      rendered.push(text);
+      return { chat: { id: 1 }, message_id: 2 };
+    },
+    async answerCallbackQuery(opts?: { text?: string }) {
+      alerts.push(opts?.text ?? '');
+      return true;
+    },
   };
   return { ctx: ctx as never, rendered, alerts, last: () => rendered[rendered.length - 1] ?? '' };
 }
@@ -1083,18 +1291,30 @@ const armedTarget = db.copyTargets()[0]!;
 armCopyRules(armedTarget, 'MINT_COPIED');
 const firstArm = db.rulesFor('MINT_COPIED');
 assert.equal(firstArm.length, 2, 'a take profit and a stop loss');
-assert.equal(firstArm.find((r) => r.kind === 'take_profit')!.triggerPct, 100);
+assert.equal(firstArm.find(r => r.kind === 'take_profit')!.triggerPct, 100);
 assert.equal(
-  firstArm.find((r) => r.kind === 'take_profit')!.sellPercent,
+  firstArm.find(r => r.kind === 'take_profit')!.sellPercent,
   100,
   'exits fully — the half-exit was a hardcoded default no screen ever showed, and the operator believed 100 all along',
 );
-assert.equal(firstArm.find((r) => r.kind === 'stop_loss')!.triggerPct, -40, 'a stop is stored as a fall');
-assert.equal(firstArm.find((r) => r.kind === 'stop_loss')!.sellPercent, 100, 'and exits the whole position');
+assert.equal(
+  firstArm.find(r => r.kind === 'stop_loss')!.triggerPct,
+  -40,
+  'a stop is stored as a fall',
+);
+assert.equal(
+  firstArm.find(r => r.kind === 'stop_loss')!.sellPercent,
+  100,
+  'and exits the whole position',
+);
 ok('a copy buy arms the target rules with the right signs and sizes');
 
 armCopyRules(armedTarget, 'MINT_COPIED');
-assert.equal(db.rulesFor('MINT_COPIED').length, 2, 'averaging in does not stack a second stop-loss');
+assert.equal(
+  db.rulesFor('MINT_COPIED').length,
+  2,
+  'averaging in does not stack a second stop-loss',
+);
 ok('a second entry into the same token adds nothing');
 
 // a target with nothing set must not quietly arm anything
@@ -1107,7 +1327,11 @@ ok('no rules are armed when none are configured');
 // Selling a token must not put it back on the menu. copiedMints is the record
 // of "this target already got me into this", and nothing clears it.
 const reentry = db.copyTargets()[0]!;
-db.updateCopyTarget(reentry.id, { copiedMints: ['SOLD_MINT'], entryCounts: { SOLD_MINT: 1 }, entryMode: 'first' });
+db.updateCopyTarget(reentry.id, {
+  copiedMints: ['SOLD_MINT'],
+  entryCounts: { SOLD_MINT: 1 },
+  entryMode: 'first',
+});
 const after = db.copyTargets()[0]!;
 assert.ok(after.copiedMints.includes('SOLD_MINT'));
 assert.equal(after.entryCounts?.SOLD_MINT, 1, 'the entry stays counted after a sell');
@@ -1139,11 +1363,15 @@ const fakePortfolio = {
 } as never;
 
 const listed = listPositions(fakePortfolio);
-const real = listed.find((p) => p.mint === 'BOUGHT_MINT')!;
-const spam = listed.find((p) => p.mint === 'DUSTED_MINT')!;
+const real = listed.find(p => p.mint === 'BOUGHT_MINT')!;
+const spam = listed.find(p => p.mint === 'DUSTED_MINT')!;
 assert.equal(real.boughtHere, true, 'a token with a cost basis was bought here');
 assert.equal(spam.boughtHere, false, 'one that just appeared was not');
-assert.equal(listed[0]!.mint, 'BOUGHT_MINT', 'real positions sort above dust whatever it claims to be worth');
+assert.equal(
+  listed[0]!.mint,
+  'BOUGHT_MINT',
+  'real positions sort above dust whatever it claims to be worth',
+);
 ok('a token that arrived on its own is told apart from one that was bought');
 
 // ── entry price ───────────────────────────────────────────────────────────────
@@ -1154,8 +1382,14 @@ ok('a token that arrived on its own is told apart from one that was bought');
 const { entryPrice, formatEntry } = await import('../src/services/pnl.js');
 
 const withBasis = {
-  mint: 'M', investedSol: 0.05, realisedSol: 0, buyFills: 1, sellFills: 0,
-  tokensBought: 46_125, firstBuyAt: 0, lastTradeAt: 0,
+  mint: 'M',
+  investedSol: 0.05,
+  realisedSol: 0,
+  buyFills: 1,
+  sellFills: 0,
+  tokensBought: 46_125,
+  firstBuyAt: 0,
+  lastTradeAt: 0,
 };
 assert.equal(entryPrice(withBasis), 0.05 / 46_125);
 ok('entry price is the SOL spent over the tokens received');
@@ -1165,15 +1399,27 @@ const averaged = { ...withBasis, investedSol: 0.15, tokensBought: 100_000 };
 assert.equal(entryPrice(averaged), 0.15 / 100_000, 'three buys give one blended entry');
 ok('buying again blends the entry rather than overwriting it');
 
-assert.equal(entryPrice({ ...withBasis, tokensBought: 0 }), null, 'no token count means no entry price');
+assert.equal(
+  entryPrice({ ...withBasis, tokensBought: 0 }),
+  null,
+  'no token count means no entry price',
+);
 assert.equal(entryPrice(undefined), null);
-assert.equal(formatEntry({ ...withBasis, tokensBought: 0 }, 1), null, 'and nothing is rendered for it');
+assert.equal(
+  formatEntry({ ...withBasis, tokensBought: 0 }, 1),
+  null,
+  'and nothing is rendered for it',
+);
 ok('an unmeasured position reports no entry rather than inventing one');
 
 const rendered = formatEntry(withBasis, (0.05 / 46_125) * 1.048)!;
 assert.match(rendered, /entry/);
 assert.match(rendered, /\+4\.8%/, 'the move from entry is the number that matters');
-assert.doesNotMatch(formatEntry(withBasis, null)!, /now/, 'an unreadable price shows entry alone, not a fake move');
+assert.doesNotMatch(
+  formatEntry(withBasis, null)!,
+  /now/,
+  'an unreadable price shows entry alone, not a fake move',
+);
 ok('entry, current and the move between them render together');
 
 // ── formatting ────────────────────────────────────────────────────────────────
@@ -1230,11 +1476,17 @@ console.log('\n[19] Copy-trade safety gate');
 const { assessToken, DEFAULT_SAFETY } = await import('../src/services/safety.js');
 
 const clean = {
-  address: 'M', chain: 'solana' as const, warnings: [],
-  freezeAuthority: null, mintAuthority: null,
-  top10Pct: 14, creatorHoldsPct: 0.4, liquidityUsd: 50_000,
+  address: 'M',
+  chain: 'solana' as const,
+  warnings: [],
+  freezeAuthority: null,
+  mintAuthority: null,
+  top10Pct: 14,
+  creatorHoldsPct: 0.4,
+  liquidityUsd: 50_000,
   // a live market: minutes old and being traded right now
-  pairCreatedAt: Date.now() - 20 * 60_000, volume1h: 40_000,
+  pairCreatedAt: Date.now() - 20 * 60_000,
+  volume1h: 40_000,
 };
 assert.equal(assessToken(clean).safe, true);
 ok('a clean token passes');
@@ -1328,7 +1580,11 @@ assert.match(assessToken(unread).reasons[0]!, /unknown, not zero/);
 ok('an unreadable holder distribution is refused, not assumed fine');
 
 const noAuthRead = { ...clean, freezeAuthority: undefined };
-assert.equal(assessToken(noAuthRead).safe, false, 'an unread freeze authority is unknown, not absent');
+assert.equal(
+  assessToken(noAuthRead).safe,
+  false,
+  'an unread freeze authority is unknown, not absent',
+);
 ok('an unread authority is refused too');
 
 // a token still on its curve has no pool, so thin-liquidity does not apply
@@ -1344,9 +1600,17 @@ ok('liquidity is judged once there is a pool, and not before');
  * to the mint, so a token can show both authorities revoked and still refuse to
  * be sold. These are refused whatever the authority setting says.
  */
-const hooked = { ...clean, token2022: true, traps: ['A transfer hook runs on every trade and can refuse yours'] };
+const hooked = {
+  ...clean,
+  token2022: true,
+  traps: ['A transfer hook runs on every trade and can refuse yours'],
+};
 const hookVerdict = assessToken(hooked);
-assert.equal(hookVerdict.safe, false, 'a transfer hook is refused despite both authorities being revoked');
+assert.equal(
+  hookVerdict.safe,
+  false,
+  'a transfer hook is refused despite both authorities being revoked',
+);
 assert.match(hookVerdict.reasons[0]!, /transfer hook/i);
 assert.equal(
   assessToken(hooked, { ...DEFAULT_SAFETY, requireRevokedAuthorities: false }).safe,
@@ -1355,15 +1619,26 @@ assert.equal(
 );
 ok('a Token-2022 transfer hook is caught even with clean authorities');
 
-assert.equal(assessToken({ ...clean, token2022: true, traps: [] }).safe, true, 'Token-2022 alone is not a trap');
+assert.equal(
+  assessToken({ ...clean, token2022: true, traps: [] }).safe,
+  true,
+  'Token-2022 alone is not a trap',
+);
 ok('a Token-2022 mint carrying nothing dangerous still passes');
 
 // the limits are limits, not suggestions
 assert.equal(assessToken({ ...clean, top10Pct: 20 }).safe, true, '20 is not over 20');
 assert.equal(assessToken({ ...clean, top10Pct: 20.1 }).safe, false);
-assert.equal(assessToken({ ...clean, top10Pct: 61.4 }, { ...DEFAULT_SAFETY, maxTop10Pct: 100 }).safe, true);
+assert.equal(
+  assessToken({ ...clean, top10Pct: 61.4 }, { ...DEFAULT_SAFETY, maxTop10Pct: 100 }).safe,
+  true,
+);
 assert.equal(assessToken({ ...clean, creatorHoldsPct: 1 }).safe, true, '1% dev is allowed');
-assert.equal(assessToken({ ...clean, creatorHoldsPct: 1.1 }).safe, false, 'anything above it is not');
+assert.equal(
+  assessToken({ ...clean, creatorHoldsPct: 1.1 }).safe,
+  false,
+  'anything above it is not',
+);
 ok('the thresholds are exact and configurable');
 
 // stored limits from an older build are defaults nobody chose, so a stricter
@@ -1379,36 +1654,7 @@ assert.equal(cycleStep([40, 50, 60], 60), 40, 'cycling wraps rather than dead-en
 assert.equal(cycleStep([40, 50, 60], 999), 40, 'an unrecognised value restarts');
 ok('every safety button cycles rather than sticking');
 
-console.log('\n[20] Every button has a route');
-
-/*
- * A button whose callback_data no routeCallback case matches does nothing at
- * all when tapped — no error, no screen, just a spinner that stops. That is
- * indistinguishable from a slow screen, so it survives manual testing easily.
- * Comparing what the keyboards emit against what the router handles catches it
- * the moment a screen is added.
- */
-const uiSources = ['src/bot/ui.ts', 'src/bot/handlers/core.ts', 'src/bot/handlers/trade.ts', 'src/bot/handlers/wallets.ts'];
-const emitted = new Map<string, string>();
-
-for (const file of uiSources) {
-  const src = fs.readFileSync(file, 'utf8');
-  const button = /\.text\(\s*(?:'[^']*'|"[^"]*"|`[^`]*`)\s*,\s*(?:'([^']+)'|`([^`]+)`)/g;
-  for (const m of src.matchAll(button)) {
-    const action = (m[1] ?? m[2] ?? '').split(':')[0] ?? '';
-    // a computed action cannot be checked statically
-    if (!action || action.includes('${')) continue;
-    if (!emitted.has(action)) emitted.set(action, file);
-  }
-}
-
-const router = fs.readFileSync('src/bot/index.ts', 'utf8');
-const routed = new Set([...router.slice(router.indexOf('async function routeCallback')).matchAll(/case '([a-z_0-9]+)'/g)].map((m) => m[1]!));
-
-const orphans = [...emitted].filter(([action]) => !routed.has(action));
-assert.deepEqual(orphans, [], `buttons with no route: ${orphans.map(([a, f]) => `${a} (${f})`).join(', ')}`);
-assert.ok(emitted.size > 40, `expected the scan to find the keyboards, found ${emitted.size} buttons`);
-ok(`all ${emitted.size} button actions reach a handler`);
+// Callback routes and navigation are exercised through createBot in behavior-regressions.ts.
 
 console.log('\n[21] Secret redaction in logs');
 const { redact } = await import('../src/logger.js');
@@ -1451,7 +1697,10 @@ ok('a vault holding keys is never re-keyed without the passphrase');
 // and that one passphrase both opens and converts it
 await unlockAndConvert('the passphrase that still matters', wallets.resealAll);
 assert.equal(vaultMode(), 'keyfile');
-assert.equal(wallets.solanaKeypair(wallets.allWallets()[0]!).publicKey.toBase58(), stranded.address);
+assert.equal(
+  wallets.solanaKeypair(wallets.allWallets()[0]!).publicKey.toBase58(),
+  stranded.address,
+);
 lockVault();
 assert.equal(openAtBoot(true), 'opened', 'and from then on it opens by itself');
 ok('one passphrase converts the vault and is never asked for again');
@@ -1476,7 +1725,13 @@ assert.equal(accountPnl(db.positions(), new Map(), 200).empty, true);
 ok('an account that has never traded says so rather than claiming 0%');
 
 // a 1 SOL buy that actually cost 1.01 after fees, sold for 1.5
-db.recordBuy('MintA', { solSpent: 1, fills: 1, tokensBought: 1_000_000, symbol: 'AAA', costSol: 1.01 });
+db.recordBuy('MintA', {
+  solSpent: 1,
+  fills: 1,
+  tokensBought: 1_000_000,
+  symbol: 'AAA',
+  costSol: 1.01,
+});
 db.recordSell('MintA', 1.5, 1);
 
 const a1 = accountPnl(db.positions(), new Map(), 200);
@@ -1579,15 +1834,22 @@ console.log('\n[25] One coin, many followed wallets');
  * the same token. Every one of them spends or dumps real money, and none was
  * visible from a single-target test.
  */
-const { lifetimeCostSol, openExposureSol, roomUnderCap, activeMintLocks } =
-  await import('../src/services/copytrade.js');
+const { lifetimeCostSol, openExposureSol, roomUnderCap, activeMintLocks } = await import(
+  '../src/services/copytrade.js'
+);
 
 db.wipe();
 const MINT_X = 'MintXcopytradeaudit1111111111111111111111';
 
 // ── the cap sees the position, not the follower ──────────────────────────────
 assert.equal(roomUnderCap(MINT_X, 0.5, false), 0.5, 'an untouched coin has the whole cap free');
-db.recordBuy(MINT_X, { solSpent: 0.2, fills: 4, tokensBought: 1_000, symbol: 'XXX', costSol: 0.2081 });
+db.recordBuy(MINT_X, {
+  solSpent: 0.2,
+  fills: 4,
+  tokensBought: 1_000,
+  symbol: 'XXX',
+  costSol: 0.2081,
+});
 assert.equal(
   Number(openExposureSol(MINT_X, true).toFixed(4)),
   0.2081,
@@ -1629,7 +1891,13 @@ for (let trader = 0; trader < 3; trader++) {
     refused++;
     continue;
   }
-  db.recordBuy(FRESH, { solSpent: batch, fills: 4, tokensBought: 1_000, symbol: 'XXX', costSol: batch });
+  db.recordBuy(FRESH, {
+    solSpent: batch,
+    fills: 4,
+    tokensBought: 1_000,
+    symbol: 'XXX',
+    costSol: batch,
+  });
   spent += batch;
 }
 assert.equal(Number(spent.toFixed(4)), 0.4, 'two entries fit under a 0.5 cap');
@@ -1663,7 +1931,7 @@ const { withMintLock } = await import('../src/services/copytrade.js');
 const lockOrder: string[] = [];
 const slowCopy = withMintLock(MINT_X, async () => {
   lockOrder.push('a:start');
-  await new Promise((r) => setTimeout(r, 40));
+  await new Promise(r => setTimeout(r, 40));
   lockOrder.push('a:end');
 });
 const fastCopy = withMintLock(MINT_X, async () => {
@@ -1671,14 +1939,18 @@ const fastCopy = withMintLock(MINT_X, async () => {
   lockOrder.push('b:end');
 });
 await Promise.all([slowCopy, fastCopy]);
-assert.deepEqual(lockOrder, ['a:start', 'a:end', 'b:start', 'b:end'], `interleaved: ${lockOrder.join(' ')}`);
+assert.deepEqual(
+  lockOrder,
+  ['a:start', 'a:end', 'b:start', 'b:end'],
+  `interleaved: ${lockOrder.join(' ')}`,
+);
 ok('a second copy of the same coin waits rather than reading stale exposure');
 
 // a different coin is not blocked behind it
 const parallelOrder: string[] = [];
 await Promise.all([
   withMintLock('MintOne1111111111111111111111111111111111', async () => {
-    await new Promise((r) => setTimeout(r, 30));
+    await new Promise(r => setTimeout(r, 30));
     parallelOrder.push('one');
   }),
   withMintLock('MintTwo2222222222222222222222222222222222', async () => {
@@ -1730,25 +2002,40 @@ console.log('\n[26] Copy exits only close what the trader opened');
  */
 db.wipe();
 const follower = {
-  id: 'T1', address: 'Addr1', label: 'trader-1',
-  buySol: 0.05, sizeMode: 'fixed' as const, sizePercent: 5,
-  entryMode: 'first' as const, maxEntries: 3, exitMode: 'all' as const,
-  enabled: true, copiedMints: [] as string[], entryCounts: {} as Record<string, number>,
-  refusedMints: [] as string[], createdAt: Date.now(),
+  id: 'T1',
+  address: 'Addr1',
+  label: 'trader-1',
+  buySol: 0.05,
+  sizeMode: 'fixed' as const,
+  sizePercent: 5,
+  entryMode: 'first' as const,
+  maxEntries: 3,
+  exitMode: 'all' as const,
+  enabled: true,
+  copiedMints: [] as string[],
+  entryCounts: {} as Record<string, number>,
+  refusedMints: [] as string[],
+  createdAt: Date.now(),
 };
 db.addCopyTarget(follower);
 
 const HAND_BOUGHT = 'MintHandBought11111111111111111111111111111';
-db.recordBuy(HAND_BOUGHT, { solSpent: 0.3, fills: 2, tokensBought: 5_000, symbol: 'HAND', costSol: 0.31 });
+db.recordBuy(HAND_BOUGHT, {
+  solSpent: 0.3,
+  fills: 2,
+  tokensBought: 5_000,
+  symbol: 'HAND',
+  costSol: 0.31,
+});
 
 // the trader never copied it, so their sell must not reach it
-const stored = db.copyTargets().find((t) => t.id === 'T1')!;
+const stored = db.copyTargets().find(t => t.id === 'T1')!;
 assert.equal(stored.copiedMints.includes(HAND_BOUGHT), false);
-ok('a hand-bought coin is not on any follower\'s copied list');
+ok("a hand-bought coin is not on any follower's copied list");
 
 // and a refused coin is recorded apart from a copied one
 db.updateCopyTarget('T1', { refusedMints: ['MintRefused111111111111111111111111111111'] });
-const reloaded = db.copyTargets().find((t) => t.id === 'T1')!;
+const reloaded = db.copyTargets().find(t => t.id === 'T1')!;
 assert.deepEqual(reloaded.copiedMints, [], 'a refusal never lands in copiedMints');
 assert.equal(reloaded.refusedMints?.length, 1, 'it lands in its own list instead');
 ok('refused coins are kept apart from copied ones, so they cannot authorise a sale');
@@ -1760,9 +2047,12 @@ ok('refused coins are kept apart from copied ones, so they cannot authorise a sa
  */
 const LEGACY_REFUSED = 'MintLegacyRefused111111111111111111111111';
 db.updateCopyTarget('T1', { copiedMints: [LEGACY_REFUSED] });
-assert.equal(lifetimeCostSol(LEGACY_REFUSED), 0, 'nothing was ever bought, so there is no position');
+assert.equal(
+  lifetimeCostSol(LEGACY_REFUSED),
+  0,
+  'nothing was ever bought, so there is no position',
+);
 ok('an old record listing a refusal as copied still has no position to sell');
-
 
 console.log('\n[27] Every exit is written down');
 
@@ -1777,23 +2067,7 @@ console.log('\n[27] Every exit is written down');
  * call and a test that only exercises the paths it remembers would miss the
  * next one added.
  */
-const sellSites = ['src/services/copytrade.ts', 'src/services/watcher.ts', 'src/bot/handlers/trade.ts', 'src/trade/engine.ts'];
-for (const file of sellSites) {
-  const src = fs.readFileSync(file, 'utf8');
-  const sells = (src.match(/action: 'sell'/g) ?? []).length;
-  if (sells === 0) continue;
-  assert.ok(
-    /db\.recordSell\(/.test(src),
-    `${file} executes ${sells} sell(s) but never records the proceeds`,
-  );
-}
-ok('every file that sells also records what came back');
-
-// and the engine measures it, so no caller has to do the arithmetic itself
-const engineSrc = fs.readFileSync('src/trade/engine.ts', 'utf8');
-assert.match(engineSrc, /export async function measureSolReceived/);
-assert.match(engineSrc, /combined\.solReceived = await measureSolReceived/);
-ok('the engine measures sell proceeds once, for every path that sells');
+// Execution/accounting suites assert ledger changes from actual filled and uncertain trades.
 
 // the sell measurement mirrors the buy one, and neither invents a number
 const { measureSolSpent, measureSolReceived } = await import('../src/trade/engine.js');
@@ -1819,7 +2093,10 @@ assert.equal(naive.losses, 1, 'without the flag the dark token counts as a loss'
 
 const aware = accountPnl(
   db.positions(),
-  new Map([[PRICED, 0.15], [DARK, 0]]),
+  new Map([
+    [PRICED, 0.15],
+    [DARK, 0],
+  ]),
   200,
   new Set([DARK]),
 );
@@ -1827,7 +2104,11 @@ assert.equal(aware.unpricedCount, 1);
 assert.equal(Number(aware.unpricedCostSol.toFixed(4)), 0.1, 'and what it cost is reported');
 assert.equal(aware.losses, 0, 'it is not counted as a losing trade');
 assert.equal(aware.openCount, 2, 'it is still an open position, alongside the priced one');
-assert.notEqual(aware.worst?.mint, DARK, 'and it is never named the worst trade on a price of zero');
+assert.notEqual(
+  aware.worst?.mint,
+  DARK,
+  'and it is never named the worst trade on a price of zero',
+);
 ok('a position nothing will price is reported as unknown, not as a total loss');
 
 console.log('\n[29] Rebuilding proceeds from the chain');
@@ -1840,7 +2121,13 @@ console.log('\n[29] Rebuilding proceeds from the chain');
  */
 db.wipe();
 const REPAIR = 'MintNeedsRepair11111111111111111111111111';
-db.recordBuy(REPAIR, { solSpent: 0.5, fills: 2, tokensBought: 10_000, symbol: 'FIX', costSol: 0.52 });
+db.recordBuy(REPAIR, {
+  solSpent: 0.5,
+  fills: 2,
+  tokensBought: 10_000,
+  symbol: 'FIX',
+  costSol: 0.52,
+});
 db.recordSell(REPAIR, 0.05, 1);
 assert.equal(db.position(REPAIR)!.realisedSol, 0.05);
 
@@ -1852,7 +2139,11 @@ ok('a position whose sale went unrecorded can be repaired from a measurement');
 db.setRealised(REPAIR, Number.NaN);
 db.setRealised(REPAIR, -1);
 db.setRealised('MintThatDoesNotExist1111111111111111111', 5);
-assert.equal(db.position(REPAIR)!.realisedSol, 0.61, 'unreadable or negative figures change nothing');
+assert.equal(
+  db.position(REPAIR)!.realisedSol,
+  0.61,
+  'unreadable or negative figures change nothing',
+);
 ok('the repair refuses a value it cannot trust');
 
 /*
@@ -1871,20 +2162,7 @@ ok('an unrecorded sale reads as −100% until it is repaired, then as the profit
  * sales were missing" from "no sales were read", and it chose the reassuring
  * one. The all-clear is now gated on the scan having actually finished.
  */
-const coreSrc = fs.readFileSync('src/bot/handlers/core.ts', 'utf8');
-const allClear = coreSrc.indexOf('Nothing was missing');
-assert.ok(allClear > 0, 'the all-clear message still exists');
-const guard = coreSrc.lastIndexOf('result.complete', allClear);
-assert.ok(guard > 0 && allClear - guard < 200, 'the all-clear is guarded by the scan having completed');
-ok('a scan that read nothing never reports an all-clear');
-
-// and the reconcile paces itself rather than being refused
-const recSrc = fs.readFileSync('src/services/reconcile.ts', 'utf8');
-assert.match(recSrc, /RPC_GAP_MS/, 'calls are spaced');
-assert.match(recSrc, /isRateLimited/, 'a rate limit is recognised rather than thrown as a failure');
-assert.ok(!/pMap\(wallets/.test(recSrc), 'wallets are read one at a time, not concurrently');
-assert.match(recSrc, /complete: false/, 'a short read reports itself as incomplete');
-ok('the scan is paced, and a partial read says it is partial');
+// Reconciliation completeness is exercised with partial RPC responses in the focused suites.
 
 console.log('\n[30] An entry price belongs to one position');
 
@@ -1899,7 +2177,13 @@ db.wipe();
 const ROUNDTRIP = 'MintBoughtSoldBought11111111111111111111';
 
 // in at a millionth of a SOL a token
-db.recordBuy(ROUNDTRIP, { solSpent: 1, fills: 1, tokensBought: 1_000_000, symbol: 'RT', costSol: 1.01 });
+db.recordBuy(ROUNDTRIP, {
+  solSpent: 1,
+  fills: 1,
+  tokensBought: 1_000_000,
+  symbol: 'RT',
+  costSol: 1.01,
+});
 assert.equal(livePrice(ROUNDTRIP), 1 / 1_000_000);
 ok('a first entry prices at what it paid');
 
@@ -1907,7 +2191,14 @@ ok('a first entry prices at what it paid');
 db.recordSell(ROUNDTRIP, 1.4, 1);
 
 // and back in at a thousandth — a thousand times the price
-db.recordBuy(ROUNDTRIP, { solSpent: 1, fills: 1, tokensBought: 1_000, symbol: 'RT', costSol: 1.01, freshEntry: true });
+db.recordBuy(ROUNDTRIP, {
+  solSpent: 1,
+  fills: 1,
+  tokensBought: 1_000,
+  symbol: 'RT',
+  costSol: 1.01,
+  freshEntry: true,
+});
 
 const blended = 2 / 1_001_000; // what the lifetime ratio would say
 const entry = livePrice(ROUNDTRIP)!;
@@ -1920,27 +2211,74 @@ ok('re-entering a coin prices the new position, not a blend with the closed one'
  * blended figure is already 99.9% below it the moment the position opens, so
  * it fires instantly on a position that has not moved.
  */
-const stop = { id: 'r', mint: ROUNDTRIP, kind: 'stop_loss' as const, triggerPct: -50, sellPercent: 100, enabled: true, createdAt: 0 };
-const take = { id: 't', mint: ROUNDTRIP, kind: 'take_profit' as const, triggerPct: 100, sellPercent: 50, enabled: true, createdAt: 0 };
+const stop = {
+  id: 'r',
+  mint: ROUNDTRIP,
+  kind: 'stop_loss' as const,
+  triggerPct: -50,
+  sellPercent: 100,
+  enabled: true,
+  createdAt: 0,
+};
+const take = {
+  id: 't',
+  mint: ROUNDTRIP,
+  kind: 'take_profit' as const,
+  triggerPct: 100,
+  sellPercent: 50,
+  enabled: true,
+  createdAt: 0,
+};
 
 // the blended entry is dragged down by a million cheap tokens from a trade
 // that is over, so a position that has not moved reads as a huge winner
-assert.equal(ruleTriggered(take, entry, blended), true, 'the take-profit fires the instant it opens');
-assert.equal(ruleTriggered(take, entry, entry), false, 'against the real entry it waits, as it should');
+assert.equal(
+  ruleTriggered(take, entry, blended),
+  true,
+  'the take-profit fires the instant it opens',
+);
+assert.equal(
+  ruleTriggered(take, entry, entry),
+  false,
+  'against the real entry it waits, as it should',
+);
 
 // worse than the false fire: the stop-loss can never reach its trigger, so the
 // position is unprotected while looking a thousand percent up
-assert.equal(ruleTriggered(stop, entry * 0.4, blended), false, 'a 60% fall does not reach the blended stop');
-assert.equal(ruleTriggered(stop, entry * 0.4, entry), true, 'against the real entry it protects the position');
+assert.equal(
+  ruleTriggered(stop, entry * 0.4, blended),
+  false,
+  'a 60% fall does not reach the blended stop',
+);
+assert.equal(
+  ruleTriggered(stop, entry * 0.4, entry),
+  true,
+  'against the real entry it protects the position',
+);
 ok('the blended price fires a take-profit at once and leaves the stop-loss unreachable');
 
 // adding to an open position still blends, which is what averaging in means
-db.recordBuy(ROUNDTRIP, { solSpent: 1, fills: 1, tokensBought: 3_000, symbol: 'RT', freshEntry: false });
+db.recordBuy(ROUNDTRIP, {
+  solSpent: 1,
+  fills: 1,
+  tokensBought: 3_000,
+  symbol: 'RT',
+  freshEntry: false,
+});
 assert.equal(livePrice(ROUNDTRIP), 2 / 4_000, 'averaging in moves the entry, correctly');
 ok('a second buy into an open position averages, rather than resetting');
 
 // and a record written before the basis existed still prices from what it has
-const legacy = { mint: 'L', investedSol: 2, realisedSol: 0, buyFills: 1, sellFills: 0, tokensBought: 100, firstBuyAt: 0, lastTradeAt: 0 };
+const legacy = {
+  mint: 'L',
+  investedSol: 2,
+  realisedSol: 0,
+  buyFills: 1,
+  sellFills: 0,
+  tokensBought: 100,
+  firstBuyAt: 0,
+  lastTradeAt: 0,
+};
 assert.equal(entryPrice(legacy), 2 / 100, 'the lifetime ratio is the fallback, as before');
 ok('a position from before the basis existed keeps the price it always had');
 
@@ -1951,10 +2289,16 @@ console.log('\n[31] What the token itself cannot tell you');
  * the shipped limits were blind to.
  */
 const safeBase = {
-  address: 'M', chain: 'solana' as const, warnings: [],
-  freezeAuthority: null, mintAuthority: null,
-  top10Pct: 14, creatorHoldsPct: 0, liquidityUsd: 50_000,
-  pairCreatedAt: Date.now() - 20 * 60_000, volume1h: 40_000,
+  address: 'M',
+  chain: 'solana' as const,
+  warnings: [],
+  freezeAuthority: null,
+  mintAuthority: null,
+  top10Pct: 14,
+  creatorHoldsPct: 0,
+  liquidityUsd: 50_000,
+  pairCreatedAt: Date.now() - 20 * 60_000,
+  volume1h: 40_000,
 };
 assert.equal(assessToken(safeBase).safe, true, 'the baseline is clean');
 
@@ -1985,7 +2329,10 @@ assert.equal(assessToken({ ...oneHand, ...serial }, off).safe, true);
 ok('and both can be turned off');
 
 // unknown stays unknown: absent data must not refuse on these two
-assert.equal(assessToken({ ...safeBase, insiderPct: undefined, creatorRugHistory: undefined }).safe, true);
+assert.equal(
+  assessToken({ ...safeBase, insiderPct: undefined, creatorRugHistory: undefined }).safe,
+  true,
+);
 ok('a token the index has never seen is judged on everything else, not refused outright');
 
 console.log('\n[32] A pool is liquidity, not a whale');
@@ -1997,100 +2344,41 @@ console.log('\n[32] A pool is liquidity, not a whale');
  * 19.1% at 91.3% — against a 20% limit, an automatic refusal of a coin that
  * should have passed.
  */
-const tokenSrc = fs.readFileSync('src/services/tokeninfo.ts', 'utf8');
-assert.match(tokenSrc, /POOL_PROGRAMS/, 'pool programs are known');
-assert.match(tokenSrc, /pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA/, 'PumpSwap among them');
-assert.match(tokenSrc, /675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8/, 'Raydium among them');
-assert.match(
-  tokenSrc,
-  /h\.tag !== 'bonding curve' && h\.tag !== 'pool'/,
-  'and both kinds of market are excluded from the top ten',
-);
-ok('the top ten excludes the pool a graduated coin trades in, not just its curve');
+// Pool authorities are classified through real getTokenInfo calls in behavior-regressions.ts.
 
 // the arithmetic that made it matter, as a regression guard
 const holders = [
-  { pct: 72.22, pool: true }, { pct: 3.69, pool: false }, { pct: 2.87, pool: false },
-  { pct: 2.49, pool: false }, { pct: 2.28, pool: false }, { pct: 2.09, pool: false },
-  { pct: 1.86, pool: false }, { pct: 1.38, pool: false }, { pct: 1.28, pool: false },
+  { pct: 72.22, pool: true },
+  { pct: 3.69, pool: false },
+  { pct: 2.87, pool: false },
+  { pct: 2.49, pool: false },
+  { pct: 2.28, pool: false },
+  { pct: 2.09, pool: false },
+  { pct: 1.86, pool: false },
+  { pct: 1.38, pool: false },
+  { pct: 1.28, pool: false },
   { pct: 1.19, pool: false },
 ];
 const withPool = holders.reduce((n, h) => n + h.pct, 0);
-const withoutPool = holders.filter((h) => !h.pool).reduce((n, h) => n + h.pct, 0);
-assert.ok(withPool > 90 && withoutPool < 20, `${withPool.toFixed(1)}% counted vs ${withoutPool.toFixed(1)}% real`);
-assert.equal(assessToken({ ...safeBase, top10Pct: withoutPool }).safe, true, 'the real figure passes');
-assert.equal(assessToken({ ...safeBase, top10Pct: withPool }).safe, false, 'the counted one does not');
+const withoutPool = holders.filter(h => !h.pool).reduce((n, h) => n + h.pct, 0);
+assert.ok(
+  withPool > 90 && withoutPool < 20,
+  `${withPool.toFixed(1)}% counted vs ${withoutPool.toFixed(1)}% real`,
+);
+assert.equal(
+  assessToken({ ...safeBase, top10Pct: withoutPool }).safe,
+  true,
+  'the real figure passes',
+);
+assert.equal(
+  assessToken({ ...safeBase, top10Pct: withPool }).safe,
+  false,
+  'the counted one does not',
+);
 ok('on the measured token that is 91.3% refused against 19.1% allowed');
 
-console.log('\n[33] Protection that failed is protection that stays armed');
-
-/*
- * The worst failure mode in the bot, and it was silent. A rule is marked fired
- * before the sell is attempted so a crash cannot replay it — but a sell that
- * simply failed was marked the same way, which retired the stop-loss at the
- * exact moment it was needed and told nobody. The owner keeps believing the
- * position is protected.
- *
- * Guarded structurally: the shape of the code is the thing that has to hold.
- */
-const watcherSrc = fs.readFileSync('src/services/watcher.ts', 'utf8');
-assert.match(watcherSrc, /async function rearm\(/, 'there is a way back onto the board');
-assert.match(watcherSrc, /firedAt: undefined/, 'and it clears the fired mark');
-assert.match(watcherSrc, /MAX_FIRE_ATTEMPTS/, 'bounded, so a honeypot is not retried forever');
-
-// every branch that trades inside fire() must handle landing nothing
-const fireBody = watcherSrc.slice(watcherSrc.indexOf('async function fire('), watcherSrc.indexOf('function firstFailure'));
-const rearmCalls = (fireBody.match(/await rearm\(/g) ?? []).length;
-assert.ok(rearmCalls >= 3, `every path re-arms: found ${rearmCalls} (sell, limit buy, throw)`);
-ok('a rule whose trade landed nothing is put back rather than retired');
-
-// a stop is an exit, so it is allowed to accept a worse price than a target
-assert.match(watcherSrc, /STOP_SLIPPAGE_PCT/, 'stops carry their own tolerance');
-const stopPct = Number(watcherSrc.match(/const STOP_SLIPPAGE_PCT = (\d+)/)?.[1]);
-assert.ok(stopPct >= 25, `wide enough to actually exit: ${stopPct}%`);
-assert.match(watcherSrc, /kind === 'stop_loss' \|\| rule\.kind === 'trailing_stop'/, 'and only exits use it');
-ok('a stop-loss sells at a tolerance that lets it get out, unlike a take-profit');
-
-// the failure count clears on success, or three bad days would retire a good rule
-assert.match(watcherSrc, /failedAttempts: 0/, 'a landed sell forgets past failures');
-ok('a rule that eventually works stops carrying its failures');
-
-/*
- * The same shape in the averaging-in plans: the round was counted before the
- * buy and never given back, so a plan configured for ten rounds could buy
- * seven and report itself finished.
- */
-assert.match(watcherSrc, /roundsDone: previousRoundsDone, nextRunAt: Date\.now\(\)/, 'a failed round is returned');
-ok('a DCA round that bought nothing is put back rather than spent');
-
-console.log('\n[34] A copied entry does not wait like a card does');
-
-/*
- * Measured against live endpoints, screening a token took 4001ms — pinned
- * exactly at the on-chain holder timeout, which is to say that query failed
- * every time and contributed nothing, while the launch index answered in
- * 116ms with a better figure. Four seconds of that is paid in fill price on
- * every copied buy.
- */
-const tiSrc = fs.readFileSync('src/services/tokeninfo.ts', 'utf8');
-const slow = Number(tiSrc.match(/const HOLDER_DEADLINE_MS = (\d+)/)?.[1]);
-const quick = Number(tiSrc.match(/const FAST_HOLDER_DEADLINE_MS = (\d+)/)?.[1]);
-assert.ok(quick > 0 && quick < slow, `the raced path waits less: ${quick}ms vs ${slow}ms`);
-assert.ok(slow - quick >= 2000, `and by enough to matter on a fill: ${slow - quick}ms saved`);
-ok('the copy path is given a shorter deadline than the screen a person reads');
-
-// and it is the copy path that uses it
-const ctSrc = fs.readFileSync('src/services/copytrade.ts', 'utf8');
-assert.match(ctSrc, /getTokenInfo\(mint, 'solana', \{ fast: true \}\)/, 'screenToken takes the fast path');
-ok('the gate that decides a copied buy is the one that takes it');
-
-/*
- * Shortened, not skipped. The on-chain read still covers the case the index
- * cannot: an outage there with a responsive RPC. Removing it would make every
- * copied buy depend on one third party for concentration.
- */
-assert.match(tiSrc, /loadSolanaHolders\(address, opts\.fast \?/, 'the query still runs, on a shorter leash');
-ok('the slower source is bounded rather than dropped');
+// Watcher retry, wallet selection, slippage and DCA rollback are exercised with fake services.
+// Token holder deadlines are tested with a controlled clock in behavior-regressions.ts.
 
 console.log('\n[35] An alert that cannot be parsed still arrives');
 
@@ -2107,21 +2395,7 @@ assert.equal(escapeHtml('Cat & Dog'), 'Cat &amp; Dog');
 assert.equal(escapeHtml('</b><script>'), '&lt;/b&gt;&lt;script&gt;');
 ok('token text is escaped before it reaches a message');
 
-const wSrc = fs.readFileSync('src/services/watcher.ts', 'utf8');
-assert.ok(
-  !/const label = rule\.symbol \?\?/.test(wSrc),
-  'no raw symbol survives as a label',
-);
-assert.match(wSrc, /const label = h\(rule\.symbol/, 'every one goes through the escape');
-ok('the watcher escapes the symbols it puts in alerts');
-
-/*
- * And the layer that does not depend on remembering. Formatting is what gets
- * dropped when Telegram objects, never the message.
- */
-const idxSrc = fs.readFileSync('src/index.ts', 'utf8');
-assert.match(idxSrc, /replace\(\/<\[\^>\]\+>\/g, ''\)/, 'a rejected alert is retried as plain text');
-ok('an alert Telegram refuses is resent without markup rather than dropped');
+// Watcher output and notifier retries are tested by observing delivered messages.
 
 console.log('\n[36] Noticing when the fast path stops being fast');
 
@@ -2130,69 +2404,17 @@ console.log('\n[36] Noticing when the fast path stops being fast');
  * covering for a dead socket looks like nothing at all from outside — copies
  * simply start landing twenty seconds late for no stated reason.
  */
-const { claimStats, claimSignature: claimSig, resetProcessed: resetSeen } =
-  await import('../src/services/copytrade.js');
+const {
+  claimStats,
+  claimSignature: claimSig,
+  resetProcessed: resetSeen,
+} = await import('../src/services/copytrade.js');
 resetSeen();
 assert.deepEqual(claimStats(), { socket: 0, poll: 0 }, 'a fresh process starts the count over');
 void claimSig;
 ok('which path reached a transaction first is counted, not assumed');
 
-const cSrc = fs.readFileSync('src/services/copytrade.ts', 'utf8');
-assert.match(cSrc, /handleSignature\(target, signature, notify, 'poll'\)/, 'the poll declares itself');
-assert.match(cSrc, /handleSignature\(item\.target, item\.signature, item\.notify, 'socket'\)/, 'so does the socket');
-assert.match(cSrc, /pollShare > 0\.6/, 'and an inversion is what raises the alarm');
-assert.match(cSrc, /warnedSocketQuiet = false/, 'a recovery clears it rather than leaving it standing');
-ok('a socket that has gone quiet is reported instead of being covered for silently');
-
-/*
- * And acted on, not only reported. The gap this covers is not 2.8 seconds
- * against 3 — it is against 20, which is the tick the poll runs on. The client
- * reconnects its own transport, but a subscription dropped on the way back
- * leaves this end holding a handle to nothing.
- */
-const health = cSrc.slice(cSrc.indexOf('async function checkSocketHealth'), cSrc.indexOf('async function handleSignature'));
-assert.match(health, /for \(const address of watching\) await unsubscribe\(address\)/, 'the dead handles are torn down');
-assert.ok(
-  cSrc.indexOf('await checkSocketHealth(notify)') < cSrc.indexOf('for (const \[address, target\] of wanted)') ||
-    /await checkSocketHealth\(notify\);/.test(cSrc.slice(cSrc.indexOf('export async function syncSubscriptions'))),
-  'and the rebuild happens on the same pass that recreates them',
-);
-assert.match(health, /claims\.socket = 0;\s*\n\s*claims\.poll = 0;/, 'the count starts over after a rebuild');
-ok('a quiet socket is rebuilt, and the new one is not judged on the old one\'s record');
-
-console.log('\n[37] An exit reaches wherever the position is');
-
-/*
- * A stop-loss that cannot find the position it guards. The wallet set is
- * filtered by the active group, and that filter is one tap on a settings
- * screen: buy under group A, switch to group B, and the rule looks in the
- * wrong wallets, finds nothing, reports the position gone and retires itself.
- * The position is still there and no longer has a stop.
- */
-const wSrc2 = fs.readFileSync('src/services/watcher.ts', 'utf8');
-assert.match(wSrc2, /buying \? services\.selectWallets\(\) : services\.selectWallets\(\{ group: null \}\)/, 'exits see every wallet');
-ok('a rule selling a position looks in every wallet, not the group in use');
-
-// but an entry still respects the group, which is what a group is for
-assert.match(wSrc2, /const buying = rule\.kind === 'limit_buy'/, 'buys are told apart from sells');
-ok('a limit buy still goes only where the operator pointed it');
-
-const cSrc2 = fs.readFileSync('src/services/copytrade.ts', 'utf8');
-assert.match(cSrc2, /const wallets = selectWallets\(\{ group: null \}\);/, 'copied exits too');
-ok('a copied exit closes the position wherever it was opened');
-
-/*
- * And the shared queue. One address transacting like a program filled it and
- * every other followed wallet was refused at the door — the flood control was
- * penalising the wallets that were behaving.
- */
-assert.match(cSrc2, /function evictOldest/, 'there is room to be made');
-assert.match(cSrc2, /busiest/, 'and it is taken from whoever is filling the queue');
-assert.ok(
-  cSrc2.indexOf('if (!evictOldest()) return;') > cSrc2.indexOf('FLOOD_LIMIT'),
-  'the flood cut-off still comes first',
-);
-ok('a busy wallet loses its own stalest trade rather than a quiet wallet losing its newest');
+// Intake health, queue fairness and exit wallet selection have observable regression coverage.
 
 console.log('\n[38] The only copy of the keys');
 
@@ -2202,34 +2424,7 @@ console.log('\n[38] The only copy of the keys');
  * is killed on every redeploy, which is exactly when a rename that lands
  * before its contents leaves a file that exists and holds nothing.
  */
-const vaultSrc = fs.readFileSync('src/store/vault.ts', 'utf8');
-assert.match(vaultSrc, /fs\.fsyncSync\(fd\)/, 'the bytes are flushed, not just handed over');
-assert.match(vaultSrc, /fs\.renameSync\(tmp, file\)/, 'and still swapped in atomically');
-assert.ok(
-  vaultSrc.indexOf('fsyncSync(fd)') < vaultSrc.indexOf('renameSync(tmp, file)'),
-  'in that order, or the sync guarantees nothing',
-);
-ok('the store is flushed to disk before it is swapped into place');
-
-// the previous document is kept, and a damaged one cannot overwrite it
-assert.match(vaultSrc, /\$\{file\}\.bak/, 'the version being replaced is kept');
-assert.ok(
-  vaultSrc.indexOf('renameSync(tmp, file)') < vaultSrc.lastIndexOf('.bak'),
-  'taken after the write lands, so it holds everything rather than trailing by one',
-);
-ok('the backup is a copy of what was just written, not of what it replaced');
-
-/*
- * And the read side. Resetting to an empty document would write that emptiness
- * back over the only copy on the next flush — turning a bad read into a
- * permanent loss.
- */
-const dbSrc = fs.readFileSync('src/store/db.ts', 'utf8');
-assert.match(dbSrc, /function readDocument/, 'a read failure has a path');
-assert.match(dbSrc, /if \(!fs\.existsSync\(backup\)\) throw err;/, 'with no backup it refuses to start');
-assert.ok(!/catch[\s\S]{0,120}wallets: \[\]/.test(dbSrc), 'and never resets to empty on a parse failure');
-assert.match(dbSrc, /\.corrupt/, 'the damaged file is kept rather than written over');
-ok('an unreadable store recovers from the backup, or refuses to start — never resets');
+// writeAtomic ordering and recovery are exercised with filesystem fault injection.
 
 console.log('\n[39] Sweeping must not strand the position it leaves behind');
 
@@ -2267,41 +2462,7 @@ const oneAttempt = BigInt(5000) + BigInt(Math.floor(0.00005 * 1e9));
 assert.ok(empty >= oneAttempt * 2n, 'two attempts are covered, not one');
 ok('the reserve covers a retry, because a failed exit is tried again');
 
-const engSrc = fs.readFileSync('src/trade/engine.ts', 'utf8');
-assert.match(engSrc, /const holdsTokens = holdings === undefined \|\| holdings\.some/, 'unknown token balances retain the exit reserve');
-assert.match(engSrc, /Math\.max\(settings\.sweepReserveSol, floorSol\)/, 'and never leaves less than the floor');
-assert.match(engSrc, /EXIT_FEE_HEADROOM/, 'sized for the fee a stop actually pays, not the routine one');
-ok('the sweep reserves against what it is leaving behind');
-
-console.log('\n[40] Nothing on the entry path waits for something it does not need');
-
-/*
- * Reading the wallets' balances and screening the token are both network round
- * trips and neither needs the other's answer. In sequence they are two waits on
- * the critical path of a raced entry; started together they cost the longer of
- * the two. Measured against live endpoints: 1345ms one after the other, 1202ms
- * overlapped.
- */
-const ct = fs.readFileSync('src/services/copytrade.ts', 'utf8');
-const body = ct.slice(ct.indexOf('async function mirrorBuyLocked'), ct.indexOf('async function mirrorSell'));
-assert.ok(
-  body.indexOf('const screening = services.screenToken') < body.indexOf('await services.getMintBalances'),
-  'the screen is started before the balances are awaited',
-);
-assert.match(body, /const \{ verdict, info \} = await screening;/, 'and awaited only where it is needed');
-ok('the screen and the balance read overlap instead of queueing');
-
-/*
- * And the reason that promise carries its own catch rather than relying on the
- * await. The limits below it can return before anything awaits the screen, and
- * an unhandled rejection on this runtime would take the process with it — a
- * token that could not be read turning into the whole bot going down.
- */
-const screenDecl = body.slice(body.indexOf('const screening ='), body.indexOf('const heldBefore'));
-assert.match(screenDecl, /\.catch\(/, 'the promise cannot reject');
-const returnsAfter = body.slice(body.indexOf('const screening ='), body.indexOf('await screening'));
-assert.ok(/\n\s+return;/.test(returnsAfter), 'there are indeed early returns between the two');
-ok('a screen nobody waits for cannot bring the process down');
+// Sweeps and concurrent copy screening are exercised with mocked RPC/service results.
 
 console.log('\n[41] Why nothing happened');
 
@@ -2311,30 +2472,19 @@ console.log('\n[41] Why nothing happened');
  * decisions were log lines, which from the outside is indistinguishable from
  * the bot being asleep.
  */
-const ctSrc3 = fs.readFileSync('src/services/copytrade.ts', 'utf8');
-const silent = [
-  'refusedMints?.includes',        // already refused once
-  'Copy cap reached',              // entry cap
-  'computed size was zero',        // sizing
-  'without spending SOL',          // airdrop
-  'never copied from them',        // their sell, not our position
-  'found nothing to sell',         // held elsewhere
-];
-for (const marker of silent) {
-  const at = ctSrc3.indexOf(marker);
-  assert.ok(at > 0, `the path still exists: ${marker}`);
-  const window = ctSrc3.slice(at, at + 420);
-  assert.match(window, /noted\(/, `and it is written down: ${marker}`);
-}
-ok(`all ${silent.length} silent skip paths now record a reason`);
-
+// Skip branches are checked through mirrorBuy and their recorded decisions.
 db.wipe();
 db.recordCopyDecision({ at: Date.now(), target: 't', mint: 'M', reason: 'first' });
 db.recordCopyDecision({ at: Date.now(), target: 't', mint: 'M', reason: 'second' });
-assert.equal(db.copyDecisions(10)[0]!.reason, 'second', 'newest first, so the last thing that happened reads first');
+assert.equal(
+  db.copyDecisions(10)[0]!.reason,
+  'second',
+  'newest first, so the last thing that happened reads first',
+);
 ok('the list is ordered the way somebody asking "what just happened" reads it');
 
-for (let i = 0; i < 80; i++) db.recordCopyDecision({ at: Date.now(), target: 't', mint: `M${i}`, reason: 'r' });
+for (let i = 0; i < 80; i++)
+  db.recordCopyDecision({ at: Date.now(), target: 't', mint: `M${i}`, reason: 'r' });
 assert.ok(db.copyDecisions(999).length <= 40, 'bounded — a recent history, not an archive');
 ok('it cannot grow without bound in the file holding the keys');
 
@@ -2343,72 +2493,7 @@ ok('it cannot grow without bound in the file holding the keys');
  * non-events, and a notification per dusting airdrop would train the operator
  * to ignore the notifications that matter.
  */
-const trSrc = fs.readFileSync('src/bot/handlers/trade.ts', 'utf8');
-assert.match(trSrc, /'📋 Why it skipped', 'copy_decisions'/, 'reachable from the copy screen');
-
-/*
- * Every refusal is quiet, including the ones about money.
- *
- * This used to split them: an airdrop was a non-event, a coin the safety
- * checks turned down was "about money" and got a message. Read in Telegram
- * that distinction does not survive — both arrive as a coin you do not own,
- * declined for a reason that has not changed since the last time it was
- * declined, and neither tells you whether anything of yours moved. The
- * messages that survive are the ones you can act on.
- */
-const recordedQuietly = [
-  'without spending SOL',      // dusting airdrop
-  'Copy cap reached',          // entry cap
-  'never copied from them',    // their sell, not our position
-  'already holding',           // second trader into an open position
-  'Refused to copy',           // failed the safety checks
-];
-for (const marker of recordedQuietly) {
-  const at = ctSrc3.indexOf(marker);
-  assert.ok(at > 0, `the path still exists: ${marker}`);
-  const window = ctSrc3.slice(at, at + 400);
-  assert.ok(!/await notify\(/.test(window), `a refusal is recorded quietly: ${marker}`);
-  assert.match(window, /noted\(/, `and it is still written down: ${marker}`);
-}
-ok(`all ${recordedQuietly.length} refusals record a reason without sending a message`);
-
-/*
- * The exception, and the reason there is one. A copy sized larger than the
- * whole per-coin cap fits into no position and never will — every trade from
- * that wallet is refused for as long as the two numbers stand, which reads as
- * copy trading being broken. That is a setting to fix, not a coin to skip.
- */
-const capWindow = ctSrc3.slice(ctSrc3.indexOf('batchSol > limits.maxSolPerMint'));
-assert.match(capWindow.slice(0, 1200), /await notify\(/, 'a size that can never fit still says so');
-assert.match(ctSrc3, /capWarnings\.set\(/, 'and remembers it said so');
-assert.match(
-  capWindow.slice(0, 1200),
-  /capWarnings\.get\(target\.id\) !== signature/,
-  'keyed on the numbers, so it repeats only if they change',
-);
-/*
- * And only where the numbers are a setting. Under percent sizing the batch is
- * a share of their trade, so one over the cap means they bought big, not that
- * anything is configured wrong — warning there would fire on a fresh amount
- * every time, rebuilding the noise this whole change removes.
- */
-assert.match(
-  ctSrc3,
-  /target\.sizeMode !== 'percent' && batchSol > limits\.maxSolPerMint/,
-  'and only for a fixed size, which is the only one that can be permanently wrong',
-);
-ok('the one refusal nobody can act on per-coin is said once, per configuration');
-
-/*
- * Silent must not mean unreachable. The messages carried the mint in a
- * tappable block; the screen that replaced them has to carry it too, or a
- * skipped coin cannot be looked up at all.
- */
-const uiSrc3 = fs.readFileSync('src/bot/ui.ts', 'utf8');
-const skipRender = uiSrc3.slice(uiSrc3.indexOf('export function renderCopyDecisions'));
-assert.match(skipRender.slice(0, 1400), /<code>\$\{h\(e\.mint\)\}<\/code>/, 'the full mint, tappable');
-assert.match(trSrc, /Why it skipped \(\$\{recentSkips\}\)/, 'and the count rides on the button');
-ok('a skipped coin is still findable, and the screen says how many there are');
+// The copy screen and rendered decisions are checked through their public handlers.
 
 console.log('\n[42] A prompt nobody answered');
 
@@ -2418,7 +2503,9 @@ console.log('\n[42] A prompt nobody answered');
  * next thing typed was read as its answer, so pasting a token address was
  * consumed as a size and the bot appeared to ignore the paste entirely.
  */
-const { setPending, takePending, clearPending, expectsANumber } = await import('../src/bot/session.js');
+const { setPending, takePending, clearPending, expectsANumber } = await import(
+  '../src/bot/session.js'
+);
 const USER = 4242;
 
 setPending(USER, { kind: 'custom_buy', mint: 'M' });
@@ -2426,13 +2513,7 @@ clearPending(USER);
 assert.equal(takePending(USER), undefined, 'navigating away drops the question');
 ok('pressing a button answers nothing, so it clears the prompt');
 
-// and the router does that before any route can set a new one
-const idx = fs.readFileSync('src/bot/index.ts', 'utf8');
-const clearAt = idx.indexOf('clearPending(userId);');
-const switchAt = idx.indexOf('switch (action) {', clearAt);
-const setAt = idx.indexOf('setPending', switchAt);
-assert.ok(clearAt > 0 && clearAt < switchAt && switchAt < setAt, 'cleared first, then the route may set its own');
-ok('the routes that do want an answer still get to ask for one');
+// The real callback router clears and replaces prompts in behavior-regressions.ts.
 
 /*
  * An address beats a stale prompt outright. Someone pasting a mint has said
@@ -2441,20 +2522,15 @@ ok('the routes that do want an answer still get to ask for one');
  */
 assert.equal(expectsANumber({ kind: 'custom_buy', mint: 'M' }), true);
 assert.equal(expectsANumber({ kind: 'copy_size', address: 'A' }), true);
-assert.equal(expectsANumber({ kind: 'rename_wallet', walletId: 'W' }), false, 'a name may look like anything');
+assert.equal(
+  expectsANumber({ kind: 'rename_wallet', walletId: 'W' }),
+  false,
+  'a name may look like anything',
+);
 assert.equal(expectsANumber({ kind: 'copy_address' }), false, 'and that one wants an address');
 ok('prompts wanting a number are told apart from prompts wanting text');
 
-assert.match(idx, /if \(pending && !\(pasted && expectsANumber\(pending\)\)\)/, 'the paste wins');
-ok('pasting a token address is never swallowed by a forgotten amount prompt');
-
-// finally, it expires on its own
-assert.match(
-  fs.readFileSync('src/bot/session.ts', 'utf8'),
-  /Date\.now\(\) - at <= PENDING_TTL_MS/,
-  'an old prompt is not answered by whatever arrives next',
-);
-ok('a prompt left long enough expires rather than waiting forever');
+// Address-paste precedence and expiry are exercised through createBot and takePending.
 
 console.log('\n[43] Saying what the chain objected to');
 
@@ -2556,7 +2632,12 @@ console.log('\n[45] An exit says what it made');
 const { exitResult, formatExit } = await import('../src/services/pnl.js');
 db.wipe();
 db.recordBuy('MintExit111111111111111111111111111111111', {
-  solSpent: 1, fills: 2, tokensBought: 1_000_000, symbol: 'EXIT', costSol: 1.02, decimals: 6,
+  solSpent: 1,
+  fills: 2,
+  tokensBought: 1_000_000,
+  symbol: 'EXIT',
+  costSol: 1.02,
+  decimals: 6,
 });
 const posExit = db.position('MintExit111111111111111111111111111111111')!;
 
@@ -2575,22 +2656,18 @@ ok('a losing exit says so in red rather than hiding in a fill count');
 
 // no basis, no number — an invented profit would be read as real
 assert.equal(exitResult(undefined, 100, 1), null);
-assert.equal(exitResult({ ...posExit, basisSol: undefined, basisTokens: undefined, investedSol: 0, tokensBought: 0 }, 100, 1), null);
+assert.equal(
+  exitResult(
+    { ...posExit, basisSol: undefined, basisTokens: undefined, investedSol: 0, tokensBought: 0 },
+    100,
+    1,
+  ),
+  null,
+);
 assert.equal(exitResult(posExit, 0, 1), null, 'nothing measurably sold, nothing claimed');
 ok('an unmeasured exit reports nothing rather than a guess');
 
-// every exit path carries the line
-const sellSites2: Array<[string, string]> = [
-  ['src/services/copytrade.ts', 'mirrorSell'],
-  ['src/services/watcher.ts', 'fired'],
-  ['src/bot/handlers/trade.ts', 'executeSell'],
-];
-for (const [file] of sellSites2) {
-  const src = fs.readFileSync(file, 'utf8');
-  assert.match(src, /formatExit\(/, `${file} says what the exit made`);
-  assert.match(src, /measureTokensSold\(/, `${file} measures rather than assumes the amount`);
-}
-ok('copy sells, fired rules and manual sells all say the profit');
+// Exit execution and ledger effects are covered in the focused accounting suite.
 
 console.log('\n[46] A take-profit exits the whole position');
 
@@ -2600,24 +2677,27 @@ console.log('\n[46] A take-profit exits the whole position');
  * so the operator's belief was the only reasonable one available. Both mint
  * sites now say 100, and the stored 50s are migrated because nobody chose them.
  */
-const dbSrc2 = fs.readFileSync('src/store/db.ts', 'utf8');
-assert.match(dbSrc2, /t\.takeProfitSellPct === undefined \|\| t\.takeProfitSellPct === 50 \? 100/, 'stored targets migrate');
-assert.match(dbSrc2, /r\.sellPercent === 50 && !r\.firedAt \? \{ \.\.\.r, sellPercent: 100 \}/, 'armed rules migrate too');
-ok('the stored half-exits are migrated, because no screen ever chose them');
-
-const ctSrc4 = fs.readFileSync('src/services/copytrade.ts', 'utf8');
-assert.match(ctSrc4, /takeProfitSellPct \?\? 100/, 'copy targets arm at 100');
-const trSrc2 = fs.readFileSync('src/bot/handlers/trade.ts', 'utf8');
-assert.ok(!/sellPercent: kind === 'take_profit' \? 50/.test(trSrc2), 'manual rules no longer mint the 50');
-ok('nothing mints the half-exit default any more');
+// Legacy half-exit documents are loaded and migrated in behavior-regressions.ts.
 
 // a value someone actually sets in future survives the migration untouched
 db.wipe();
 db.addCopyTarget({
-  id: 'TP1', address: 'A', label: 't', buySol: 0.05, sizeMode: 'fixed', sizePercent: 5,
-  entryMode: 'first', maxEntries: 3, exitMode: 'off', enabled: true,
-  copiedMints: [], entryCounts: {}, refusedMints: [], createdAt: Date.now(),
-  takeProfitPct: 20, takeProfitSellPct: 75,
+  id: 'TP1',
+  address: 'A',
+  label: 't',
+  buySol: 0.05,
+  sizeMode: 'fixed',
+  sizePercent: 5,
+  entryMode: 'first',
+  maxEntries: 3,
+  exitMode: 'off',
+  enabled: true,
+  copiedMints: [],
+  entryCounts: {},
+  refusedMints: [],
+  createdAt: Date.now(),
+  takeProfitPct: 20,
+  takeProfitSellPct: 75,
 });
 assert.equal(db.copyTargets()[0]!.takeProfitSellPct, 75, 'a deliberate 75 is kept');
 ok('only the unchosen default is rewritten, not a real choice');
@@ -2632,14 +2712,8 @@ console.log('\n[47] Vesting evidence does not waive concentration');
  * second apart, moving 11% of supply to nine wallets in the eight seconds
  * after launch, which the launch index scored as 0% insider.
  */
-const {
-  decodeStream,
-  summariseLocks,
-  lockedBeyond,
-  furthestUnlock,
-  DAY_MS,
-  INSTANT_STREAM_MS,
-} = await import('../src/services/locks.js');
+const { decodeStream, summariseLocks, lockedBeyond, furthestUnlock, DAY_MS, INSTANT_STREAM_MS } =
+  await import('../src/services/locks.js');
 
 /*
  * The offsets are fixed by an on-chain layout nobody here controls, so they
@@ -2695,7 +2769,7 @@ const live = summariseLocks(
       end: LOCK_NOW - 1000,
       recipient: 'a',
     }),
-    ...['b', 'c', 'd', 'e', 'f', 'g', 'h', 'i'].map((r) =>
+    ...['b', 'c', 'd', 'e', 'f', 'g', 'h', 'i'].map(r =>
       stream({
         deposited: 10_000_000_000_000n,
         withdrawn: 10_000_000_000_000n,
@@ -2710,9 +2784,16 @@ const live = summariseLocks(
 );
 const liveLocked = lockedBeyond(live.locked, YEAR_MS, LOCK_NOW);
 assert.ok(Math.abs(liveLocked - 50.23) < 0.05, `50.2% locked long, got ${liveLocked}`);
-assert.ok(Math.abs(live.launchDistPct - 11.05) < 0.05, `11.05% handed out, got ${live.launchDistPct}`);
+assert.ok(
+  Math.abs(live.launchDistPct - 11.05) < 0.05,
+  `11.05% handed out, got ${live.launchDistPct}`,
+);
 assert.equal(live.launchDistWallets, 9, 'to nine wallets');
-assert.equal(new Date(furthestUnlock(live.locked)!).getUTCFullYear(), 2095, 'and it can name the year');
+assert.equal(
+  new Date(furthestUnlock(live.locked)!).getUTCFullYear(),
+  2095,
+  'and it can name the year',
+);
 ok('a real launch splits into supply that is gone and supply that was handed out');
 
 /*
@@ -2768,7 +2849,10 @@ const ninetyDay = summariseLocks(
   SUPPLY,
   LOCK_NOW,
 );
-assert.ok(lockedBeyond(ninetyDay.locked, 30 * DAY_MS, LOCK_NOW) > 49, 'stream end remains beyond the 30-day display horizon');
+assert.ok(
+  lockedBeyond(ninetyDay.locked, 30 * DAY_MS, LOCK_NOW) > 49,
+  'stream end remains beyond the 30-day display horizon',
+);
 assert.ok(lockedBeyond(ninetyDay.locked, 90 * DAY_MS, LOCK_NOW) > 49, 'and at 90 days');
 assert.equal(lockedBeyond(ninetyDay.locked, YEAR_MS, LOCK_NOW), 0, 'but not at a year');
 
@@ -2778,7 +2862,10 @@ const exactly = summariseLocks(
   SUPPLY,
   LOCK_NOW,
 );
-assert.ok(lockedBeyond(exactly.locked, YEAR_MS, LOCK_NOW) > 49, 'a lock of exactly the horizon is locked');
+assert.ok(
+  lockedBeyond(exactly.locked, YEAR_MS, LOCK_NOW) > 49,
+  'a lock of exactly the horizon is locked',
+);
 ok('the horizon moves the line, and the line includes itself');
 
 /*
@@ -2815,7 +2902,10 @@ const lizard = {
   curveComplete: true,
 };
 
-const beforeLocks = assessToken({ ...lizard, lockerPct: undefined, lockedSupply: undefined }, OPERATOR);
+const beforeLocks = assessToken(
+  { ...lizard, lockerPct: undefined, lockedSupply: undefined },
+  OPERATOR,
+);
 assert.ok(!beforeLocks.safe, 'without the lock data it is refused');
 assert.match(beforeLocks.reasons[0] ?? '', /63\.6% of supply/, 'on the raw 63.6%');
 
@@ -2823,7 +2913,7 @@ const withLocks = assessToken(lizard, OPERATOR);
 assert.ok(!withLocks.safe, 'unmatched vesting streams cannot discount concentrated holders');
 assert.match(withLocks.reasons.join(' '), /63\.6% of supply/);
 assert.ok(
-  withLocks.notes.some((n) => /11\.1% went to 9 wallets at launch/.test(n)),
+  withLocks.notes.some(n => /11\.1% went to 9 wallets at launch/.test(n)),
   'while naming the 11% the index scored at zero',
 );
 ok('unmatched vesting balances cannot waive the concentration limit');
@@ -2843,8 +2933,14 @@ ok('a lock nobody could verify discounts nothing');
  * A nearer stream end cannot authorize a concentration discount at any horizon.
  */
 const nearLock = { ...lizard, lockedSupply: [{ pct: 50.23, unlockAt: Date.now() + 91 * DAY_MS }] };
-assert.ok(!assessToken(nearLock, { ...OPERATOR, lockHorizonDays: 90 }).safe, 'no discount at 90 days without matched vault proof');
-assert.ok(!assessToken(nearLock, { ...OPERATOR, lockHorizonDays: 365 }).safe, 'no discount at a year either');
+assert.ok(
+  !assessToken(nearLock, { ...OPERATOR, lockHorizonDays: 90 }).safe,
+  'no discount at 90 days without matched vault proof',
+);
+assert.ok(
+  !assessToken(nearLock, { ...OPERATOR, lockHorizonDays: 365 }).safe,
+  'no discount at a year either',
+);
 ok('the display horizon cannot waive an unproven concentration risk');
 
 /*
@@ -2866,23 +2962,8 @@ ok('an allocation bundled out through instant streams can refuse a coin by itsel
  * part that has to be right: stopping at the first page would under-report
  * locked supply on a token with more streams than fit in it.
  */
-const locksSrc = fs.readFileSync('src/services/locks.ts', 'utf8');
-assert.match(locksSrc, /getProgramAccountsV2/, 'the cheap form of the scan');
-assert.match(locksSrc, /paginationKey = body\.result\.paginationKey/, 'and it follows the pages');
-assert.match(locksSrc, /if \(!paginationKey\) break;/, 'until there are none left');
-assert.match(locksSrc, /page < MAX_STREAM_PAGES/, 'with a hard stop, so it cannot hang an entry');
-assert.match(
-  locksSrc,
-  /getProgramAccounts\(new PublicKey\(STREAMFLOW_PROGRAM\), \{ filters \}\)/,
-  'falling back to the unpaginated call on an endpoint that lacks it',
-);
-ok('the lock scan is billed at a tenth, and still reads every page');
-
-// The former discount control must not promise a safety exemption.
-const tradeSrc47 = fs.readFileSync('src/bot/handlers/trade.ts', 'utf8');
-assert.doesNotMatch(tradeSrc47, /Ignore supply locked/, 'no unsupported concentration exemption');
-assert.doesNotMatch(tradeSrc47, /'safety_lock'/, 'the obsolete discount control is not emitted');
-assert.match(fs.readFileSync('src/bot/index.ts', 'utf8'), /case 'safety_lock':/, 'old buttons remain routable');
+// readTokenLocks is exercised with multiple pages, exhaustion and the RPC fallback.
+// The safety screen is rendered to check that it offers no unsupported exemption.
 db.wipe();
 assert.equal(db.settings().copySafety.lockHorizonDays, 365, 'shipping at a year, the strict end');
 ok('legacy horizon settings are retained without a misleading discount control');

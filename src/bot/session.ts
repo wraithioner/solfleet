@@ -65,7 +65,7 @@ const sessions = new Map<number, SessionState>();
 function confirmationState(): string {
   return JSON.stringify({
     settings: db.settings(),
-    wallets: db.raw().wallets.map((w) => ({
+    wallets: db.raw().wallets.map(w => ({
       id: w.id,
       address: w.address,
       isMain: w.isMain,
@@ -165,7 +165,11 @@ export function stageConfirmation(
   }
 
   s.confirmations.set(id, {
-    label, createdAt: Date.now(), epoch: executionEpoch(), accountState: confirmationState(), run,
+    label,
+    createdAt: Date.now(),
+    epoch: executionEpoch(),
+    accountState: confirmationState(),
+    run,
   });
   return id;
 }
@@ -176,7 +180,13 @@ export function takeConfirmation(userId: number, id: string): ConfirmAction | un
   if (action) s.confirmations.delete(id);
   // Check at the moment of use as well as when staging another action: the
   // operator may return to an old button without creating a newer prompt.
-  if (!action || action.epoch !== executionEpoch() || action.accountState !== confirmationState() || Date.now() - action.createdAt > CONFIRMATION_TTL_MS) return undefined;
+  if (
+    !action ||
+    action.epoch !== executionEpoch() ||
+    action.accountState !== confirmationState() ||
+    Date.now() - action.createdAt > CONFIRMATION_TTL_MS
+  )
+    return undefined;
   return action;
 }
 

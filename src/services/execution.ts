@@ -30,7 +30,7 @@ export function assertExecutionEpoch(expected: number): void {
 /** Check immediately before submitting, including after an asynchronous build. */
 export function assertExecutionCurrent(): void {
   const current = context.getStore();
-  if (current && (!current.owner.active || current.guards.some((guard) => !guard()))) {
+  if (current && (!current.owner.active || current.guards.some(guard => !guard()))) {
     throw new ExecutionCancelledError();
   }
   assertExecutionEpoch(current?.epoch ?? epoch);
@@ -38,7 +38,10 @@ export function assertExecutionCurrent(): void {
 
 function enqueue<T>(fn: () => Promise<T>): Promise<T> {
   const run = tail.then(fn);
-  tail = run.then(() => undefined, () => undefined);
+  tail = run.then(
+    () => undefined,
+    () => undefined,
+  );
   return run;
 }
 
@@ -50,7 +53,10 @@ function enqueue<T>(fn: () => Promise<T>): Promise<T> {
  * A batch still runs its wallets concurrently. Nested engine calls reuse the
  * caller's operation, so callers can protect bookkeeping without taking two locks.
  */
-export async function withExecution<T>(fn: () => Promise<T>, authorize?: () => boolean): Promise<T> {
+export async function withExecution<T>(
+  fn: () => Promise<T>,
+  authorize?: () => boolean,
+): Promise<T> {
   const current = context.getStore();
   if (current) {
     assertExecutionCurrent();
@@ -66,15 +72,18 @@ export async function withExecution<T>(fn: () => Promise<T>, authorize?: () => b
   return enqueue(async () => {
     assertExecutionEpoch(expected);
     const owner = { active: true };
-    return context.run({ epoch: expected, owner, guards: authorize ? [authorize] : [] }, async () => {
-      try {
-        assertExecutionCurrent();
-        return await fn();
-      } finally {
-        // Detached callbacks cannot retain the completed operation's lock.
-        owner.active = false;
-      }
-    });
+    return context.run(
+      { epoch: expected, owner, guards: authorize ? [authorize] : [] },
+      async () => {
+        try {
+          assertExecutionCurrent();
+          return await fn();
+        } finally {
+          // Detached callbacks cannot retain the completed operation's lock.
+          owner.active = false;
+        }
+      },
+    );
   });
 }
 

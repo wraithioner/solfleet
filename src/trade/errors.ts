@@ -2,7 +2,10 @@ import { errMessage } from '../util.js';
 
 /** A definite rejection: this attempt cannot later execute successfully. */
 export class TransactionRejectedError extends Error {
-  constructor(message: string, readonly signature?: string) {
+  constructor(
+    message: string,
+    readonly signature?: string,
+  ) {
     super(message);
     this.name = 'TransactionRejectedError';
   }
@@ -10,7 +13,10 @@ export class TransactionRejectedError extends Error {
 
 /** Submission may have succeeded. Never rebuild or retry the spend blindly. */
 export class TransactionSubmissionUnknownError extends Error {
-  constructor(readonly signature: string | undefined, cause: unknown) {
+  constructor(
+    readonly signature: string | undefined,
+    cause: unknown,
+  ) {
     super(
       `Could not confirm ${signature ? `transaction ${signature}` : 'transaction submission'}: ` +
         `${errMessage(cause)} Check the wallet before retrying.`,

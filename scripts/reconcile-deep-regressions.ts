@@ -5,7 +5,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import bs58 from 'bs58';
-import { PublicKey, type ConfirmedSignatureInfo, type ParsedTransactionWithMeta } from '@solana/web3.js';
+import {
+  PublicKey,
+  type ConfirmedSignatureInfo,
+  type ParsedTransactionWithMeta,
+} from '@solana/web3.js';
 import type { ReconcileServices } from '../src/services/reconcile.js';
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'solfleet-reconcile-deep-'));
@@ -36,40 +40,72 @@ const FEE = 5000;
 const NET = (100_000_000 - FEE) / 1e9;
 const swapIx = (program = PUMP, name = 'sell') => ({
   programId: new PublicKey(program),
-  accounts: [owner, input, output, mint, WSOL].map((s) => new PublicKey(s)),
+  accounts: [owner, input, output, mint, WSOL].map(s => new PublicKey(s)),
   // An Anchor discriminator plus two u64 swap arguments.
-  data: bs58.encode(Buffer.concat([
-    createHash('sha256').update(`global:${name}`).digest().subarray(0, 8), Buffer.alloc(16),
-  ])),
+  data: bs58.encode(
+    Buffer.concat([
+      createHash('sha256').update(`global:${name}`).digest().subarray(0, 8),
+      Buffer.alloc(16),
+    ]),
+  ),
 });
-const tokenIx = (type: string, info: object) => ({ program: 'spl-token', programId: new PublicKey(TOKEN), parsed: { type, info } });
-const inputTransfer = (amount = '100000000') => tokenIx('transferChecked', {
-  source: input, destination: poolInput, authority: owner, mint,
-  tokenAmount: { amount, decimals: 6, uiAmount: Number(amount) / 1e6 },
+const tokenIx = (type: string, info: object) => ({
+  program: 'spl-token',
+  programId: new PublicKey(TOKEN),
+  parsed: { type, info },
 });
-const balance = (accountIndex: number, tokenMint: string, tokenOwner: string, amount: string, decimals = 6) => ({
-  accountIndex, mint: tokenMint, owner: tokenOwner,
-  uiTokenAmount: { amount, decimals, uiAmount: Number(amount) / 10 ** decimals, uiAmountString: amount },
-});
-const sale = (): ParsedTransactionWithMeta => ({
-  blockTime: 10_000,
-  slot: 1,
-  transaction: { signatures: [], message: {
-    accountKeys: [owner, input, poolInput, output, poolOutput, outsider].map((s, i) => ({
-      pubkey: new PublicKey(s), signer: i === 0, writable: true, source: 'transaction',
-    })),
-    instructions: [swapIx()],
-    recentBlockhash: owner,
-  } },
-  meta: {
-    err: null, fee: FEE,
-    preTokenBalances: [balance(1, mint, owner, '100000000'), balance(2, mint, outsider, '0')],
-    postTokenBalances: [balance(1, mint, owner, '0'), balance(2, mint, outsider, '100000000')],
-    preBalances: [1e9, RENT, RENT, RENT, 1e9, 1e9],
-    postBalances: [1e9 + 100_000_000 - FEE, RENT, RENT, RENT, 1e9, 1e9],
-    innerInstructions: [{ index: 0, instructions: [inputTransfer()] }],
+const inputTransfer = (amount = '100000000') =>
+  tokenIx('transferChecked', {
+    source: input,
+    destination: poolInput,
+    authority: owner,
+    mint,
+    tokenAmount: { amount, decimals: 6, uiAmount: Number(amount) / 1e6 },
+  });
+const balance = (
+  accountIndex: number,
+  tokenMint: string,
+  tokenOwner: string,
+  amount: string,
+  decimals = 6,
+) => ({
+  accountIndex,
+  mint: tokenMint,
+  owner: tokenOwner,
+  uiTokenAmount: {
+    amount,
+    decimals,
+    uiAmount: Number(amount) / 10 ** decimals,
+    uiAmountString: amount,
   },
-} as unknown as ParsedTransactionWithMeta);
+});
+const sale = (): ParsedTransactionWithMeta =>
+  ({
+    blockTime: 10_000,
+    slot: 1,
+    transaction: {
+      signatures: [],
+      message: {
+        accountKeys: [owner, input, poolInput, output, poolOutput, outsider].map((s, i) => ({
+          pubkey: new PublicKey(s),
+          signer: i === 0,
+          writable: true,
+          source: 'transaction',
+        })),
+        instructions: [swapIx()],
+        recentBlockhash: owner,
+      },
+    },
+    meta: {
+      err: null,
+      fee: FEE,
+      preTokenBalances: [balance(1, mint, owner, '100000000'), balance(2, mint, outsider, '0')],
+      postTokenBalances: [balance(1, mint, owner, '0'), balance(2, mint, outsider, '100000000')],
+      preBalances: [1e9, RENT, RENT, RENT, 1e9, 1e9],
+      postBalances: [1e9 + 100_000_000 - FEE, RENT, RENT, RENT, 1e9, 1e9],
+      innerInstructions: [{ index: 0, instructions: [inputTransfer()] }],
+    },
+  }) as unknown as ParsedTransactionWithMeta;
 const wrappedSale = (program = JUPITER, oldWrapped = 0): ParsedTransactionWithMeta => {
   const tx = sale();
   tx.transaction.message.instructions = [
@@ -80,14 +116,24 @@ const wrappedSale = (program = JUPITER, oldWrapped = 0): ParsedTransactionWithMe
   tx.meta!.preBalances[3] = RENT + oldWrapped;
   tx.meta!.postBalances[3] = 0;
   tx.meta!.postBalances[0] = 1e9 + 100_000_000 + RENT + oldWrapped - FEE;
-  tx.meta!.innerInstructions![0]!.instructions.push(tokenIx('transferChecked', {
-    source: poolOutput, destination: output, authority: outsider, mint: WSOL,
-    tokenAmount: { amount: '100000000', decimals: 9, uiAmount: 0.1 },
-  }));
+  tx.meta!.innerInstructions![0]!.instructions.push(
+    tokenIx('transferChecked', {
+      source: poolOutput,
+      destination: output,
+      authority: outsider,
+      mint: WSOL,
+      tokenAmount: { amount: '100000000', decimals: 9, uiAmount: 0.1 },
+    }),
+  );
   return tx;
 };
 const signature = (name: string, blockTime: number | null = 10_000): ConfirmedSignatureInfo => ({
-  signature: name, slot: 1, err: null, memo: null, blockTime, confirmationStatus: 'confirmed',
+  signature: name,
+  slot: 1,
+  err: null,
+  memo: null,
+  blockTime,
+  confirmationStatus: 'confirmed',
 });
 const service = (
   pages: ConfirmedSignatureInfo[][],
@@ -98,16 +144,28 @@ const service = (
   return {
     rpc: () => ({
       getSignaturesForAddress: async () => pages[page++] ?? [],
-      getParsedTransactions: async (names) => names.map((name) => { parsedNames.push(name); return parse(name); }),
+      getParsedTransactions: async names =>
+        names.map(name => {
+          parsedNames.push(name);
+          return parse(name);
+        }),
     }),
-    paced: async (fn) => fn(),
+    paced: async fn => fn(),
   };
 };
-const scan = (tx: ParsedTransactionWithMeta) => proceedsByMint(owner, 9_000_000, undefined,
-  service([[signature('fixture')]], () => tx));
+const scan = (tx: ParsedTransactionWithMeta) =>
+  proceedsByMint(
+    owner,
+    9_000_000,
+    undefined,
+    service([[signature('fixture')]], () => tx),
+  );
 const closeTo = (a: number, b: number) => assert.ok(Math.abs(a - b) < 1e-9, `${a} != ${b}`);
 let passed = 0;
-const check = (name: string) => { passed++; console.log(`  ✓ ${name}`); };
+const check = (name: string) => {
+  passed++;
+  console.log(`  ✓ ${name}`);
+};
 const rejects = async (tx: ParsedTransactionWithMeta, name: string) => {
   const result = await scan(tx);
   assert.equal(result.complete, false, 'unattributable accounting cannot be complete');
@@ -124,11 +182,17 @@ try {
   }
   {
     const tx = sale();
-    tx.transaction.message.instructions = [inputTransfer(), {
-      programId: new PublicKey(SYSTEM),
-      program: 'system',
-      parsed: { type: 'transfer', info: { source: outsider, destination: owner, lamports: 100_000_000 } },
-    }];
+    tx.transaction.message.instructions = [
+      inputTransfer(),
+      {
+        programId: new PublicKey(SYSTEM),
+        program: 'system',
+        parsed: {
+          type: 'transfer',
+          info: { source: outsider, destination: owner, lamports: 100_000_000 },
+        },
+      },
+    ];
     tx.meta!.innerInstructions = [];
     await rejects(tx, 'token transfer plus unrelated SOL funding is not a sale');
   }
@@ -178,7 +242,9 @@ try {
     const result = await scan(wrappedSale(program));
     assert.equal(result.complete, true);
     closeTo(result.found.get(mint)!, NET);
-    check(`a supported ${program === JUPITER ? 'Jupiter' : 'PumpSwap'} sale excludes refunded WSOL rent`);
+    check(
+      `a supported ${program === JUPITER ? 'Jupiter' : 'PumpSwap'} sale excludes refunded WSOL rent`,
+    );
   }
   {
     const result = await scan(wrappedSale(JUPITER, 500_000_000));
@@ -188,10 +254,12 @@ try {
   }
   {
     const tx = wrappedSale();
-    tx.meta!.preTokenBalances = tx.meta!.preTokenBalances!.filter((b) => b.mint !== WSOL);
+    tx.meta!.preTokenBalances = tx.meta!.preTokenBalances!.filter(b => b.mint !== WSOL);
     tx.meta!.preBalances[3] = 0;
     tx.meta!.postBalances[0] = 1e9 + 100_000_000 - FEE;
-    tx.transaction.message.instructions.unshift(tokenIx('initializeAccount3', { account: output, mint: WSOL, owner }));
+    tx.transaction.message.instructions.unshift(
+      tokenIx('initializeAccount3', { account: output, mint: WSOL, owner }),
+    );
     tx.meta!.innerInstructions![0]!.index = 1;
     const result = await scan(tx);
     assert.equal(result.complete, true);
@@ -208,34 +276,50 @@ try {
     tx.transaction.message.instructions.push({
       programId: new PublicKey(SYSTEM),
       program: 'system',
-      parsed: { type: 'transfer', info: { source: outsider, destination: owner, lamports: 10_000 } },
+      parsed: {
+        type: 'transfer',
+        info: { source: outsider, destination: owner, lamports: 10_000 },
+      },
     });
     tx.meta!.postBalances[0]! += 10_000;
     await rejects(tx, 'even small independent native funding beside a valid swap is rejected');
   }
   {
     const tx = wrappedSale();
-    tx.transaction.message.instructions[1] = tokenIx('closeAccount', { account: output, destination: outsider, owner });
+    tx.transaction.message.instructions[1] = tokenIx('closeAccount', {
+      account: output,
+      destination: outsider,
+      owner,
+    });
     await rejects(tx, 'wrapped output must actually be redeemed to the proceeds wallet');
   }
   {
     const tx = sale();
-    tx.transaction.message.instructions.push(tokenIx('closeAccount', { account: input, destination: owner, owner }));
+    tx.transaction.message.instructions.push(
+      tokenIx('closeAccount', { account: input, destination: owner, owner }),
+    );
     tx.meta!.postBalances[1] = 0;
     tx.meta!.postBalances[0] = 1e9 + RENT - FEE;
     await rejects(tx, 'rent refunds alone cannot masquerade as sale return');
   }
   {
     const tx = sale();
-    tx.transaction.message.instructions = [{ programId: key(25), accounts: [key(10), key(11)], data: '1' }];
+    tx.transaction.message.instructions = [
+      { programId: key(25), accounts: [key(10), key(11)], data: '1' },
+    ];
     tx.meta!.innerInstructions![0]!.instructions.unshift(swapIx());
     await rejects(tx, 'an unfamiliar wrapper around a swap remains bounded and incomplete');
   }
   {
     const tx = sale();
-    tx.transaction.message.instructions = [{ programId: key(25), accounts: [key(10), key(11)], data: '1' }];
+    tx.transaction.message.instructions = [
+      { programId: key(25), accounts: [key(10), key(11)], data: '1' },
+    ];
     tx.meta!.postBalances[0] = 1e9 - FEE;
-    await rejects(tx, 'an unknown route returning a non-native asset cannot claim complete SOL accounting');
+    await rejects(
+      tx,
+      'an unknown route returning a non-native asset cannot claim complete SOL accounting',
+    );
   }
   {
     const tx = sale();
@@ -259,9 +343,12 @@ try {
   }
   {
     const parsedNames: string[] = [];
-    const result = await proceedsByMint(owner, 9_000_000, undefined, service([
-      [signature('recent'), signature('old', 8000)],
-    ], () => sale(), parsedNames));
+    const result = await proceedsByMint(
+      owner,
+      9_000_000,
+      undefined,
+      service([[signature('recent'), signature('old', 8000)]], () => sale(), parsedNames),
+    );
     assert.deepEqual(parsedNames, ['recent']);
     assert.equal(result.complete, true);
     assert.equal(result.scanned, 1);
@@ -280,8 +367,12 @@ try {
   {
     const tx = sale();
     tx.blockTime = null;
-    const result = await proceedsByMint(owner, 9_000_000, undefined,
-      service([[signature('unknown', null)]], () => tx));
+    const result = await proceedsByMint(
+      owner,
+      9_000_000,
+      undefined,
+      service([[signature('unknown', null)]], () => tx),
+    );
     assert.equal(result.complete, false);
     assert.equal(result.scanned, 0);
     assert.equal(result.found.size, 0);
@@ -290,15 +381,23 @@ try {
   {
     const tx = sale();
     tx.blockTime = 9000;
-    const result = await proceedsByMint(owner, 9_000_000, undefined,
-      service([[signature('exact', null)]], () => tx));
+    const result = await proceedsByMint(
+      owner,
+      9_000_000,
+      undefined,
+      service([[signature('exact', null)]], () => tx),
+    );
     assert.equal(result.complete, true);
     closeTo(result.found.get(mint)!, NET);
     check('a parsed timestamp at the exact history boundary is included');
   }
   {
-    const result = await proceedsByMint(owner, 9_000_000, undefined,
-      service([[signature('repeat'), signature('repeat')]], () => sale()));
+    const result = await proceedsByMint(
+      owner,
+      9_000_000,
+      undefined,
+      service([[signature('repeat'), signature('repeat')]], () => sale()),
+    );
     assert.equal(result.complete, false);
     assert.equal(result.scanned, 1);
     closeTo(result.found.get(mint)!, NET);
@@ -307,16 +406,30 @@ try {
   {
     const services = service([], () => sale());
     services.rpc = () => ({
-      getSignaturesForAddress: async () => { throw new Error('offline unavailable'); },
+      getSignaturesForAddress: async () => {
+        throw new Error('offline unavailable');
+      },
       getParsedTransactions: async () => [],
     });
-    await assert.rejects(proceedsByMint(owner, 9_000_000, undefined, services), /offline unavailable/);
+    await assert.rejects(
+      proceedsByMint(owner, 9_000_000, undefined, services),
+      /offline unavailable/,
+    );
     check('a first-page RPC failure remains an explicit failure');
   }
   const prepareLedger = () => {
     db.wipe();
-    db.addWallet({ id: 'offline-wallet', kind: 'solana', address: owner, label: 'Offline wallet',
-      secret: '', groups: [], isMain: false, disabled: false, createdAt: 1 });
+    db.addWallet({
+      id: 'offline-wallet',
+      kind: 'solana',
+      address: owner,
+      label: 'Offline wallet',
+      secret: '',
+      groups: [],
+      isMain: false,
+      disabled: false,
+      createdAt: 1,
+    });
     db.recordBuy(mint, { solSpent: 0.2, fills: 1, tokensBought: 100, decimals: 6 });
     const tx = sale();
     tx.blockTime = Math.floor(Date.now() / 1000);
@@ -346,7 +459,9 @@ try {
     services.rpc = () => ({
       getSignaturesForAddress: async () => [signature('history', tx.blockTime!)],
       getParsedTransactions: async () => {
-        await withExecution(async () => { db.recordSell(mint, 0.3, 1, 50); });
+        await withExecution(async () => {
+          db.recordSell(mint, 0.3, 1, 50);
+        });
         return [tx];
       },
     });
@@ -362,7 +477,9 @@ try {
     services.rpc = () => ({
       getSignaturesForAddress: async () => [signature('history', tx.blockTime!)],
       getParsedTransactions: async () => {
-        await withExecution(async () => { db.position(mint)!.firstBuyAt = startedAt + 1000; });
+        await withExecution(async () => {
+          db.position(mint)!.firstBuyAt = startedAt + 1000;
+        });
         return [tx];
       },
     });

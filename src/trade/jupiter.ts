@@ -1,8 +1,14 @@
-import { VersionedTransaction, Keypair } from '@solana/web3.js';
+import { VersionedTransaction, type Keypair } from '@solana/web3.js';
 import { endpoints } from '../config.js';
 import { fetchJupiterJson } from '../services/jupiter-client.js';
 import { LAMPORTS, WSOL_MINT, sendAndConfirm } from '../chains/solana.js';
-import { assertExternalTrade, ExternalTransactionValidationError, jupiterSwapVariants, priorityFeeLamports, signExternalTransaction } from './validation.js';
+import {
+  assertExternalTrade,
+  ExternalTransactionValidationError,
+  jupiterSwapVariants,
+  priorityFeeLamports,
+  signExternalTransaction,
+} from './validation.js';
 
 /**
  * Jupiter aggregator. Used for anything that is not a live pump.fun curve —
@@ -38,7 +44,8 @@ function quoteFailure(reason: string): never {
 }
 
 function positiveQuoteAmount(value: unknown, field: string): bigint {
-  if (typeof value !== 'string' || !/^[1-9]\d*$/.test(value)) quoteFailure(`has an invalid ${field}.`);
+  if (typeof value !== 'string' || !/^[1-9]\d*$/.test(value))
+    quoteFailure(`has an invalid ${field}.`);
   const amount = BigInt(value);
   if (amount > U64_MAX) quoteFailure(`has an out-of-range ${field}.`);
   return amount;
@@ -46,22 +53,35 @@ function positiveQuoteAmount(value: unknown, field: string): bigint {
 
 /** Bind a provider response to the exact input trade before requesting a swap. */
 export function validateQuote(value: unknown, params: QuoteParams): JupQuote {
-  if (params.amount <= 0n || params.amount > U64_MAX) quoteFailure('input must be a positive u64 amount.');
-  if (!Number.isInteger(params.slippageBps) || params.slippageBps < 0 || params.slippageBps >= 10_000) {
+  if (params.amount <= 0n || params.amount > U64_MAX)
+    quoteFailure('input must be a positive u64 amount.');
+  if (
+    !Number.isInteger(params.slippageBps) ||
+    params.slippageBps < 0 ||
+    params.slippageBps >= 10_000
+  ) {
     quoteFailure('slippage must be an integer from 0 to 9999 basis points.');
   }
-  if (!value || typeof value !== 'object' || Array.isArray(value)) quoteFailure('is not an object.');
+  if (!value || typeof value !== 'object' || Array.isArray(value))
+    quoteFailure('is not an object.');
   const q = value as JupQuote;
-  if (q.inputMint !== params.inputMint || q.outputMint !== params.outputMint) quoteFailure('mints do not match the request.');
+  if (q.inputMint !== params.inputMint || q.outputMint !== params.outputMint)
+    quoteFailure('mints do not match the request.');
   if (q.swapMode !== 'ExactIn') quoteFailure('must use ExactIn.');
-  if (positiveQuoteAmount(q.inAmount, 'inAmount') !== params.amount) quoteFailure('input amount does not match the request.');
+  if (positiveQuoteAmount(q.inAmount, 'inAmount') !== params.amount)
+    quoteFailure('input amount does not match the request.');
   if (q.slippageBps !== params.slippageBps) quoteFailure('slippage does not match the request.');
   const output = positiveQuoteAmount(q.outAmount, 'outAmount');
   const threshold = positiveQuoteAmount(q.otherAmountThreshold, 'otherAmountThreshold');
   const minimum = (output * BigInt(10_000 - params.slippageBps)) / 10_000n;
-  if (threshold > output || threshold < minimum) quoteFailure('output threshold does not honor the requested slippage.');
+  if (threshold > output || threshold < minimum)
+    quoteFailure('output threshold does not honor the requested slippage.');
   if (!Array.isArray(q.routePlan) || q.routePlan.length === 0) quoteFailure('has no route.');
-  if (typeof q.priceImpactPct !== 'string' || !Number.isFinite(Number(q.priceImpactPct)) || Number(q.priceImpactPct) < 0) {
+  if (
+    typeof q.priceImpactPct !== 'string' ||
+    !Number.isFinite(Number(q.priceImpactPct)) ||
+    Number(q.priceImpactPct) < 0
+  ) {
     quoteFailure('has an invalid price impact.');
   }
   // This bot never requests an integrator fee. Preserve the rest of Jupiter's
@@ -73,8 +93,13 @@ export function validateQuote(value: unknown, params: QuoteParams): JupQuote {
 }
 
 export async function getQuote(params: QuoteParams): Promise<JupQuote> {
-  if (params.amount <= 0n || params.amount > U64_MAX) quoteFailure('input must be a positive u64 amount.');
-  if (!Number.isInteger(params.slippageBps) || params.slippageBps < 0 || params.slippageBps >= 10_000) {
+  if (params.amount <= 0n || params.amount > U64_MAX)
+    quoteFailure('input must be a positive u64 amount.');
+  if (
+    !Number.isInteger(params.slippageBps) ||
+    params.slippageBps < 0 ||
+    params.slippageBps >= 10_000
+  ) {
     quoteFailure('slippage must be an integer from 0 to 9999 basis points.');
   }
   const qs = new URLSearchParams({
@@ -87,7 +112,9 @@ export async function getQuote(params: QuoteParams): Promise<JupQuote> {
   });
   if (params.onlyDirectRoutes) qs.set('onlyDirectRoutes', 'true');
 
-  const quote = await fetchJupiterJson<unknown>(`${endpoints.jupiterQuote}?${qs}`, { timeoutMs: 20_000 });
+  const quote = await fetchJupiterJson<unknown>(`${endpoints.jupiterQuote}?${qs}`, {
+    timeoutMs: 20_000,
+  });
   return validateQuote(quote, params);
 }
 
@@ -119,8 +146,13 @@ export async function buildSwap(
     timeoutMs: 25_000,
   });
 
-  if (typeof res?.swapTransaction !== 'string' || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(res.swapTransaction)) {
-    throw new ExternalTransactionValidationError('Jupiter returned an invalid serialized transaction.');
+  if (
+    typeof res?.swapTransaction !== 'string' ||
+    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(res.swapTransaction)
+  ) {
+    throw new ExternalTransactionValidationError(
+      'Jupiter returned an invalid serialized transaction.',
+    );
   }
   const tx = VersionedTransaction.deserialize(Buffer.from(res.swapTransaction, 'base64'));
   assertExternalTrade(tx, {

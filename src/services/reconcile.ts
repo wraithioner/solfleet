@@ -1,5 +1,9 @@
 import { createHash } from 'node:crypto';
-import { PublicKey, type ParsedTransactionWithMeta } from '@solana/web3.js';
+import {
+  PublicKey,
+  type ConfirmedSignatureInfo,
+  type ParsedTransactionWithMeta,
+} from '@solana/web3.js';
 import bs58 from 'bs58';
 import { rpc } from '../chains/solana.js';
 import { db } from '../store/db.js';
@@ -86,28 +90,47 @@ const PUMP = '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P';
 // https://github.com/jup-ag/jupiter-cpi/blob/main/idl.json
 // https://github.com/pump-fun/pump-public-docs/tree/main/idl
 const swapInstructions = new Map<string, Set<string>>([
-  ['JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4', new Set([
-    'route', 'route_with_token_ledger', 'shared_accounts_route',
-    'shared_accounts_route_with_token_ledger', 'exact_out_route', 'shared_accounts_exact_out_route',
-  ])],
+  [
+    'JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4',
+    new Set([
+      'route',
+      'route_with_token_ledger',
+      'shared_accounts_route',
+      'shared_accounts_route_with_token_ledger',
+      'exact_out_route',
+      'shared_accounts_exact_out_route',
+    ]),
+  ],
   [PUMP, new Set(['sell'])],
   ['pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA', new Set(['sell'])],
 ]);
-const swapPrefixes = new Map([...swapInstructions].map(([program, names]) => [program,
-  new Set([...names].map((name) => createHash('sha256').update(`global:${name}`).digest('hex').slice(0, 16))),
-]));
+const swapPrefixes = new Map(
+  [...swapInstructions].map(([program, names]) => [
+    program,
+    new Set(
+      [...names].map(name =>
+        createHash('sha256').update(`global:${name}`).digest('hex').slice(0, 16),
+      ),
+    ),
+  ]),
+);
 type Instruction = ParsedTransactionWithMeta['transaction']['message']['instructions'][number];
-const keyString = (key: string | PublicKey) => typeof key === 'string' ? key : key.toBase58();
+const keyString = (key: string | PublicKey) => (typeof key === 'string' ? key : key.toBase58());
 const instructionProgram = (ix: Instruction) => keyString(ix.programId);
-const parsedInfo = (ix: Instruction): { type: string; info: Record<string, unknown> } | undefined =>
+const parsedInfo = (
+  ix: Instruction,
+): { type: string; info: Record<string, unknown> } | undefined =>
   'parsed' in ix && ix.parsed && typeof ix.parsed.type === 'string' && ix.parsed.info
-    ? ix.parsed : undefined;
+    ? ix.parsed
+    : undefined;
 const isSwap = (ix: Instruction): boolean => {
   if (!('data' in ix)) return false;
   try {
     const prefix = Buffer.from(bs58.decode(ix.data)).subarray(0, 8).toString('hex');
     return swapPrefixes.get(instructionProgram(ix))?.has(prefix) ?? false;
-  } catch { return false; }
+  } catch {
+    return false;
+  }
 };
 const rawAmount = (value: unknown): bigint | undefined => {
   if (typeof value !== 'string' || !/^\d{1,20}$/.test(value)) return undefined;
@@ -123,19 +146,26 @@ const validLamports = (value: unknown): value is number =>
  * The return is wallet SOL net of fees/outlays, less pre-existing balances
  * refunded by closed accounts; rent and old WSOL cannot become sale proceeds.
  */
-function saleProceeds(tx: ParsedTransactionWithMeta, owner: string):
-  { mint: string; sol: number } | 'none' | 'ambiguous' {
+function saleProceeds(
+  tx: ParsedTransactionWithMeta,
+  owner: string,
+): { mint: string; sol: number } | 'none' | 'ambiguous' {
   const meta = tx.meta!;
   if (!meta.preTokenBalances || !meta.postTokenBalances) return 'ambiguous';
-  const keys = tx.transaction.message.accountKeys.map((a) => keyString(a.pubkey));
+  const keys = tx.transaction.message.accountKeys.map(a => keyString(a.pubkey));
   const ownerIndex = keys.indexOf(owner);
-  if (ownerIndex < 0 || !validLamports(meta.preBalances[ownerIndex]) ||
-      !validLamports(meta.postBalances[ownerIndex])) return 'ambiguous';
+  if (
+    ownerIndex < 0 ||
+    !validLamports(meta.preBalances[ownerIndex]) ||
+    !validLamports(meta.postBalances[ownerIndex])
+  )
+    return 'ambiguous';
   const received = (meta.postBalances[ownerIndex]! - meta.preBalances[ownerIndex]!) / 1e9;
   const accounts = new Map<string, { mint: string; owner: string }>();
   const totals = new Map<string, { before: bigint; after: bigint; decimals: number }>();
   for (const [balances, side] of [
-    [meta.preTokenBalances, 'before'], [meta.postTokenBalances, 'after'],
+    [meta.preTokenBalances, 'before'],
+    [meta.postTokenBalances, 'after'],
   ] as const) {
     for (const b of balances) {
       // Historical RPC responses may omit owners. Their effect is unknowable.
@@ -161,33 +191,48 @@ function saleProceeds(tx: ParsedTransactionWithMeta, owner: string):
   if (sold.length === 0) return 'none';
   const instructions = tx.transaction.message.instructions;
   if (!Array.isArray(instructions)) return 'ambiguous';
-  const swaps = instructions.flatMap((ix, i) => isSwap(ix) ? [i] : []);
+  const swaps = instructions.flatMap((ix, i) => (isSwap(ix) ? [i] : []));
   if (received <= 0) {
     // A recognized transfer/burn can be fully read without being a SOL sale.
     // Unknown programs may have sold for unredeemed WSOL or another quote mint.
-    const plainTransfer = instructions.length > 0 && instructions.every((ix) => {
-      const program = instructionProgram(ix);
-      if (program === 'ComputeBudget111111111111111111111111111111') return true;
-      const parsed = parsedInfo(ix);
-      if (!parsed) return false;
-      if (TOKEN_PROGRAMS.has(program)) return /^(transfer(Checked)?(WithFee)?|burn(Checked)?|closeAccount)$/.test(parsed.type);
-      return program === SYSTEM_PROGRAM && /^transfer/.test(parsed.type) && parsed.info.source === owner;
-    });
+    const plainTransfer =
+      instructions.length > 0 &&
+      instructions.every(ix => {
+        const program = instructionProgram(ix);
+        if (program === 'ComputeBudget111111111111111111111111111111') return true;
+        const parsed = parsedInfo(ix);
+        if (!parsed) return false;
+        if (TOKEN_PROGRAMS.has(program))
+          return /^(transfer(Checked)?(WithFee)?|burn(Checked)?|closeAccount)$/.test(parsed.type);
+        return (
+          program === SYSTEM_PROGRAM &&
+          /^transfer/.test(parsed.type) &&
+          parsed.info.source === owner
+        );
+      });
     return plainTransfer ? 'none' : 'ambiguous';
   }
   // Different token units have no meaningful ratio for allocating one SOL delta.
-  if (sold.length !== 1 || swaps.length !== 1 ||
-      [...totals].some(([mint, t]) => mint !== WSOL && t.after > t.before)) return 'ambiguous';
+  if (
+    sold.length !== 1 ||
+    swaps.length !== 1 ||
+    [...totals].some(([mint, t]) => mint !== WSOL && t.after > t.before)
+  )
+    return 'ambiguous';
   const [mint, total] = sold[0]!;
   const swapIndex = swaps[0]!;
   const swap = instructions[swapIndex]!;
-  if (!('accounts' in swap) || !swap.accounts.some((a) => keyString(a) === owner) ||
-      !tx.transaction.message.accountKeys[ownerIndex]?.signer) return 'ambiguous';
+  if (
+    !('accounts' in swap) ||
+    !swap.accounts.some(a => keyString(a) === owner) ||
+    !tx.transaction.message.accountKeys[ownerIndex]?.signer
+  )
+    return 'ambiguous';
   if (!Array.isArray(meta.innerInstructions)) return 'ambiguous';
   const all = instructions.map((ix, root) => ({ ix, root }));
   for (const group of meta.innerInstructions) {
     if (!Number.isInteger(group.index) || !instructions[group.index]) return 'ambiguous';
-    all.push(...group.instructions.map((ix) => ({ ix, root: group.index })));
+    all.push(...group.instructions.map(ix => ({ ix, root: group.index })));
   }
   // Temporary WSOL accounts can be created and closed in one transaction,
   // absent from both token balance snapshots. Use their initialization evidence.
@@ -195,12 +240,20 @@ function saleProceeds(tx: ParsedTransactionWithMeta, owner: string):
     const parsed = parsedInfo(ix);
     if (!parsed) continue;
     const { type, info } = parsed;
-    if ((TOKEN_PROGRAMS.has(instructionProgram(ix)) && /^initializeAccount[23]?$/.test(type)) ||
-        (instructionProgram(ix) === 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL' && /^create/.test(type))) {
+    if (
+      (TOKEN_PROGRAMS.has(instructionProgram(ix)) && /^initializeAccount[23]?$/.test(type)) ||
+      (instructionProgram(ix) === 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL' &&
+        /^create/.test(type))
+    ) {
       const tokenOwner = info.owner ?? info.wallet;
-      if (typeof info.account === 'string' && typeof info.mint === 'string' && typeof tokenOwner === 'string') {
+      if (
+        typeof info.account === 'string' &&
+        typeof info.mint === 'string' &&
+        typeof tokenOwner === 'string'
+      ) {
         const previous = accounts.get(info.account);
-        if (previous && (previous.mint !== info.mint || previous.owner !== tokenOwner)) return 'ambiguous';
+        if (previous && (previous.mint !== info.mint || previous.owner !== tokenOwner))
+          return 'ambiguous';
         accounts.set(info.account, { mint: info.mint, owner: tokenOwner });
       }
     }
@@ -214,7 +267,8 @@ function saleProceeds(tx: ParsedTransactionWithMeta, owner: string):
     const account = parsed.info.account;
     if (typeof account !== 'string' || closes.has(account)) return 'ambiguous';
     const index = keys.indexOf(account);
-    if (index < 0 || !validLamports(meta.preBalances[index]) || meta.postBalances[index] !== 0) return 'ambiguous';
+    if (index < 0 || !validLamports(meta.preBalances[index]) || meta.postBalances[index] !== 0)
+      return 'ambiguous';
     closes.add(account);
     refunds += meta.preBalances[index]! / 1e9;
   }
@@ -222,7 +276,8 @@ function saleProceeds(tx: ParsedTransactionWithMeta, owner: string):
   let debit = 0n;
   let wrappedReturn = 0n;
   const safeOuter = new Set([
-    SYSTEM_PROGRAM, ...TOKEN_PROGRAMS,
+    SYSTEM_PROGRAM,
+    ...TOKEN_PROGRAMS,
     'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL',
     'ComputeBudget111111111111111111111111111111',
   ]);
@@ -236,29 +291,48 @@ function saleProceeds(tx: ParsedTransactionWithMeta, owner: string):
       const destination = info.destination ?? info.newAccount;
       const source = info.source ?? info.fromPubkey;
       const target = typeof destination === 'string' ? accounts.get(destination) : undefined;
-      if (root !== swapIndex && source !== owner &&
-          (destination === owner || target?.owner === owner || closes.has(String(destination)))) return 'ambiguous';
+      if (
+        root !== swapIndex &&
+        source !== owner &&
+        (destination === owner || target?.owner === owner || closes.has(String(destination)))
+      )
+        return 'ambiguous';
     }
     if (!TOKEN_PROGRAMS.has(program)) continue;
     if (!parsed) return 'ambiguous';
     if (!/^transfer(Checked)?(WithFee)?$/.test(parsed.type)) {
-      if (root !== swapIndex && !/^(initializeAccount[23]?|initializeImmutableOwner|getAccountDataSize|syncNative|closeAccount)$/.test(parsed.type)) {
+      if (
+        root !== swapIndex &&
+        !/^(initializeAccount[23]?|initializeImmutableOwner|getAccountDataSize|syncNative|closeAccount)$/.test(
+          parsed.type,
+        )
+      ) {
         return 'ambiguous';
       }
       continue;
     }
     const { info } = parsed;
     const source = typeof info.source === 'string' ? accounts.get(info.source) : undefined;
-    const destination = typeof info.destination === 'string' ? accounts.get(info.destination) : undefined;
-    const amount = rawAmount(info.amount ?? (info.tokenAmount as { amount?: unknown } | undefined)?.amount);
+    const destination =
+      typeof info.destination === 'string' ? accounts.get(info.destination) : undefined;
+    const amount = rawAmount(
+      info.amount ?? (info.tokenAmount as { amount?: unknown } | undefined)?.amount,
+    );
     if (source?.owner === owner && source.mint === mint) {
-      if (root !== swapIndex || destination?.owner === owner || amount === undefined ||
-          !('accounts' in swap) || !swap.accounts.some((a) => keyString(a) === info.source)) return 'ambiguous';
+      if (
+        root !== swapIndex ||
+        destination?.owner === owner ||
+        amount === undefined ||
+        !('accounts' in swap) ||
+        !swap.accounts.some(a => keyString(a) === info.source)
+      )
+        return 'ambiguous';
       debit += amount;
     }
     if (destination?.owner === owner && destination.mint === mint) return 'ambiguous';
     if (destination?.owner === owner && destination.mint === WSOL) {
-      if (root !== swapIndex || amount === undefined || !closes.has(String(info.destination))) return 'ambiguous';
+      if (root !== swapIndex || amount === undefined || !closes.has(String(info.destination)))
+        return 'ambiguous';
       wrappedReturn += amount;
     }
   }
@@ -267,8 +341,11 @@ function saleProceeds(tx: ParsedTransactionWithMeta, owner: string):
   if (!Number.isFinite(sol) || sol <= 0) return 'ambiguous';
   // Pump's legacy bonding curve sell pays native lamports directly. Other
   // supported routes must show WSOL paid to an account redeemed to this wallet.
-  if (instructionProgram(swap) !== PUMP &&
-      (wrappedReturn === 0n || sol > Number(wrappedReturn) / 1e9 + 1e-9)) return 'ambiguous';
+  if (
+    instructionProgram(swap) !== PUMP &&
+    (wrappedReturn === 0n || sol > Number(wrappedReturn) / 1e9 + 1e-9)
+  )
+    return 'ambiguous';
   return { mint, sol };
 }
 
@@ -300,7 +377,7 @@ export async function proceedsByMint(
   let incomplete = false;
 
   while (seen < SIGNATURE_LIMIT) {
-    let page;
+    let page: ConfirmedSignatureInfo[];
     try {
       page = await services.paced(() =>
         services.rpc().getSignaturesForAddress(owner, { limit: SIGNATURE_PAGE, before }),
@@ -314,19 +391,25 @@ export async function proceedsByMint(
     pages++;
     if (page.length === 0) return { found, scanned, complete: !incomplete };
 
-    const usable = page.filter((s) => {
-      if (signaturesSeen.has(s.signature)) { incomplete = true; return false; }
+    const usable = page.filter(s => {
+      if (signaturesSeen.has(s.signature)) {
+        incomplete = true;
+        return false;
+      }
       signaturesSeen.add(s.signature);
       return !s.err && !(typeof s.blockTime === 'number' && s.blockTime * 1000 < notBefore);
     });
 
     for (let i = 0; i < usable.length; i += PARSE_BATCH) {
-      let txs;
+      let txs: Array<ParsedTransactionWithMeta | null>;
       try {
         txs = await services.paced(() =>
-          services.rpc().getParsedTransactions(usable.slice(i, i + PARSE_BATCH).map((s) => s.signature), {
-            maxSupportedTransactionVersion: 0,
-          }),
+          services.rpc().getParsedTransactions(
+            usable.slice(i, i + PARSE_BATCH).map(s => s.signature),
+            {
+              maxSupportedTransactionVersion: 0,
+            },
+          ),
         );
       } catch (err) {
         if (isRateLimited(err)) {
@@ -355,7 +438,10 @@ export async function proceedsByMint(
         if (blockTime * 1000 < notBefore) continue;
         scanned++;
         const proceeds = saleProceeds(tx, address);
-        if (proceeds === 'ambiguous') { incomplete = true; continue; }
+        if (proceeds === 'ambiguous') {
+          incomplete = true;
+          continue;
+        }
         if (proceeds === 'none') continue;
         found.set(proceeds.mint, (found.get(proceeds.mint) ?? 0) + proceeds.sol);
       }
@@ -394,7 +480,9 @@ export async function rebuildRealised(
   const wallets = allWallets();
   // Database records are mutable references. Retain the identity of the ledger
   // read at scan start while ordinary trading continues during the RPC reads.
-  const positions = db.positions().map(({ mint, symbol, firstBuyAt }) => ({ mint, symbol, firstBuyAt }));
+  const positions = db
+    .positions()
+    .map(({ mint, symbol, firstBuyAt }) => ({ mint, symbol, firstBuyAt }));
 
   // no need to read further back than the first position was opened
   const earliest = positions.reduce(

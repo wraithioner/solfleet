@@ -67,13 +67,16 @@ interface RawJupToken {
  * treat absence as too-new rather than as suspicious, because for this source
  * absence usually means exactly that.
  */
-export async function getJupTokenData(mint: string, timeoutMs = 2500): Promise<JupTokenData | null> {
+export async function getJupTokenData(
+  mint: string,
+  timeoutMs = 2500,
+): Promise<JupTokenData | null> {
   try {
     const res = await fetchJupiterJson<RawJupToken[]>(
       `${endpoints.jupiterTokens}?query=${encodeURIComponent(mint)}`,
       { timeoutMs },
     );
-    const t = res.find((x) => x.id === mint);
+    const t = res.find(x => x.id === mint);
     if (!t) return null;
 
     const s = t.stats5m ?? {};

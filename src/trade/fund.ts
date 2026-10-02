@@ -165,7 +165,13 @@ async function executeFundingLocked(
     signer = solanaKeypair(source);
   } catch (err) {
     for (const t of plan.transfers) {
-      results.push({ walletId: t.walletId, label: t.label, address: t.address, ok: false, error: errMessage(err) });
+      results.push({
+        walletId: t.walletId,
+        label: t.label,
+        address: t.address,
+        ok: false,
+        error: errMessage(err),
+      });
     }
     return summarise(results, startedAt);
   }
@@ -177,7 +183,7 @@ async function executeFundingLocked(
     try {
       const signature = await sendSolBatch(
         signer,
-        group.map((t) => ({ to: t.address, lamports: t.lamports })),
+        group.map(t => ({ to: t.address, lamports: t.lamports })),
         priorityFeeSol,
       );
 
@@ -200,10 +206,13 @@ async function executeFundingLocked(
           address: t.address,
           ok: false,
           error: errMessage(err),
-          ...((err instanceof TransactionSubmissionUnknownError || err instanceof TransactionRejectedError)
+          ...(err instanceof TransactionSubmissionUnknownError ||
+          err instanceof TransactionRejectedError
             ? { signature: err.signature }
             : {}),
-          ...(err instanceof TransactionSubmissionUnknownError ? { confirmationUnknown: true } : {}),
+          ...(err instanceof TransactionSubmissionUnknownError
+            ? { confirmationUnknown: true }
+            : {}),
         });
       }
     } finally {
@@ -346,8 +355,8 @@ export function requiredForBuy(
 function summarise(results: ExecutionResult[], startedAt: number): BatchSummary {
   return {
     results,
-    succeeded: results.filter((r) => r.ok).length,
-    failed: results.filter((r) => !r.ok).length,
+    succeeded: results.filter(r => r.ok).length,
+    failed: results.filter(r => !r.ok).length,
     startedAt,
     finishedAt: Date.now(),
   };

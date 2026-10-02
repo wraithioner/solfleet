@@ -456,14 +456,26 @@ function parseDocument(contents: string): Partial<DbShape> {
     throw new Error('Wallet store has an unsupported version or missing wallet list.');
   }
   for (const wallet of document.wallets) {
-    if (!wallet || typeof wallet !== 'object' ||
-        !['id', 'kind', 'address', 'secret'].every((key) =>
+    if (
+      !wallet ||
+      typeof wallet !== 'object' ||
+      !['id', 'kind', 'address', 'secret'].every(
+        key =>
           typeof (wallet as unknown as Record<string, unknown>)[key] === 'string' &&
-          (wallet as unknown as Record<string, unknown>)[key] !== '')) {
+          (wallet as unknown as Record<string, unknown>)[key] !== '',
+      )
+    ) {
       throw new Error('Wallet store contains an invalid wallet record.');
     }
   }
-  for (const key of ['tradeLog', 'rules', 'copyTargets', 'dcaPlans', 'valueMarks', 'copyDecisions'] as const) {
+  for (const key of [
+    'tradeLog',
+    'rules',
+    'copyTargets',
+    'dcaPlans',
+    'valueMarks',
+    'copyDecisions',
+  ] as const) {
     if (document[key] !== undefined && !Array.isArray(document[key])) {
       throw new Error(`Wallet store field ${key} must be an array.`);
     }
@@ -515,7 +527,18 @@ function load(): DbShape {
   if (cache) return cache;
 
   if (!fs.existsSync(dbPath()) && !fs.existsSync(`${dbPath()}.bak`)) {
-    cache = { version: 1, wallets: [], settings: defaultSettings(), tradeLog: [], positions: {}, rules: [], copyTargets: [], dcaPlans: [], valueMarks: [], copyDecisions: [] };
+    cache = {
+      version: 1,
+      wallets: [],
+      settings: defaultSettings(),
+      tradeLog: [],
+      positions: {},
+      rules: [],
+      copyTargets: [],
+      dcaPlans: [],
+      valueMarks: [],
+      copyDecisions: [],
+    };
     return cache;
   }
 
@@ -530,9 +553,11 @@ function load(): DbShape {
    * never sees one.
    */
   const wallets = parsed.wallets ?? [];
-  const legacy = wallets.filter((w) => w.kind !== 'solana').length;
+  const legacy = wallets.filter(w => w.kind !== 'solana').length;
   if (legacy > 0) {
-    console.warn(`${legacy} wallet(s) from the multi-chain version are preserved but inactive. Settings → Export legacy keys.`);
+    console.warn(
+      `${legacy} wallet(s) from the multi-chain version are preserved but inactive. Settings → Export legacy keys.`,
+    );
   }
 
   cache = {
@@ -546,10 +571,12 @@ function load(): DbShape {
     mnemonic: parsed.mnemonic,
     tradeLog: parsed.tradeLog ?? [],
     positions: parsed.positions ?? {},
-    rules: (parsed.rules ?? []).map((r) =>
+    rules: (parsed.rules ?? []).map(r =>
       // the same unchosen 50 landed in every armed take-profit; see the
       // migration note on takeProfitSellPct above
-      r.kind === 'take_profit' && r.sellPercent === 50 && !r.firedAt ? { ...r, sellPercent: 100 } : r,
+      r.kind === 'take_profit' && r.sellPercent === 50 && !r.firedAt
+        ? { ...r, sellPercent: 100 }
+        : r,
     ),
     copyTargets: (parsed.copyTargets ?? []).map(migrateCopyTarget),
     dcaPlans: parsed.dcaPlans ?? [],
@@ -566,13 +593,13 @@ export function flush(): void {
 
 export const db = {
   wallets(): WalletRecord[] {
-    return load().wallets.filter((w) => w.kind === 'solana');
+    return load().wallets.filter(w => w.kind === 'solana');
   },
 
   /** Records from the multi-chain era: kept on disk, excluded from trading. */
   legacyWallets(): LegacyWalletRecord[] {
     const all = load().wallets as unknown as LegacyWalletRecord[];
-    return all.filter((w) => w.kind !== 'solana');
+    return all.filter(w => w.kind !== 'solana');
   },
 
   /**
@@ -582,7 +609,7 @@ export const db = {
   dropLegacyWallets(): number {
     const doc = load();
     const before = doc.wallets.length;
-    doc.wallets = doc.wallets.filter((w) => w.kind === 'solana');
+    doc.wallets = doc.wallets.filter(w => w.kind === 'solana');
     flush();
     return before - doc.wallets.length;
   },
@@ -647,11 +674,27 @@ export const db = {
 
   /** Add a completed buy to the position's cost basis. */
   recordBuy(mint: string, entry: BuyEntry): void {
-    const { solSpent, fills, tokensBought = 0, symbol, costSol, freshEntry = false, decimals, quantityComplete = true } = entry;
-    if (!Number.isFinite(solSpent) || solSpent <= 0 || !Number.isSafeInteger(fills) || fills <= 0 ||
-        !Number.isFinite(tokensBought) || tokensBought < 0 ||
-        (costSol !== undefined && (!Number.isFinite(costSol) || costSol < 0)) ||
-        (decimals !== undefined && (!Number.isInteger(decimals) || decimals < 0 || decimals > 255))) return;
+    const {
+      solSpent,
+      fills,
+      tokensBought = 0,
+      symbol,
+      costSol,
+      freshEntry = false,
+      decimals,
+      quantityComplete = true,
+    } = entry;
+    if (
+      !Number.isFinite(solSpent) ||
+      solSpent <= 0 ||
+      !Number.isSafeInteger(fills) ||
+      fills <= 0 ||
+      !Number.isFinite(tokensBought) ||
+      tokensBought < 0 ||
+      (costSol !== undefined && (!Number.isFinite(costSol) || costSol < 0)) ||
+      (decimals !== undefined && (!Number.isInteger(decimals) || decimals < 0 || decimals > 255))
+    )
+      return;
     const d = load();
     const now = Date.now();
     const pos = d.positions[mint] ?? {
@@ -670,15 +713,18 @@ export const db = {
     const priorBasisTokens = pos.basisTokens ?? pos.tokensBought;
     // Old sales never recorded their quantity, so their remaining basis cannot
     // be reconstructed from lifetime buys. A later fresh entry can recover it.
-    const priorKnown = pos.basisKnown ?? (pos.sellFills === 0 &&
-      (priorBasisSol === 0 || priorBasisTokens > 0));
+    const priorKnown =
+      pos.basisKnown ?? (pos.sellFills === 0 && (priorBasisSol === 0 || priorBasisTokens > 0));
     const nextCost = (pos.costSol ?? pos.investedSol) + (costSol ?? solSpent);
     const nextInvested = pos.investedSol + solSpent;
     const nextTokens = pos.tokensBought + tokensBought;
     const nextBasisSol = Math.max(0, freshEntry ? 0 : priorBasisSol) + solSpent;
     const nextBasisTokens = Math.max(0, freshEntry ? 0 : priorBasisTokens) + tokensBought;
-    if (![nextCost, nextInvested, nextTokens, nextBasisSol, nextBasisTokens].every(Number.isFinite) ||
-        !Number.isSafeInteger(pos.buyFills + fills)) return;
+    if (
+      ![nextCost, nextInvested, nextTokens, nextBasisSol, nextBasisTokens].every(Number.isFinite) ||
+      !Number.isSafeInteger(pos.buyFills + fills)
+    )
+      return;
 
     // a batch whose true cost went unmeasured contributes its notional, so the
     // running total stays comparable rather than developing a hole — and a
@@ -705,8 +751,14 @@ export const db = {
 
   /** Add sell proceeds. Positions with no recorded buy are still tracked. */
   recordSell(mint: string, solReceived: number, fills: number, tokensSold?: number): void {
-    if (!Number.isFinite(solReceived) || solReceived < 0 || !Number.isSafeInteger(fills) || fills <= 0 ||
-        (tokensSold !== undefined && (!Number.isFinite(tokensSold) || tokensSold < 0))) return;
+    if (
+      !Number.isFinite(solReceived) ||
+      solReceived < 0 ||
+      !Number.isSafeInteger(fills) ||
+      fills <= 0 ||
+      (tokensSold !== undefined && (!Number.isFinite(tokensSold) || tokensSold < 0))
+    )
+      return;
     const d = load();
     const now = Date.now();
     const pos = d.positions[mint] ?? {
@@ -722,10 +774,19 @@ export const db = {
 
     const basisSol = pos.basisSol ?? pos.investedSol;
     const basisTokens = pos.basisTokens ?? pos.tokensBought;
-    if (!Number.isFinite(pos.realisedSol + solReceived) || !Number.isSafeInteger(pos.sellFills + fills)) return;
+    if (
+      !Number.isFinite(pos.realisedSol + solReceived) ||
+      !Number.isSafeInteger(pos.sellFills + fills)
+    )
+      return;
     const known = pos.basisKnown ?? (pos.sellFills === 0 && basisSol > 0 && basisTokens > 0);
-    if (known && tokensSold !== undefined && Number.isFinite(tokensSold) && tokensSold > 0 &&
-        tokensSold <= basisTokens * (1 + 1e-9)) {
+    if (
+      known &&
+      tokensSold !== undefined &&
+      Number.isFinite(tokensSold) &&
+      tokensSold > 0 &&
+      tokensSold <= basisTokens * (1 + 1e-9)
+    ) {
       const remaining = Math.max(0, basisTokens - tokensSold);
       pos.basisSol = basisTokens > 0 ? basisSol * (remaining / basisTokens) : 0;
       pos.basisTokens = remaining;
@@ -787,7 +848,7 @@ export const db = {
 
     d.valueMarks.push({ at: now, usd, sol });
     const cutoff = now - VALUE_MARK_RETENTION_MS;
-    d.valueMarks = d.valueMarks.filter((m) => m.at >= cutoff);
+    d.valueMarks = d.valueMarks.filter(m => m.at >= cutoff);
     flush();
   },
 
@@ -817,11 +878,11 @@ export const db = {
   },
 
   activeRules(): AutoRule[] {
-    return load().rules.filter((r) => r.enabled && !r.firedAt);
+    return load().rules.filter(r => r.enabled && !r.firedAt);
   },
 
   rulesFor(mint: string): AutoRule[] {
-    return load().rules.filter((r) => r.mint === mint && r.enabled && !r.firedAt);
+    return load().rules.filter(r => r.mint === mint && r.enabled && !r.firedAt);
   },
 
   addRule(rule: AutoRule): void {
@@ -830,7 +891,7 @@ export const db = {
   },
 
   updateRule(id: string, patch: Partial<AutoRule>): void {
-    const rule = load().rules.find((r) => r.id === id);
+    const rule = load().rules.find(r => r.id === id);
     if (!rule) return;
     Object.assign(rule, patch);
     flush();
@@ -838,7 +899,7 @@ export const db = {
 
   removeRule(id: string): void {
     const d = load();
-    d.rules = d.rules.filter((r) => r.id !== id);
+    d.rules = d.rules.filter(r => r.id !== id);
     flush();
   },
 
@@ -847,7 +908,7 @@ export const db = {
   },
 
   activeCopyTargets(): CopyTarget[] {
-    return load().copyTargets.filter((t) => t.enabled);
+    return load().copyTargets.filter(t => t.enabled);
   },
 
   addCopyTarget(target: CopyTarget): void {
@@ -856,7 +917,7 @@ export const db = {
   },
 
   updateCopyTarget(id: string, patch: Partial<CopyTarget>): void {
-    const t = load().copyTargets.find((x) => x.id === id);
+    const t = load().copyTargets.find(x => x.id === id);
     if (!t) return;
     Object.assign(t, patch);
     flush();
@@ -864,7 +925,7 @@ export const db = {
 
   removeCopyTarget(id: string): void {
     const d = load();
-    d.copyTargets = d.copyTargets.filter((t) => t.id !== id);
+    d.copyTargets = d.copyTargets.filter(t => t.id !== id);
     flush();
   },
 
@@ -875,7 +936,7 @@ export const db = {
   /** Plans that are enabled, still have rounds left, and are due. */
   dueDcaPlans(now = Date.now()): DcaPlan[] {
     return load().dcaPlans.filter(
-      (p) => p.enabled && p.roundsDone < p.roundsTotal && p.nextRunAt <= now,
+      p => p.enabled && p.roundsDone < p.roundsTotal && p.nextRunAt <= now,
     );
   },
 
@@ -885,7 +946,7 @@ export const db = {
   },
 
   updateDcaPlan(id: string, patch: Partial<DcaPlan>): void {
-    const p = load().dcaPlans.find((x) => x.id === id);
+    const p = load().dcaPlans.find(x => x.id === id);
     if (!p) return;
     Object.assign(p, patch);
     flush();
@@ -893,7 +954,7 @@ export const db = {
 
   removeDcaPlan(id: string): void {
     const d = load();
-    d.dcaPlans = d.dcaPlans.filter((p) => p.id !== id);
+    d.dcaPlans = d.dcaPlans.filter(p => p.id !== id);
     flush();
   },
 
@@ -909,8 +970,20 @@ export const db = {
    * wallets immediately rather than writing them back out on the next flush.
    */
   wipe(): void {
-    for (const suffix of ['', '.bak', '.corrupt']) fs.rmSync(`${dbPath()}${suffix}`, { force: true });
-    cache = { version: 1, wallets: [], settings: defaultSettings(), tradeLog: [], positions: {}, rules: [], copyTargets: [], dcaPlans: [], valueMarks: [], copyDecisions: [] };
+    for (const suffix of ['', '.bak', '.corrupt'])
+      fs.rmSync(`${dbPath()}${suffix}`, { force: true });
+    cache = {
+      version: 1,
+      wallets: [],
+      settings: defaultSettings(),
+      tradeLog: [],
+      positions: {},
+      rules: [],
+      copyTargets: [],
+      dcaPlans: [],
+      valueMarks: [],
+      copyDecisions: [],
+    };
   },
 
   /**

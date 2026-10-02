@@ -94,14 +94,21 @@ function counted(raw: RawReport): RawHolder[] | undefined {
   if (!holders || holders.length === 0) return undefined;
 
   const known = raw.knownAccounts ?? {};
-  const real = holders.filter((h) => {
+  const real = holders.filter(h => {
     const type = h.owner ? known[h.owner]?.type : undefined;
     return type !== 'AMM';
   });
   const owners = new Map<string, RawHolder>();
   for (const h of real) {
-    if (typeof h.owner !== 'string' || !h.owner || typeof h.pct !== 'number' ||
-        !Number.isFinite(h.pct) || h.pct < 0 || h.pct > 100) return undefined;
+    if (
+      typeof h.owner !== 'string' ||
+      !h.owner ||
+      typeof h.pct !== 'number' ||
+      !Number.isFinite(h.pct) ||
+      h.pct < 0 ||
+      h.pct > 100
+    )
+      return undefined;
     const prior = owners.get(h.owner);
     owners.set(h.owner, { ...h, pct: (prior?.pct ?? 0) + h.pct });
   }
@@ -126,23 +133,29 @@ function lockedShare(raw: RawReport): number | undefined {
 
   const known = raw.knownAccounts ?? {};
   return holders
-    .filter((h) => (h.owner ? known[h.owner]?.type : undefined) === 'LOCKER')
+    .filter(h => (h.owner ? known[h.owner]?.type : undefined) === 'LOCKER')
     .reduce((sum, h) => sum + (h.pct ?? 0), 0);
 }
 
 function insiderShare(raw: RawReport): number | undefined {
   const holders = raw.topHolders;
-  if (!holders || holders.some((h) => typeof h.pct !== 'number' || !Number.isFinite(h.pct) || h.pct < 0 || h.pct > 100)) return undefined;
+  if (
+    !holders ||
+    holders.some(
+      h => typeof h.pct !== 'number' || !Number.isFinite(h.pct) || h.pct < 0 || h.pct > 100,
+    )
+  )
+    return undefined;
   const known = raw.knownAccounts ?? {};
   const flagged = holders.filter(
-    (h) => h.insider && (h.owner ? known[h.owner]?.type : undefined) !== 'AMM',
+    h => h.insider && (h.owner ? known[h.owner]?.type : undefined) !== 'AMM',
   );
   if (flagged.length === 0) return 0;
   return flagged.reduce((sum, h) => sum + (h.pct ?? 0), 0);
 }
 
 function named(risks: RugcheckRisk[] | undefined, pattern: RegExp): boolean {
-  return (risks ?? []).some((r) => pattern.test(r.name ?? ''));
+  return (risks ?? []).some(r => pattern.test(r.name ?? ''));
 }
 
 /**

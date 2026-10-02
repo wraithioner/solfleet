@@ -22,15 +22,15 @@ export function allWallets(): WalletRecord[] {
 }
 
 export function walletById(id: string): WalletRecord | undefined {
-  return db.wallets().find((w) => w.id === id);
+  return db.wallets().find(w => w.id === id);
 }
 
 export function walletByAddress(address: string): WalletRecord | undefined {
-  return db.wallets().find((w) => w.address === address);
+  return db.wallets().find(w => w.address === address);
 }
 
 export function mainWallet(): WalletRecord | undefined {
-  return db.wallets().find((w) => w.isMain);
+  return db.wallets().find(w => w.isMain);
 }
 
 export function groups(): string[] {
@@ -43,14 +43,12 @@ export function groups(): string[] {
  * The wallets a batch action should touch: not disabled, and in
  * the active group if one is selected.
  */
-export function selectWallets(opts: {
-  group?: string | null;
-  includeDisabled?: boolean;
-  excludeMain?: boolean;
-} = {}): WalletRecord[] {
+export function selectWallets(
+  opts: { group?: string | null; includeDisabled?: boolean; excludeMain?: boolean } = {},
+): WalletRecord[] {
   const group = opts.group === undefined ? db.settings().activeGroup : opts.group;
 
-  return db.wallets().filter((w) => {
+  return db.wallets().filter(w => {
     if (!opts.includeDisabled && w.disabled) return false;
     if (opts.excludeMain && w.isMain) return false;
     if (group && !w.groups.includes(group)) return false;
@@ -95,7 +93,7 @@ export interface LegacyKeyExport {
  * record the current vault cannot open still tells the operator it exists.
  */
 export function exportLegacyKeys(): LegacyKeyExport[] {
-  return legacyWallets().map((w) => {
+  return legacyWallets().map(w => {
     let secret: string;
     try {
       secret = decryptSecret(w.secret);
@@ -121,13 +119,14 @@ function nextLabel(): string {
 function insert(rec: Omit<WalletRecord, 'id' | 'createdAt'>): WalletRecord {
   const wallets = db.wallets();
 
-  const existing = wallets.find((w) => w.address === rec.address);
-  if (existing) throw new Error(`Wallet ${rec.address} is already in the list as "${existing.label}".`);
+  const existing = wallets.find(w => w.address === rec.address);
+  if (existing)
+    throw new Error(`Wallet ${rec.address} is already in the list as "${existing.label}".`);
 
   const full: WalletRecord = { ...rec, id: crypto.randomUUID(), createdAt: Date.now() };
 
   // the first wallet is automatically the main wallet
-  if (!wallets.some((w) => w.isMain)) full.isMain = true;
+  if (!wallets.some(w => w.isMain)) full.isMain = true;
 
   db.addWallet(full);
   return full;
@@ -221,8 +220,8 @@ export function setMnemonic(phrase: string): void {
  */
 export function deriveWallets(count: number, groups: string[] = []): WalletRecord[] {
   const mnemonic = getOrCreateMnemonic();
-  const used = db.wallets().filter((w) => w.derivationIndex !== undefined);
-  let index = used.length === 0 ? 0 : Math.max(...used.map((w) => w.derivationIndex!)) + 1;
+  const used = db.wallets().filter(w => w.derivationIndex !== undefined);
+  let index = used.length === 0 ? 0 : Math.max(...used.map(w => w.derivationIndex!)) + 1;
 
   const created: WalletRecord[] = [];
   const seed = bip39.mnemonicToSeedSync(mnemonic).toString('hex');
@@ -282,14 +281,14 @@ export function addToGroup(id: string, group: string): WalletRecord {
 
 export function removeFromGroup(id: string, group: string): WalletRecord {
   const w = mustFind(id);
-  w.groups = w.groups.filter((g) => g !== group.trim().toLowerCase());
+  w.groups = w.groups.filter(g => g !== group.trim().toLowerCase());
   flush();
   return w;
 }
 
 export function removeWallet(id: string): WalletRecord {
   const w = mustFind(id);
-  db.setWallets(db.wallets().filter((x) => x.id !== id));
+  db.setWallets(db.wallets().filter(x => x.id !== id));
   // if we just deleted the main wallet, promote the oldest remaining one
   if (w.isMain) {
     const next = db.wallets()[0];
@@ -323,7 +322,7 @@ export function resealAll(
   const raw = db.raw();
   // Prepare everything before changing the live document. A corrupt later
   // secret must not leave earlier records sealed under a different key.
-  const secrets = raw.wallets.map((w) => encrypt(decrypt(w.secret)));
+  const secrets = raw.wallets.map(w => encrypt(decrypt(w.secret)));
   const mnemonic = raw.mnemonic ? encrypt(decrypt(raw.mnemonic)) : undefined;
   for (const [index, w] of raw.wallets.entries()) w.secret = secrets[index]!;
   raw.mnemonic = mnemonic;

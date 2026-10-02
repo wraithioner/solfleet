@@ -1,4 +1,4 @@
-import { VersionedTransaction } from '@solana/web3.js';
+import type { VersionedTransaction } from '@solana/web3.js';
 import bs58 from 'bs58';
 import { endpoints } from '../config.js';
 import { fetchJson, sleep } from '../util.js';
@@ -23,7 +23,7 @@ export async function sendBundle(transactions: VersionedTransaction[]): Promise<
   if (transactions.length === 0) throw new Error('Nothing to send.');
   if (transactions.length > 5) throw new Error('A Jito bundle holds at most 5 transactions.');
 
-  const encoded = transactions.map((tx) => bs58.encode(tx.serialize()));
+  const encoded = transactions.map(tx => bs58.encode(tx.serialize()));
 
   const firstSignature = bs58.encode(transactions[0]!.signatures[0]!);
   // Cancellation before dispatch is definite; it must not be labelled an
@@ -41,7 +41,8 @@ export async function sendBundle(transactions: VersionedTransaction[]): Promise<
     throw new TransactionSubmissionUnknownError(firstSignature, err);
   }
 
-  if (res.error) throw new TransactionRejectedError(`Jito rejected the bundle: ${res.error.message}`);
+  if (res.error)
+    throw new TransactionRejectedError(`Jito rejected the bundle: ${res.error.message}`);
   if (!res.result) {
     throw new TransactionSubmissionUnknownError(firstSignature, 'Jito returned no bundle id.');
   }
@@ -52,15 +53,19 @@ export type BundleState = 'Pending' | 'Landed' | 'Failed' | 'Invalid' | 'Unknown
 
 export async function getBundleStatus(bundleId: string): Promise<BundleState> {
   try {
-    const res = await fetchJson<JitoRpcResponse<{ value: Array<{ confirmation_status?: string; err?: unknown }> }>>(
-      endpoints.jitoBundles,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getBundleStatuses', params: [[bundleId]] }),
-        timeoutMs: 15_000,
-      },
-    );
+    const res = await fetchJson<
+      JitoRpcResponse<{ value: Array<{ confirmation_status?: string; err?: unknown }> }>
+    >(endpoints.jitoBundles, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'getBundleStatuses',
+        params: [[bundleId]],
+      }),
+      timeoutMs: 15_000,
+    });
 
     if (res.error) return 'Unknown';
     const entry = res.result?.value?.[0];
@@ -78,7 +83,8 @@ export async function getBundleStatus(bundleId: string): Promise<BundleState> {
         'Ok' in err &&
         err.Ok === null);
     if (!success) return 'Failed';
-    if (entry.confirmation_status === 'confirmed' || entry.confirmation_status === 'finalized') return 'Landed';
+    if (entry.confirmation_status === 'confirmed' || entry.confirmation_status === 'finalized')
+      return 'Landed';
     return 'Pending';
   } catch {
     return 'Unknown';
@@ -118,7 +124,7 @@ export async function recentJitoTipSol(): Promise<number | null> {
       { timeoutMs: 8_000 },
     );
 
-    const tip = res?.[0]?.['landed_tips_75th_percentile'];
+    const tip = res?.[0]?.landed_tips_75th_percentile;
     return typeof tip === 'number' && tip > 0 ? tip : null;
   } catch {
     return null;

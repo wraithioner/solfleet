@@ -161,7 +161,10 @@ export function assessToken(info: TokenInfo, limits: SafetyLimits = DEFAULT_SAFE
   for (const key of Object.keys(DEFAULT_SAFETY)) {
     const value = limits[key as keyof SafetyLimits];
     const expected = typeof DEFAULT_SAFETY[key as keyof SafetyLimits];
-    if (typeof value !== expected || (expected === 'number' && (!Number.isFinite(value) || (value as number) < 0))) {
+    if (
+      typeof value !== expected ||
+      (expected === 'number' && (!Number.isFinite(value) || (value as number) < 0))
+    ) {
       reasons.push(`Safety setting ${key} is invalid — automated buying is refused.`);
     }
   }
@@ -171,20 +174,51 @@ export function assessToken(info: TokenInfo, limits: SafetyLimits = DEFAULT_SAFE
   }
   for (const key of ['mintAuthority', 'freezeAuthority'] as const) {
     const value = info[key];
-    if (value !== undefined && value !== null && (typeof value !== 'string' || value.length === 0)) {
+    if (
+      value !== undefined &&
+      value !== null &&
+      (typeof value !== 'string' || value.length === 0)
+    ) {
       reasons.push(`Token fact ${key} is invalid — its risk is unknown.`);
     }
   }
-  if (info.traps !== undefined && (!Array.isArray(info.traps) || info.traps.some((trap) => typeof trap !== 'string'))) {
+  if (
+    info.traps !== undefined &&
+    (!Array.isArray(info.traps) || info.traps.some(trap => typeof trap !== 'string'))
+  ) {
     reasons.push('The transfer extension report is invalid.');
   }
   if (reasons.length > 0) return { safe: false, reasons, notes };
-  const percentageFields = new Set(['top10Pct', 'top10PctUpperBound', 'creatorHoldsPct', 'lockerPct', 'insiderPct', 'launchDistPct']);
-  for (const key of ['top10Pct', 'top10PctUpperBound', 'creatorHoldsPct', 'lockerPct', 'insiderPct', 'launchDistPct', 'liquidityUsd', 'volume1h', 'pairCreatedAt', 'devMints', 'traders5m'] as const) {
+  const percentageFields = new Set([
+    'top10Pct',
+    'top10PctUpperBound',
+    'creatorHoldsPct',
+    'lockerPct',
+    'insiderPct',
+    'launchDistPct',
+  ]);
+  for (const key of [
+    'top10Pct',
+    'top10PctUpperBound',
+    'creatorHoldsPct',
+    'lockerPct',
+    'insiderPct',
+    'launchDistPct',
+    'liquidityUsd',
+    'volume1h',
+    'pairCreatedAt',
+    'devMints',
+    'traders5m',
+  ] as const) {
     const value = info[key];
-    if (value !== undefined && (typeof value !== 'number' || !Number.isFinite(value) || value < 0 ||
+    if (
+      value !== undefined &&
+      (typeof value !== 'number' ||
+        !Number.isFinite(value) ||
+        value < 0 ||
         (percentageFields.has(key) && value > 100) ||
-        ((key === 'devMints' || key === 'traders5m') && !Number.isInteger(value)))) {
+        ((key === 'devMints' || key === 'traders5m') && !Number.isInteger(value)))
+    ) {
       reasons.push(`Token fact ${key} is invalid — its risk is unknown.`);
     }
   }
@@ -211,26 +245,33 @@ export function assessToken(info: TokenInfo, limits: SafetyLimits = DEFAULT_SAFE
 
   if (limits.requireRevokedAuthorities) {
     if (info.freezeAuthority) {
-      reasons.push('Freeze authority is live — the deployer can freeze your account and stop you selling.');
+      reasons.push(
+        'Freeze authority is live — the deployer can freeze your account and stop you selling.',
+      );
     } else if (info.freezeAuthority === undefined) {
       reasons.push('Could not read the freeze authority — honeypot risk is unknown, not absent.');
     }
 
     if (info.mintAuthority) {
-      reasons.push('Mint authority is live — supply can be created and sold into the pool at any time.');
+      reasons.push(
+        'Mint authority is live — supply can be created and sold into the pool at any time.',
+      );
     } else if (info.mintAuthority === undefined) {
       reasons.push('Could not read the mint authority — supply risk is unknown, not absent.');
     }
   }
 
-  const concentration = info.top10Pct === undefined ? undefined : Math.max(info.top10Pct, info.top10PctUpperBound ?? 0);
+  const concentration =
+    info.top10Pct === undefined ? undefined : Math.max(info.top10Pct, info.top10PctUpperBound ?? 0);
 
   if (info.holdersUnavailable || concentration === undefined) {
     reasons.push('Holder distribution could not be read — concentration is unknown, not zero.');
   } else if (concentration > limits.maxTop10Pct) {
-    reasons.push(info.top10Pct !== undefined && info.top10Pct <= limits.maxTop10Pct
-      ? `The holder sample cannot prove the ${limits.maxTop10Pct}% limit: unsampled supply could put the top 10 at ${concentration.toFixed(1)}%.`
-      : `Top 10 hold ${info.top10Pct!.toFixed(1)}% of supply, over the ${limits.maxTop10Pct}% limit.`);
+    reasons.push(
+      info.top10Pct !== undefined && info.top10Pct <= limits.maxTop10Pct
+        ? `The holder sample cannot prove the ${limits.maxTop10Pct}% limit: unsampled supply could put the top 10 at ${concentration.toFixed(1)}%.`
+        : `Top 10 hold ${info.top10Pct!.toFixed(1)}% of supply, over the ${limits.maxTop10Pct}% limit.`,
+    );
   }
 
   if (info.creatorHoldsPct !== undefined && info.creatorHoldsPct > limits.maxDevPct) {
@@ -239,7 +280,9 @@ export function assessToken(info: TokenInfo, limits: SafetyLimits = DEFAULT_SAFE
     );
   }
   if (info.creatorBalanceUnavailable || (info.creator && info.creatorHoldsPct === undefined)) {
-    reasons.push('The launch wallet balance could not be read — developer concentration is unknown.');
+    reasons.push(
+      'The launch wallet balance could not be read — developer concentration is unknown.',
+    );
   }
 
   /*
@@ -334,7 +377,11 @@ export function assessToken(info: TokenInfo, limits: SafetyLimits = DEFAULT_SAFE
    * often not indexed yet, and for this source absence means too-new rather
    * than suspicious. The volume floor still stands behind it.
    */
-  if (limits.minTraders5m > 0 && info.traders5m !== undefined && info.traders5m < limits.minTraders5m) {
+  if (
+    limits.minTraders5m > 0 &&
+    info.traders5m !== undefined &&
+    info.traders5m < limits.minTraders5m
+  ) {
     reasons.push(
       `Only ${info.traders5m} wallet${info.traders5m === 1 ? '' : 's'} traded it in the last five minutes — ` +
         'volume without traders is one bot talking to itself.',
@@ -346,20 +393,28 @@ export function assessToken(info: TokenInfo, limits: SafetyLimits = DEFAULT_SAFE
     reasons.push(
       connected.fromLaunch
         ? `${connected.pct.toFixed(1)}% of supply went to ${info.launchDistWallets} wallets at launch ` +
-          `through vesting streams that locked nothing, over the ${limits.maxInsiderPct}% limit.`
+            `through vesting streams that locked nothing, over the ${limits.maxInsiderPct}% limit.`
         : `${connected.pct.toFixed(1)}% of supply sits in wallets believed to be one person, ` +
-          `over the ${limits.maxInsiderPct}% limit.`,
+            `over the ${limits.maxInsiderPct}% limit.`,
     );
   }
 
   // worth knowing, not worth refusing over
-  if (info.creatorHoldsPct !== undefined && info.creatorHoldsPct > 5 && info.creatorHoldsPct <= limits.maxDevPct) {
+  if (
+    info.creatorHoldsPct !== undefined &&
+    info.creatorHoldsPct > 5 &&
+    info.creatorHoldsPct <= limits.maxDevPct
+  ) {
     notes.push(`Launch wallet holds ${info.creatorHoldsPct.toFixed(1)}%.`);
   }
   if (info.copycat) {
     notes.push('Uses a symbol that already belongs to another token.');
   }
-  if (info.creatorPriorTokens !== undefined && info.creatorPriorTokens > 5 && !info.creatorRugHistory) {
+  if (
+    info.creatorPriorTokens !== undefined &&
+    info.creatorPriorTokens > 5 &&
+    !info.creatorRugHistory
+  ) {
     notes.push(`Developer has launched ${info.creatorPriorTokens} tokens before this one.`);
   }
   if (connected !== undefined && connected.pct > 5 && connected.pct <= limits.maxInsiderPct) {

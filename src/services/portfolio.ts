@@ -46,7 +46,7 @@ export async function buildPortfolio(opts: PortfolioOptions = {}): Promise<Portf
   const totals = await computeTotals(solana, errors);
 
   const mainSol = mainWallet();
-  const mainSolBalance = mainSol ? solana.find((b) => b.walletId === mainSol.id) : undefined;
+  const mainSolBalance = mainSol ? solana.find(b => b.walletId === mainSol.id) : undefined;
 
   return {
     solana,
@@ -75,12 +75,12 @@ async function loadSolana(
 
   let lamportsByAddress = new Map<string, bigint>();
   try {
-    lamportsByAddress = await getSolBalances(wallets.map((w) => w.address));
+    lamportsByAddress = await getSolBalances(wallets.map(w => w.address));
   } catch (err) {
     errors.push(`Solana balances: ${errMessage(err)}`);
   }
 
-  const balances: WalletBalance[] = wallets.map((w) => {
+  const balances: WalletBalance[] = wallets.map(w => {
     const lamports = lamportsByAddress.get(w.address) ?? 0n;
     return {
       walletId: w.id,
@@ -96,7 +96,7 @@ async function loadSolana(
   if (!includeTokens) return balances;
 
   // one getParsedTokenAccountsByOwner per wallet — the expensive part
-  await pMap(balances, 5, async (b) => {
+  await pMap(balances, 5, async b => {
     try {
       b.tokens = await getSplBalances(b.address);
     } catch (err) {
@@ -110,10 +110,7 @@ async function loadSolana(
 
 // ── valuation ─────────────────────────────────────────────────────────────────
 
-async function computeTotals(
-  solana: WalletBalance[],
-  errors: string[],
-): Promise<PortfolioTotals> {
+async function computeTotals(solana: WalletBalance[], errors: string[]): Promise<PortfolioTotals> {
   const solTotal = solana.reduce((s, b) => s + b.native, 0);
 
   let solPrice = 0;
@@ -134,9 +131,11 @@ async function computeTotals(
   if (mints.size > 0) {
     try {
       const prices = await getSolanaPrices([...mints]);
-      const unpriced = [...mints].filter((mint) => !prices.has(mint));
+      const unpriced = [...mints].filter(mint => !prices.has(mint));
       if (unpriced.length > 0) {
-        errors.push(`${unpriced.length} token price${unpriced.length === 1 ? '' : 's'} unavailable; USD totals are incomplete.`);
+        errors.push(
+          `${unpriced.length} token price${unpriced.length === 1 ? '' : 's'} unavailable; USD totals are incomplete.`,
+        );
       }
       for (const b of solana) {
         for (const t of b.tokens) {
@@ -165,7 +164,10 @@ async function computeTotals(
 }
 
 /** Aggregate one token across every wallet — used by the position screens. */
-export function aggregateToken(portfolio: Portfolio, mint: string): {
+export function aggregateToken(
+  portfolio: Portfolio,
+  mint: string,
+): {
   totalAmount: number;
   totalUsd: number;
   holders: Array<{ label: string; address: string; amount: number; usd?: number }>;
@@ -175,10 +177,10 @@ export function aggregateToken(portfolio: Portfolio, mint: string): {
   let totalUsd = 0;
 
   for (const b of portfolio.solana) {
-    const accounts = b.tokens.filter((x) => x.mint === mint && x.rawAmount > 0n);
+    const accounts = b.tokens.filter(x => x.mint === mint && x.rawAmount > 0n);
     if (accounts.length === 0) continue;
     const amount = accounts.reduce((sum, t) => sum + t.amount, 0);
-    const priced = accounts.every((t) => t.usdValue !== undefined);
+    const priced = accounts.every(t => t.usdValue !== undefined);
     const usd = accounts.reduce((sum, t) => sum + (t.usdValue ?? 0), 0);
     holders.push({ label: b.label, address: b.address, amount, ...(priced ? { usd } : {}) });
     totalAmount += amount;
@@ -224,8 +226,13 @@ export function listPositions(portfolio: Portfolio): Array<{
   for (const b of portfolio.solana) {
     const counted = new Set<string>();
     for (const t of b.tokens) {
-      const entry =
-        map.get(t.mint) ?? { symbol: t.symbol, totalAmount: 0, totalUsd: 0, walletCount: 0, priced: false };
+      const entry = map.get(t.mint) ?? {
+        symbol: t.symbol,
+        totalAmount: 0,
+        totalUsd: 0,
+        walletCount: 0,
+        priced: false,
+      };
       entry.totalAmount += t.amount;
       entry.totalUsd += t.usdValue ?? 0;
       entry.priced = entry.priced || t.usdValue !== undefined;

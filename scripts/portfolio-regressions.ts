@@ -40,29 +40,52 @@ function ok(name: string): void {
 try {
   initVaultWithKeyfile();
   generateSolanaWallet('test wallet', ['one']);
-  connection.getMultipleAccountsInfo = async (keys) => keys.map(() => ({
-    lamports: 1_000_000_000, owner: PublicKey.default, data: Buffer.alloc(0), executable: false, rentEpoch: 0,
-  }));
+  connection.getMultipleAccountsInfo = async keys =>
+    keys.map(() => ({
+      lamports: 1_000_000_000,
+      owner: PublicKey.default,
+      data: Buffer.alloc(0),
+      executable: false,
+      rentEpoch: 0,
+    }));
   connection.getParsedTokenAccountsByOwner = async (_owner, filter) => {
     if (failTokens) throw new Error('offline token read failure');
     const classic = 'programId' in filter && filter.programId.equals(TOKEN_PROGRAM_ID);
     return {
       context: { slot: 1 },
-      value: classic ? [{
-        pubkey: PublicKey.unique(),
-        account: {
-          lamports: 0, owner: TOKEN_PROGRAM_ID, executable: false, rentEpoch: 0,
-          data: { program: 'spl-token', space: 165, parsed: { info: {
-            mint, tokenAmount: { amount: '2000000', decimals: 6, uiAmount: 2 },
-          } } },
-        },
-      }] : [],
+      value: classic
+        ? [
+            {
+              pubkey: PublicKey.unique(),
+              account: {
+                lamports: 0,
+                owner: TOKEN_PROGRAM_ID,
+                executable: false,
+                rentEpoch: 0,
+                data: {
+                  program: 'spl-token',
+                  space: 165,
+                  parsed: {
+                    info: {
+                      mint,
+                      tokenAmount: { amount: '2000000', decimals: 6, uiAmount: 2 },
+                    },
+                  },
+                },
+              },
+            },
+          ]
+        : [],
     };
   };
-  globalThis.fetch = async () => new Response(JSON.stringify({
-    ...(priceSol ? { [WSOL_MINT]: { usdPrice: 100 } } : {}),
-    ...(priceTokens ? { [mint]: { usdPrice: 5 } } : {}),
-  }), { status: 200 });
+  globalThis.fetch = async () =>
+    new Response(
+      JSON.stringify({
+        ...(priceSol ? { [WSOL_MINT]: { usdPrice: 100 } } : {}),
+        ...(priceTokens ? { [mint]: { usdPrice: 5 } } : {}),
+      }),
+      { status: 200 },
+    );
 
   const complete = await buildPortfolio();
   assert.deepEqual(complete.errors, []);
@@ -76,7 +99,11 @@ try {
   ok('failed token balance reads surface as an incomplete portfolio');
 
   let rendered = '';
-  const ctx = { reply: async (text: string) => { rendered = text; } } as unknown as Context;
+  const ctx = {
+    reply: async (text: string) => {
+      rendered = text;
+    },
+  } as unknown as Context;
   await showPnl(ctx);
   assert.match(rendered, /Could not work out the P&amp;L/);
   assert.equal(db.valueMarks().length, 0);
@@ -106,7 +133,7 @@ try {
   ok('a wallet group is not compared against the entire account cost basis');
   await showPositions(ctx);
   assert.match(rendered, /Group one holdings/);
-  assert.doesNotMatch(rendered, /banked|   in |[+-]\d+\.\d+%/);
+  assert.doesNotMatch(rendered, /banked| {3}in |[+-]\d+\.\d+%/);
   ok('group position cards withhold account-wide cost and profit');
 
   await showPnl(ctx);
@@ -117,7 +144,7 @@ try {
   clearPriceCache();
   await showPositions(ctx);
   assert.match(rendered, /value unavailable/);
-  assert.doesNotMatch(rendered, /banked|   in |[+-]\d+\.\d+%/);
+  assert.doesNotMatch(rendered, /banked| {3}in |[+-]\d+\.\d+%/);
   ok('unpriced position cards cannot report a false total loss');
   failTokens = true;
   await showPositions(ctx);
@@ -125,10 +152,19 @@ try {
   assert.doesNotMatch(rendered, /No token positions/);
   ok('failed holdings reads cannot report an empty position set');
   clearPriceCache();
-  globalThis.fetch = async () => new Response(JSON.stringify({ pairs: [
-    { baseToken: { address: WSOL_MINT.toLowerCase() }, priceUsd: '900', liquidity: { usd: 100_000 } },
-    { baseToken: { address: WSOL_MINT }, priceUsd: '100', liquidity: { usd: 1_000 } },
-  ] }));
+  globalThis.fetch = async () =>
+    new Response(
+      JSON.stringify({
+        pairs: [
+          {
+            baseToken: { address: WSOL_MINT.toLowerCase() },
+            priceUsd: '900',
+            liquidity: { usd: 100_000 },
+          },
+          { baseToken: { address: WSOL_MINT }, priceUsd: '100', liquidity: { usd: 1_000 } },
+        ],
+      }),
+    );
   assert.equal(await getDexscreenerPrice(WSOL_MINT), 100);
   ok('Solana fallback pricing preserves case-sensitive mint identity');
 } finally {

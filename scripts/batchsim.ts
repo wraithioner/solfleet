@@ -24,7 +24,7 @@ process.env.DATA_DIR = './.batchsim-data';
 process.env.VAULT_AUTOLOCK_MINUTES = '0';
 
 import fs from 'node:fs';
-import { Keypair, VersionedTransaction } from '@solana/web3.js';
+import { Keypair, type VersionedTransaction } from '@solana/web3.js';
 
 const DATA = './.batchsim-data';
 fs.rmSync(DATA, { recursive: true, force: true });
@@ -49,22 +49,30 @@ async function liveMint(): Promise<string> {
   if (requestedMint) return requestedMint;
   const res = await fetch('https://api.dexscreener.com/token-profiles/latest/v1');
   const profiles = (await res.json()) as Array<{ chainId: string; tokenAddress: string }>;
-  const sol = profiles.filter((p) => p.chainId === 'solana');
-  return (sol.find((p) => p.tokenAddress.endsWith('pump')) ?? sol[0]!).tokenAddress;
+  const sol = profiles.filter(p => p.chainId === 'solana');
+  return (sol.find(p => p.tokenAddress.endsWith('pump')) ?? sol[0]!).tokenAddress;
 }
 
 const mint = await liveMint();
 const settings = db.settings();
 
 console.log(`\n  wallets     ${walletCount}`);
-console.log(`  size        ${solPerWallet} SOL each  (${(solPerWallet * walletCount).toFixed(3)} SOL total)`);
+console.log(
+  `  size        ${solPerWallet} SOL each  (${(solPerWallet * walletCount).toFixed(3)} SOL total)`,
+);
 console.log(`  token       ${mint}`);
 
 const pool = await detectPool(mint);
 console.log(`  venue       ${pool}`);
-console.log(`  needs       ${(Number(requiredForBuy(solPerWallet, settings.priorityFeeSol, {
-  wrapsSol: pool !== 'pump',
-})) / 1e9).toFixed(5)} SOL per wallet\n`);
+console.log(
+  `  needs       ${(
+    Number(
+      requiredForBuy(solPerWallet, settings.priorityFeeSol, {
+        wrapsSol: pool !== 'pump',
+      }),
+    ) / 1e9
+  ).toFixed(5)} SOL per wallet\n`,
+);
 
 // Throwaway wallets. They hold nothing, which is the point: an unfunded wallet
 // must fail with a fundable-looking error rather than a malformed transaction,
@@ -97,7 +105,9 @@ async function findRecentTrader(): Promise<string | null> {
     const sigs = await rpc().getSignaturesForAddress(new PublicKey(mint), { limit: 12 });
     for (const s of sigs) {
       if (s.err) continue;
-      const [tx] = await rpc().getParsedTransactions([s.signature], { maxSupportedTransactionVersion: 0 });
+      const [tx] = await rpc().getParsedTransactions([s.signature], {
+        maxSupportedTransactionVersion: 0,
+      });
       // the fee payer is the first account and is always a plain wallet
       const payer = tx?.transaction.message.accountKeys?.[0]?.pubkey?.toBase58();
       if (!payer) continue;
@@ -158,7 +168,8 @@ const started = Date.now();
 /** How the chain answered. Grouped, because fifty wallets fail the same way. */
 function classify(err: unknown): string {
   const text = typeof err === 'string' ? err : JSON.stringify(err);
-  if (/insufficient lamports|debit an account/i.test(text)) return 'insufficient funds (expected — wallet is empty)';
+  if (/insufficient lamports|debit an account/i.test(text))
+    return 'insufficient funds (expected — wallet is empty)';
   if (/slippage|0x1771|TooMuchSolRequired/i.test(text)) return 'slippage exceeded';
   if (/BlockhashNotFound/i.test(text)) return 'blockhash expired';
   if (/AccountNotFound|could not find account/i.test(text)) return 'account missing';
@@ -192,7 +203,7 @@ await Promise.all(
         row.bytes = tx.serialize().length;
 
         const signed = signTx(tx, kp);
-        row.signed = signed.signatures.some((s) => s.some((b) => b !== 0));
+        row.signed = signed.signatures.some(s => s.some(b => b !== 0));
 
         const sim = await rpc().simulateTransaction(signed as VersionedTransaction, {
           replaceRecentBlockhash: true,
@@ -212,17 +223,18 @@ await Promise.all(
 // ── report ────────────────────────────────────────────────────────────────────
 
 const elapsed = (Date.now() - started) / 1000;
-const built = rows.filter((r) => r.built);
-const signedOk = rows.filter((r) => r.signed);
+const built = rows.filter(r => r.built);
+const signedOk = rows.filter(r => r.signed);
 
 console.log(`  ${'─'.repeat(58)}`);
 console.log(`  built        ${built.length}/${rows.length}`);
 console.log(`  signed       ${signedOk.length}/${rows.length}`);
 
-const sizes = [...new Set(built.map((r) => r.bytes))];
+const sizes = [...new Set(built.map(r => r.bytes))];
 console.log(`  tx size      ${sizes.join(', ')} bytes  (limit 1232)`);
-const oversize = built.filter((r) => (r.bytes ?? 0) > 1232);
-if (oversize.length > 0) console.log(`  ⚠️  ${oversize.length} transaction(s) exceed the packet limit`);
+const oversize = built.filter(r => (r.bytes ?? 0) > 1232);
+if (oversize.length > 0)
+  console.log(`  ⚠️  ${oversize.length} transaction(s) exceed the packet limit`);
 
 const outcomes = new Map<string, number>();
 for (const r of rows) {
@@ -235,15 +247,19 @@ for (const [outcome, n] of [...outcomes].sort((a, b) => b[1] - a[1])) {
   console.log(`    ${String(n).padStart(3)}×  ${outcome}`);
 }
 
-const times = rows.map((r) => r.ms).sort((a, b) => a - b);
-console.log(`\n  per wallet   median ${times[Math.floor(times.length / 2)]}ms   slowest ${times.at(-1)}ms`);
-console.log(`  wall clock   ${elapsed.toFixed(1)}s for ${rows.length} wallets at concurrency ${concurrency}`);
+const times = rows.map(r => r.ms).sort((a, b) => a - b);
+console.log(
+  `\n  per wallet   median ${times[Math.floor(times.length / 2)]}ms   slowest ${times.at(-1)}ms`,
+);
+console.log(
+  `  wall clock   ${elapsed.toFixed(1)}s for ${rows.length} wallets at concurrency ${concurrency}`,
+);
 
 // the question the empty wallets cannot answer
 console.log(`\n  against a funded account:`);
 console.log(`    ${await probeFunded()}`);
 
-const fatal = rows.filter((r) => r.error).length;
+const fatal = rows.filter(r => r.error).length;
 console.log(
   `\n  ${fatal === 0 ? '✅ every wallet produced a signed transaction the chain accepted as well-formed' : `❌ ${fatal} wallet(s) could not build at all`}\n`,
 );

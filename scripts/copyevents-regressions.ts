@@ -16,14 +16,25 @@ process.env.VAULT_AUTOLOCK_MINUTES = '0';
 
 const { db } = await import('../src/store/db.js');
 const { rpc } = await import('../src/chains/solana.js');
-const { pollCopyTargets, syncSubscriptions, stopSubscriptions, resetProcessed, mirrorBuy, detectTokenMoves } =
-  await import('../src/services/copytrade.js');
-const { withExecutionMaintenance, ExecutionCancelledError } = await import('../src/services/execution.js');
+const {
+  pollCopyTargets,
+  syncSubscriptions,
+  stopSubscriptions,
+  resetProcessed,
+  mirrorBuy,
+  detectTokenMoves,
+} = await import('../src/services/copytrade.js');
+const { withExecutionMaintenance, ExecutionCancelledError } = await import(
+  '../src/services/execution.js'
+);
 
 type LogCallback = (logs: { signature: string; err: null }) => void;
 type Signature = { signature: string; err: null | { InstructionError: [number, string] } };
 const connection = rpc() as unknown as {
-  getSignaturesForAddress(address: { toBase58(): string }, options: { limit: number; before?: string }): Promise<Signature[]>;
+  getSignaturesForAddress(
+    address: { toBase58(): string },
+    options: { limit: number; before?: string },
+  ): Promise<Signature[]>;
   getParsedTransactions(signatures: string[]): Promise<Array<ReturnType<typeof receipt> | null>>;
   onLogs(address: { toBase58(): string }, callback: LogCallback): number;
   removeOnLogsListener(id: number): Promise<void>;
@@ -45,19 +56,37 @@ function receipt(owners: string[] = [], failed = false) {
     meta: {
       err: failed ? { InstructionError: [0, 'Custom'] } : null,
       preTokenBalances: [],
-      postTokenBalances: owners.map((owner, i) => ({ mint: `offline-mint-${i}`, owner, uiTokenAmount: { uiAmount: 1 } })),
+      postTokenBalances: owners.map((owner, i) => ({
+        mint: `offline-mint-${i}`,
+        owner,
+        uiTokenAmount: { uiAmount: 1 },
+      })),
       preBalances: owners.map(() => 100),
       postBalances: owners.map(() => 100),
     },
-    transaction: { message: { accountKeys: owners.map((pubkey) => ({ pubkey })) } },
+    transaction: { message: { accountKeys: owners.map(pubkey => ({ pubkey })) } },
   };
 }
 
-function target(id: string, address = addressA, lastSignature: string | undefined = 'old'): CopyTarget {
+function target(
+  id: string,
+  address = addressA,
+  lastSignature: string | undefined = 'old',
+): CopyTarget {
   const value: CopyTarget = {
-    id, address, label: id, buySol: 0.05, sizeMode: 'fixed', sizePercent: 5,
-    entryMode: 'first', maxEntries: 1, exitMode: 'off', copiedMints: [], enabled: true,
-    createdAt: 1, lastSignature,
+    id,
+    address,
+    label: id,
+    buySol: 0.05,
+    sizeMode: 'fixed',
+    sizePercent: 5,
+    entryMode: 'first',
+    maxEntries: 1,
+    exitMode: 'off',
+    copiedMints: [],
+    enabled: true,
+    createdAt: 1,
+    lastSignature,
   };
   db.addCopyTarget(value);
   return value;
@@ -73,23 +102,36 @@ async function clean(): Promise<void> {
 async function waitFor(predicate: () => boolean): Promise<void> {
   for (let i = 0; i < 100; i++) {
     if (predicate()) return;
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    await new Promise<void>(resolve => setImmediate(resolve));
   }
   assert.ok(predicate(), 'offline callback did not settle');
 }
 
 let passed = 0;
-const check = (name: string) => { passed++; console.log(`  ✓ ${name}`); };
+const check = (name: string) => {
+  passed++;
+  console.log(`  ✓ ${name}`);
+};
 
 try {
   {
     const balance = (amount: string, uiAmount: number | null) => ({
-      mint: 'raw-mint', owner: addressA, uiTokenAmount: { amount, decimals: 6, uiAmount },
+      mint: 'raw-mint',
+      owner: addressA,
+      uiTokenAmount: { amount, decimals: 6, uiAmount },
     });
-    assert.deepEqual(detectTokenMoves([balance('1000000', null)], [balance('2500000', null)], addressA),
-      [{ mint: 'raw-mint', delta: 1.5, before: 1 }]);
-    assert.deepEqual(detectTokenMoves([balance('1000000', 1)], [balance('1000000', 50)], addressA), []);
-    assert.deepEqual(detectTokenMoves([balance('unreadable', null)], [balance('1000000', 1)], addressA), []);
+    assert.deepEqual(
+      detectTokenMoves([balance('1000000', null)], [balance('2500000', null)], addressA),
+      [{ mint: 'raw-mint', delta: 1.5, before: 1 }],
+    );
+    assert.deepEqual(
+      detectTokenMoves([balance('1000000', 1)], [balance('1000000', 50)], addressA),
+      [],
+    );
+    assert.deepEqual(
+      detectTokenMoves([balance('unreadable', null)], [balance('1000000', 1)], addressA),
+      [],
+    );
     check('raw token amounts survive null UI values and display scaling cannot fabricate a move');
   }
 
@@ -97,12 +139,18 @@ try {
     const value = target('null-receipt');
     connection.getSignaturesForAddress = async () => [sig('new'), sig('old')];
     let reads = 0;
-    connection.getParsedTransactions = async () => { reads++; return [null]; };
+    connection.getParsedTransactions = async () => {
+      reads++;
+      return [null];
+    };
     await pollCopyTargets(noopNotify);
     assert.equal(reads, 2);
     assert.equal(value.lastSignature, 'old');
     assert.equal(value.handledSignatures, undefined);
-    connection.getParsedTransactions = async () => { reads++; return [receipt()]; };
+    connection.getParsedTransactions = async () => {
+      reads++;
+      return [receipt()];
+    };
     await pollCopyTargets(noopNotify);
     assert.equal(reads, 3);
     assert.equal(value.lastSignature, 'new');
@@ -123,7 +171,10 @@ try {
     await pollCopyTargets(noopNotify);
     assert.equal(value.lastSignature, 'old');
     assert.deepEqual(readOrder, ['middle', 'middle']);
-    connection.getParsedTransactions = async ([signature]) => { readOrder.push(signature!); return [receipt()]; };
+    connection.getParsedTransactions = async ([signature]) => {
+      readOrder.push(signature!);
+      return [receipt()];
+    };
     await pollCopyTargets(noopNotify);
     assert.deepEqual(readOrder.slice(2), ['middle', 'newest']);
     assert.equal(value.lastSignature, 'newest');
@@ -133,8 +184,15 @@ try {
 
   {
     const value = target('partial-cursor');
-    connection.getSignaturesForAddress = async () => [sig('newest'), sig('middle'), sig('first'), sig('old')];
-    connection.getParsedTransactions = async ([signature]) => [signature === 'middle' ? null : receipt()];
+    connection.getSignaturesForAddress = async () => [
+      sig('newest'),
+      sig('middle'),
+      sig('first'),
+      sig('old'),
+    ];
+    connection.getParsedTransactions = async ([signature]) => [
+      signature === 'middle' ? null : receipt(),
+    ];
     await pollCopyTargets(noopNotify);
     assert.equal(value.lastSignature, 'first');
     assert.deepEqual(value.handledSignatures, ['first']);
@@ -147,12 +205,15 @@ try {
     target('shared-b', addressB);
     connection.getSignaturesForAddress = async () => [sig('shared'), sig('old')];
     let reads = 0;
-    connection.getParsedTransactions = async () => { reads++; return [receipt([addressA, addressB])]; };
+    connection.getParsedTransactions = async () => {
+      reads++;
+      return [receipt([addressA, addressB])];
+    };
     const before = db.copyDecisions(100).length;
     await pollCopyTargets(noopNotify);
     assert.equal(reads, 2);
     assert.equal(db.copyDecisions(100).length, before + 2);
-    assert.ok(db.copyTargets().every((t) => t.handledSignatures?.includes('shared')));
+    assert.ok(db.copyTargets().every(t => t.handledSignatures?.includes('shared')));
     check('one atomic signature is interpreted separately for every followed target');
     await clean();
   }
@@ -160,7 +221,10 @@ try {
   {
     const value = target('socket-restart');
     let reads = 0;
-    connection.getParsedTransactions = async () => { reads++; return [receipt()]; };
+    connection.getParsedTransactions = async () => {
+      reads++;
+      return [receipt()];
+    };
     connection.getSignaturesForAddress = async () => [sig('socket-event'), sig('old')];
     await syncSubscriptions(noopNotify);
     callbacks.get(addressA)!({ signature: 'socket-event', err: null });
@@ -179,15 +243,20 @@ try {
   {
     const value = target('overlap');
     let release!: (value: ReturnType<typeof receipt>) => void;
-    const pending = new Promise<ReturnType<typeof receipt>>((resolve) => { release = resolve; });
+    const pending = new Promise<ReturnType<typeof receipt>>(resolve => {
+      release = resolve;
+    });
     let reads = 0;
-    connection.getParsedTransactions = async () => { reads++; return [await pending]; };
+    connection.getParsedTransactions = async () => {
+      reads++;
+      return [await pending];
+    };
     connection.getSignaturesForAddress = async () => [sig('overlap-event'), sig('old')];
     await syncSubscriptions(noopNotify);
     callbacks.get(addressA)!({ signature: 'overlap-event', err: null });
     await waitFor(() => reads === 1);
     const poll = pollCopyTargets(noopNotify);
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    await new Promise<void>(resolve => setImmediate(resolve));
     assert.equal(value.lastSignature, 'old');
     release(receipt());
     await poll;
@@ -207,7 +276,10 @@ try {
       return [...signatures.slice(100), sig('old')];
     };
     const readOrder: string[] = [];
-    connection.getParsedTransactions = async ([signature]) => { readOrder.push(signature!); return [receipt()]; };
+    connection.getParsedTransactions = async ([signature]) => {
+      readOrder.push(signature!);
+      return [receipt()];
+    };
     await pollCopyTargets(noopNotify);
     assert.deepEqual(pageRequests, [undefined, 'page-5']);
     assert.equal(readOrder.length, 105);
@@ -226,14 +298,19 @@ try {
       return Array.from({ length: options.limit }, (_, i) => sig(`gap-${pages}-${i}`));
     };
     let reads = 0;
-    connection.getParsedTransactions = async () => { reads++; return [receipt()]; };
+    connection.getParsedTransactions = async () => {
+      reads++;
+      return [receipt()];
+    };
     const notices: string[] = [];
-    await pollCopyTargets(async (text) => { notices.push(text); });
+    await pollCopyTargets(async text => {
+      notices.push(text);
+    });
     assert.equal(pages, 5);
     assert.equal(reads, 0);
     assert.equal(value.enabled, false);
     assert.equal(value.lastSignature, 'old');
-    assert.ok(notices.some((text) => text.includes('gap in the history')));
+    assert.ok(notices.some(text => text.includes('gap in the history')));
     check('an unknown history gap pauses the target without replaying a partial backlog');
     await clean();
   }
@@ -241,10 +318,15 @@ try {
   {
     const value = target('failed-onchain');
     connection.getSignaturesForAddress = async () => [
-      { signature: 'listed-failure', err: { InstructionError: [0, 'Custom'] } }, sig('parsed-failure'), sig('old'),
+      { signature: 'listed-failure', err: { InstructionError: [0, 'Custom'] } },
+      sig('parsed-failure'),
+      sig('old'),
     ];
     let reads = 0;
-    connection.getParsedTransactions = async () => { reads++; return [receipt([addressA], true)]; };
+    connection.getParsedTransactions = async () => {
+      reads++;
+      return [receipt([addressA], true)];
+    };
     const decisions = db.copyDecisions(100).length;
     await pollCopyTargets(noopNotify);
     assert.equal(reads, 1);
@@ -256,20 +338,40 @@ try {
   }
 
   const wallet: WalletRecord = {
-    id: 'offline-wallet', kind: 'solana', address: 'offline-address', label: 'Offline wallet',
-    secret: '', groups: [], isMain: false, disabled: false, createdAt: 1,
+    id: 'offline-wallet',
+    kind: 'solana',
+    address: 'offline-address',
+    label: 'Offline wallet',
+    secret: '',
+    groups: [],
+    isMain: false,
+    disabled: false,
+    createdAt: 1,
   };
   for (const cancellation of ['disable', 'remove'] as const) {
     const value = target(`cancel-${cancellation}`);
     let release!: (value: Awaited<ReturnType<CopyBuyServices['screenToken']>>) => void;
-    const screen = new Promise<Awaited<ReturnType<CopyBuyServices['screenToken']>>>((resolve) => { release = resolve; });
+    const screen = new Promise<Awaited<ReturnType<CopyBuyServices['screenToken']>>>(resolve => {
+      release = resolve;
+    });
     let trades = 0;
     const services: CopyBuyServices = {
-      selectWallets: () => [wallet], getMintBalances: async () => new Map(), screenToken: () => screen,
-      batchPumpTrade: async () => { trades++; return { results: [], succeeded: 0, failed: 0, startedAt: 1, finishedAt: 2 }; },
+      selectWallets: () => [wallet],
+      getMintBalances: async () => new Map(),
+      screenToken: () => screen,
+      batchPumpTrade: async () => {
+        trades++;
+        return { results: [], succeeded: 0, failed: 0, startedAt: 1, finishedAt: 2 };
+      },
       measureTokensGained: async () => 0,
     };
-    const work = mirrorBuy(value, { mint: 'cancel-mint', delta: 1, before: 0 }, 1, noopNotify, services);
+    const work = mirrorBuy(
+      value,
+      { mint: 'cancel-mint', delta: 1, before: 0 },
+      1,
+      noopNotify,
+      services,
+    );
     const rejected = assert.rejects(work, ExecutionCancelledError);
     await waitFor(() => !!value.entryCounts?.['cancel-mint']);
     if (cancellation === 'disable') db.updateCopyTarget(value.id, { enabled: false });
@@ -284,10 +386,15 @@ try {
   {
     const value = target('reset-pending-read');
     let release!: (value: ReturnType<typeof receipt>) => void;
-    const pending = new Promise<ReturnType<typeof receipt>>((resolve) => { release = resolve; });
+    const pending = new Promise<ReturnType<typeof receipt>>(resolve => {
+      release = resolve;
+    });
     let reads = 0;
     connection.getSignaturesForAddress = async () => [sig('pre-reset'), sig('old')];
-    connection.getParsedTransactions = async () => { reads++; return [await pending]; };
+    connection.getParsedTransactions = async () => {
+      reads++;
+      return [await pending];
+    };
     const work = pollCopyTargets(noopNotify);
     await waitFor(() => reads === 1);
     await withExecutionMaintenance(async () => {});
@@ -302,9 +409,14 @@ try {
   {
     const value = target('flood');
     let release!: (value: ReturnType<typeof receipt>) => void;
-    const pending = new Promise<ReturnType<typeof receipt>>((resolve) => { release = resolve; });
+    const pending = new Promise<ReturnType<typeof receipt>>(resolve => {
+      release = resolve;
+    });
     let reads = 0;
-    connection.getParsedTransactions = async () => { reads++; return [await pending]; };
+    connection.getParsedTransactions = async () => {
+      reads++;
+      return [await pending];
+    };
     await syncSubscriptions(noopNotify);
     const callback = callbacks.get(addressA)!;
     callback({ signature: 'active-flood', err: null });
@@ -315,8 +427,8 @@ try {
     await syncSubscriptions(noopNotify);
     assert.equal(subscriptionId, subscriptionsBefore);
     release(receipt());
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    await new Promise<void>(resolve => setImmediate(resolve));
+    await new Promise<void>(resolve => setImmediate(resolve));
     assert.equal(reads, 1, 'the disabled target backlog must be removed');
     assert.equal(value.handledSignatures, undefined);
     check('flood protection persists disablement and drops the target backlog');

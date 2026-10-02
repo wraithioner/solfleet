@@ -39,19 +39,28 @@ const result = (patch: Partial<ExecutionResult> = {}): ExecutionResult => ({
 });
 const summary = (results = [result()]): BatchSummary => ({
   results,
-  succeeded: results.filter((r) => r.ok).length,
-  failed: results.filter((r) => !r.ok).length,
+  succeeded: results.filter(r => r.ok).length,
+  failed: results.filter(r => !r.ok).length,
   startedAt: 1,
   finishedAt: 2,
   solReceived: 0.1,
   solSpent: 0.05,
 });
-const rejected = () => summary([result({ ok: false, signature: undefined, error: 'Build rejected' })]);
-const uncertain = () => summary([
-  result({ ok: false, signature: 'offline-pending-signature', error: 'Confirmation timed out', confirmationUnknown: true }),
-]);
+const rejected = () =>
+  summary([result({ ok: false, signature: undefined, error: 'Build rejected' })]);
+const uncertain = () =>
+  summary([
+    result({
+      ok: false,
+      signature: 'offline-pending-signature',
+      error: 'Confirmation timed out',
+      confirmationUnknown: true,
+    }),
+  ]);
 const noopNotify = async (_text: string) => {};
-const rejectNotify = async (_text: string) => { throw new Error('Telegram unavailable'); };
+const rejectNotify = async (_text: string) => {
+  throw new Error('Telegram unavailable');
+};
 const baseServices = (): WatcherTradeServices => ({
   selectWallets: () => [wallet],
   getMintBalances: async () => new Map([[wallet.address, 100_000_000n]]),
@@ -103,19 +112,24 @@ try {
     const value = rule(kind);
     let trades = 0;
     const services = baseServices();
-    services.batchPumpTrade = async () => { trades++; return summary(); };
+    services.batchPumpTrade = async () => {
+      trades++;
+      return summary();
+    };
     await fire(value, 1, rejectNotify, services);
     assert.equal(trades, 1);
     assert.ok(value.firedAt, 'a notification failure must not re-arm a filled order');
     assert.equal(value.failedAttempts, undefined);
-    assert.ok(!db.activeRules().some((r) => r.id === value.id));
+    assert.ok(!db.activeRules().some(r => r.id === value.id));
     check(`${kind}: filled order stays fired when Telegram fails`);
   }
 
   {
     const value = rule();
     const services = baseServices();
-    services.measureTokensSold = async () => { throw new Error('Post-trade balance unavailable'); };
+    services.measureTokensSold = async () => {
+      throw new Error('Post-trade balance unavailable');
+    };
     await fire(value, 1, noopNotify, services);
     assert.ok(value.firedAt);
     assert.equal(value.failedAttempts, undefined);
@@ -126,8 +140,13 @@ try {
     const value = rule();
     let trades = 0;
     const services = baseServices();
-    services.getMintBalances = async () => { throw new Error('RPC unavailable'); };
-    services.batchPumpTrade = async () => { trades++; return summary(); };
+    services.getMintBalances = async () => {
+      throw new Error('RPC unavailable');
+    };
+    services.batchPumpTrade = async () => {
+      trades++;
+      return summary();
+    };
     await fire(value, 1, noopNotify, services);
     assert.equal(trades, 0);
     assert.equal(value.firedAt, undefined);
@@ -160,17 +179,25 @@ try {
     const services = baseServices();
     services.batchPumpTrade = async () => uncertain();
     const notices: string[] = [];
-    await fire(value, 1, async (text) => { notices.push(text); }, services);
+    await fire(
+      value,
+      1,
+      async text => {
+        notices.push(text);
+      },
+      services,
+    );
     assert.ok(value.firedAt);
     assert.equal(value.failedAttempts, undefined);
-    assert.ok(notices.some((text) => text.includes('may still land')));
+    assert.ok(notices.some(text => text.includes('may still land')));
     check('unconfirmed submission is held for review instead of retried');
   }
 
   {
     const value = rule();
     const services = baseServices();
-    services.batchPumpTrade = async () => summary([result(), result({ ok: false, signature: undefined, error: 'Rejected' })]);
+    services.batchPumpTrade = async () =>
+      summary([result(), result({ ok: false, signature: undefined, error: 'Rejected' })]);
     await fire(value, 1, noopNotify, services);
     assert.ok(value.firedAt);
     assert.equal(value.failedAttempts, undefined);
@@ -180,7 +207,9 @@ try {
   {
     const value = rule();
     const services = baseServices();
-    services.batchPumpTrade = async () => { throw new Error('Execution interrupted'); };
+    services.batchPumpTrade = async () => {
+      throw new Error('Execution interrupted');
+    };
     await fire(value, 1, noopNotify, services);
     assert.ok(value.firedAt);
     assert.equal(value.failedAttempts, undefined);
@@ -192,7 +221,11 @@ try {
     const services = baseServices();
     services.batchPumpTrade = async () => rejected();
     await runDueDca(noopNotify, services);
-    assert.equal(value.roundsDone, 2, 'rollback must use the count before the store mutated the plan');
+    assert.equal(
+      value.roundsDone,
+      2,
+      'rollback must use the count before the store mutated the plan',
+    );
     assert.ok(value.nextRunAt <= Date.now());
     db.removeDcaPlan(value.id);
     check('DCA round with no fills returns its original round count');
@@ -205,7 +238,7 @@ try {
     await runDueDca(noopNotify, services);
     assert.equal(value.roundsDone, 3, 'an unconfirmed round remains claimed');
     assert.equal(value.enabled, false, 'future spending pauses until confirmation is checked');
-    assert.ok(!db.dueDcaPlans().some((p) => p.id === value.id));
+    assert.ok(!db.dueDcaPlans().some(p => p.id === value.id));
     db.removeDcaPlan(value.id);
     check('unconfirmed DCA execution pauses the plan without retrying the round');
   }
@@ -225,12 +258,16 @@ try {
   {
     const value = plan();
     const services = baseServices();
-    services.batchPumpTrade = async () => { throw new Error('Batch interrupted'); };
+    services.batchPumpTrade = async () => {
+      throw new Error('Batch interrupted');
+    };
     const notices: string[] = [];
-    await runDueDca(async (text) => { notices.push(text); }, services);
+    await runDueDca(async text => {
+      notices.push(text);
+    }, services);
     assert.equal(value.roundsDone, 3);
     assert.equal(value.enabled, false);
-    assert.ok(notices.some((text) => text.includes('plan is paused')));
+    assert.ok(notices.some(text => text.includes('plan is paused')));
     db.removeDcaPlan(value.id);
     check('a thrown DCA batch keeps its round claimed and reports the paused plan');
   }
@@ -257,14 +294,23 @@ try {
     let trades = 0;
     const services: CopyBuyServices = {
       selectWallets: () => [wallet],
-      getMintBalances: async () => { throw new Error('RPC unavailable'); },
+      getMintBalances: async () => {
+        throw new Error('RPC unavailable');
+      },
       screenToken: async () => ({ verdict: { safe: true, reasons: [], notes: [] } }),
-      batchPumpTrade: async () => { trades++; return summary(); },
+      batchPumpTrade: async () => {
+        trades++;
+        return summary();
+      },
       measureTokensGained: async () => 100,
     };
     await mirrorBuy(target, { mint, delta: 100, before: 0 }, 1, noopNotify, services);
     assert.equal(trades, 0);
-    assert.equal(target.entryCounts?.[mint], undefined, 'a refused balance read must not consume an entry');
+    assert.equal(
+      target.entryCounts?.[mint],
+      undefined,
+      'a refused balance read must not consume an entry',
+    );
     assert.deepEqual(target.copiedMints, []);
     assert.deepEqual(db.position(mint), priorPosition, 'existing basis and exposure remain intact');
     assert.match(db.copyDecisions()[0]!.reason, /balances could not be read/);

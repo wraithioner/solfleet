@@ -73,12 +73,12 @@ export interface TokenLocks {
 
 /** Outstanding balances whose final schedule date exceeds the horizon. Display only. */
 export function lockedBeyond(locked: LockedSupply[], horizonMs: number, now = Date.now()): number {
-  return locked.filter((l) => l.unlockAt - now >= horizonMs).reduce((sum, l) => sum + l.pct, 0);
+  return locked.filter(l => l.unlockAt - now >= horizonMs).reduce((sum, l) => sum + l.pct, 0);
 }
 
 /** The furthest unlock among them, for naming a year out loud. */
 export function furthestUnlock(locked: LockedSupply[]): number | undefined {
-  return locked.length === 0 ? undefined : Math.max(...locked.map((l) => l.unlockAt));
+  return locked.length === 0 ? undefined : Math.max(...locked.map(l => l.unlockAt));
 }
 
 export interface Stream {
@@ -146,9 +146,8 @@ async function streamAccounts(mint: string, timeoutMs: number): Promise<Buffer[]
   let paginationKey: string | null = null;
 
   for (let page = 0; page < MAX_STREAM_PAGES; page++) {
-    const body: RpcResponse<{ accounts: AccountRow[]; paginationKey: string | null }> = await fetchJson(
-      config.solana.rpcUrl,
-      {
+    const body: RpcResponse<{ accounts: AccountRow[]; paginationKey: string | null }> =
+      await fetchJson(config.solana.rpcUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         timeoutMs,
@@ -158,17 +157,21 @@ async function streamAccounts(mint: string, timeoutMs: number): Promise<Buffer[]
           method: 'getProgramAccountsV2',
           params: [
             STREAMFLOW_PROGRAM,
-            { encoding: 'base64', limit: STREAM_PAGE_SIZE, filters, ...(paginationKey ? { paginationKey } : {}) },
+            {
+              encoding: 'base64',
+              limit: STREAM_PAGE_SIZE,
+              filters,
+              ...(paginationKey ? { paginationKey } : {}),
+            },
           ],
         }),
-      },
-    );
+      });
 
     if (body.error || !body.result) {
       // the endpoint does not offer it — pay the ten and get the same answer
       const conn = rpc();
       const all = await conn.getProgramAccounts(new PublicKey(STREAMFLOW_PROGRAM), { filters });
-      return all.map((a) => a.account.data);
+      return all.map(a => a.account.data);
     }
 
     for (const row of body.result.accounts) out.push(Buffer.from(row.account.data[0], 'base64'));
@@ -213,7 +216,7 @@ export async function readTokenLocks(
     if (supply <= 0n) return undefined;
 
     const streams = accounts
-      .map((data) => decodeStream(data))
+      .map(data => decodeStream(data))
       .filter((s): s is Stream => s !== undefined);
 
     return summariseLocks(streams, supply, now);
@@ -239,8 +242,13 @@ export function summariseLocks(streams: Stream[], supply: bigint, now = Date.now
   const pct = (v: bigint): number => Number((v * 100_000_000n + supply - 1n) / supply) / 1_000_000;
 
   for (const s of streams) {
-    if (s.deposited < 0n || s.withdrawn < 0n || s.withdrawn > s.deposited ||
-        ![s.start, s.end, s.canceledAt].every(Number.isSafeInteger) || s.end < s.start) {
+    if (
+      s.deposited < 0n ||
+      s.withdrawn < 0n ||
+      s.withdrawn > s.deposited ||
+      ![s.start, s.end, s.canceledAt].every(Number.isSafeInteger) ||
+      s.end < s.start
+    ) {
       throw new Error('Invalid vesting stream');
     }
     /*

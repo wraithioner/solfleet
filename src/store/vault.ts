@@ -103,19 +103,28 @@ export function vaultExists(): boolean {
 
 function parseVaultFile(contents: string): VaultFile {
   const parsed: unknown = JSON.parse(contents);
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Invalid vault metadata.');
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
+    throw new Error('Invalid vault metadata.');
   const file = parsed as VaultFile;
   if (file.version !== 1) throw new Error(`Unsupported vault version ${file.version}.`);
   if (file.mode !== undefined && file.mode !== 'passphrase' && file.mode !== 'keyfile') {
     throw new Error('Invalid vault mode.');
   }
-  if (typeof file.verifier !== 'string' || Buffer.from(file.verifier, 'base64').length < 29 ||
-      !Number.isFinite(file.createdAt)) throw new Error('Invalid vault verifier or creation time.');
+  if (
+    typeof file.verifier !== 'string' ||
+    Buffer.from(file.verifier, 'base64').length < 29 ||
+    !Number.isFinite(file.createdAt)
+  )
+    throw new Error('Invalid vault verifier or creation time.');
   if ((file.mode ?? 'passphrase') === 'passphrase') {
     const kdf = file.kdf;
-    if (!kdf || kdf.algo !== 'scrypt' || kdf.keyLen !== KDF.keyLen ||
-        ![kdf.N, kdf.r, kdf.p].every((value) => Number.isSafeInteger(value) && value > 0) ||
-        typeof kdf.salt !== 'string' || Buffer.from(kdf.salt, 'base64').length < 16) {
+    if (
+      kdf?.algo !== 'scrypt' ||
+      kdf.keyLen !== KDF.keyLen ||
+      ![kdf.N, kdf.r, kdf.p].every(value => Number.isSafeInteger(value) && value > 0) ||
+      typeof kdf.salt !== 'string' ||
+      Buffer.from(kdf.salt, 'base64').length < 16
+    ) {
       throw new Error('Invalid vault key derivation metadata.');
     }
   }
@@ -133,7 +142,11 @@ function readVaultFile(): VaultFile {
       throw err;
     }
     if (fs.existsSync(vaultPath())) {
-      try { fs.copyFileSync(vaultPath(), `${vaultPath()}.corrupt`); } catch { /* best effort */ }
+      try {
+        fs.copyFileSync(vaultPath(), `${vaultPath()}.corrupt`);
+      } catch {
+        /* best effort */
+      }
     }
     writeAtomic(vaultPath(), JSON.stringify(recovered, null, 2));
     log.warn('Vault metadata recovered from its backup.');
@@ -154,7 +167,8 @@ function requireKdf(file: VaultFile): KdfParams & { algo: 'scrypt'; salt: string
 
 /** Create a brand new vault. Fails if one already exists — we never overwrite keys. */
 export async function initVault(passphrase: string): Promise<void> {
-  if (vaultExists()) throw new Error('A vault already exists. Delete data/vault.json only if you have backups.');
+  if (vaultExists())
+    throw new Error('A vault already exists. Delete data/vault.json only if you have backups.');
   if (passphrase.length < 8) throw new Error('Passphrase must be at least 8 characters.');
 
   fs.mkdirSync(config.dataDir, { recursive: true });
@@ -164,7 +178,14 @@ export async function initVault(passphrase: string): Promise<void> {
   const file: VaultFile = {
     version: 1,
     mode: 'passphrase',
-    kdf: { algo: 'scrypt', N: KDF.N, r: KDF.r, p: KDF.p, keyLen: KDF.keyLen, salt: salt.toString('base64') },
+    kdf: {
+      algo: 'scrypt',
+      N: KDF.N,
+      r: KDF.r,
+      p: KDF.p,
+      keyLen: KDF.keyLen,
+      salt: salt.toString('base64'),
+    },
     verifier: seal(key, VERIFIER_PLAINTEXT),
     createdAt: Date.now(),
   };
@@ -186,7 +207,8 @@ export async function initVault(passphrase: string): Promise<void> {
  * a copy of the volume.
  */
 export function initVaultWithKeyfile(): void {
-  if (vaultExists()) throw new Error('A vault already exists. Delete data/vault.json only if you have backups.');
+  if (vaultExists())
+    throw new Error('A vault already exists. Delete data/vault.json only if you have backups.');
 
   fs.mkdirSync(config.dataDir, { recursive: true });
   const key = crypto.randomBytes(KDF.keyLen);
@@ -227,7 +249,8 @@ export function unlockFromKeyfile(): boolean {
   if (key.length !== KDF.keyLen) throw new Error('data/vault.key is corrupt: wrong key length.');
 
   try {
-    if (open(key, file.verifier).toString('utf8') !== VERIFIER_PLAINTEXT) throw new Error('mismatch');
+    if (open(key, file.verifier).toString('utf8') !== VERIFIER_PLAINTEXT)
+      throw new Error('mismatch');
   } catch {
     throw new Error('data/vault.key does not match this vault.');
   }
@@ -411,7 +434,11 @@ export function writeAtomic(file: string, contents: string): void {
     fs.renameSync(tmp, file);
   } catch (err) {
     // A failed replacement must not leave another copy of the master key.
-    try { fs.rmSync(tmp, { force: true }); } catch { /* retain the original error */ }
+    try {
+      fs.rmSync(tmp, { force: true });
+    } catch {
+      /* retain the original error */
+    }
     throw err;
   }
 
@@ -473,7 +500,9 @@ export function destroyVault(): void {
 export function openAtBoot(hasSecrets: boolean): 'opened' | 'created' | 'needs-passphrase' {
   if (!vaultExists()) {
     if (hasSecrets) {
-      throw new Error('Vault metadata is missing while encrypted wallet secrets still exist. Restore vault.json from a backup before starting; no new key was created.');
+      throw new Error(
+        'Vault metadata is missing while encrypted wallet secrets still exist. Restore vault.json from a backup before starting; no new key was created.',
+      );
     }
     initVaultWithKeyfile();
     return 'created';

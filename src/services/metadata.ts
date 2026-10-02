@@ -42,12 +42,14 @@ function readString(buf: Buffer, offset: number): { value: string; next: number 
  * showing "Unknown token" for exactly the launches worth looking at.
  */
 export async function getOnChainMetadata(mint: string): Promise<TokenMetadata | null> {
-  const info = await retry(() => rpc().getAccountInfo(metadataPda(new PublicKey(mint))), { attempts: 3 });
+  const info = await retry(() => rpc().getAccountInfo(metadataPda(new PublicKey(mint))), {
+    attempts: 3,
+  });
   if (!info) return null;
 
   const buf = Buffer.from(info.data);
   // key(1) + updateAuthority(32) + mint(32)
-  let cursor = 65;
+  const cursor = 65;
   if (buf.length < cursor + 4) return null;
 
   try {
@@ -66,11 +68,15 @@ export async function getOnChainMetadata(mint: string): Promise<TokenMetadata | 
  * pump.fun tokens host this on IPFS, which is slow and sometimes down — hence
  * the short timeout and the silent failure.
  */
-export async function resolveOffChainMetadata(uri: string): Promise<{ imageUrl?: string; description?: string }> {
+export async function resolveOffChainMetadata(
+  uri: string,
+): Promise<{ imageUrl?: string; description?: string }> {
   if (!uri || !/^https?:\/\//i.test(uri)) return {};
 
   try {
-    const json = await fetchJson<{ image?: string; description?: string }>(uri, { timeoutMs: 8_000 });
+    const json = await fetchJson<{ image?: string; description?: string }>(uri, {
+      timeoutMs: 8_000,
+    });
     const image = json.image;
     return {
       imageUrl: image && /^https?:\/\//i.test(image) ? image : undefined,

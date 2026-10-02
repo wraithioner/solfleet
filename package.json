@@ -13,12 +13,18 @@
     "dev": "tsx watch src/index.ts",
     "typecheck": "tsc --noEmit",
     "smoke": "node --import tsx scripts/smoke.ts",
-    "regressions": "node --import tsx scripts/transaction-regressions.ts && node --import tsx scripts/copytrade-regressions.ts && node --import tsx scripts/wallet-regressions.ts && node --import tsx scripts/portfolio-regressions.ts && node --import tsx scripts/reconcile-regressions.ts && node --import tsx scripts/deep-transaction-regressions.ts && node --import tsx scripts/copyevents-regressions.ts && node --import tsx scripts/safety-regressions.ts && node --import tsx scripts/concurrency-regressions.ts && node --import tsx scripts/accounting-regressions.ts && node --import tsx scripts/reconcile-deep-regressions.ts && node --import tsx scripts/client-regressions.ts",
+    "regressions": "node --import tsx scripts/transaction-regressions.ts && node --import tsx scripts/copytrade-regressions.ts && node --import tsx scripts/wallet-regressions.ts && node --import tsx scripts/portfolio-regressions.ts && node --import tsx scripts/reconcile-regressions.ts && node --import tsx scripts/deep-transaction-regressions.ts && node --import tsx scripts/copyevents-regressions.ts && node --import tsx scripts/safety-regressions.ts && node --import tsx scripts/concurrency-regressions.ts && node --import tsx scripts/accounting-regressions.ts && node --import tsx scripts/reconcile-deep-regressions.ts && node --import tsx scripts/client-regressions.ts && node --import tsx scripts/trade-accounting-regressions.ts && node --import tsx scripts/behavior-regressions.ts && node --import tsx scripts/manual-trade-regressions.ts",
     "test": "npm run smoke && npm run regressions",
     "netcheck": "node --import tsx scripts/netcheck.ts",
-    "check": "npm run typecheck && npm test",
+    "check": "npm run quality && npm run typecheck && npm test",
     "check:live": "npm run check && npm run netcheck",
-    "batchsim": "node --import tsx scripts/batchsim.ts"
+    "batchsim": "node --import tsx scripts/batchsim.ts",
+    "format": "biome format --write .",
+    "lint": "biome lint --error-on-warnings .",
+    "lint:fix": "biome lint --write --error-on-warnings .",
+    "quality": "biome check --error-on-warnings .",
+    "quality:ci": "biome ci --error-on-warnings .",
+    "check:ci": "npm run quality:ci && npm run typecheck && npm test"
   },
   "dependencies": {
     "@solana/spl-token": "^0.4.9",
@@ -31,6 +37,7 @@
     "tsx": "^4.19.2"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.5.15",
     "@types/node": "^22.10.2",
     "typescript": "^5.7.2"
   },

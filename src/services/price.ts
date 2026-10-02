@@ -55,7 +55,7 @@ export async function pricesInSol(mints: string[]): Promise<Map<string, number>>
    */
   const unresolved: string[] = [];
 
-  await pMap(mints, 8, async (mint) => {
+  await pMap(mints, 8, async mint => {
     try {
       const curve = await fetchBondingCurve(mint);
       if (curve && !curve.complete) {
