@@ -44,6 +44,10 @@ export function createBot(): Bot {
       if (id) log.warn(`Ignored update from unauthorised user ${id}`);
       return; // no reply — an unauthorised caller learns nothing, not even that the bot is alive
     }
+    // Wallet keys, seed phrases and imported secrets belong only in the
+    // operator's direct chat. The same owner can also message this bot from a
+    // group, where replying would disclose those secrets to every member.
+    if (ctx.chat?.type !== 'private') return;
     await next();
   });
 
@@ -51,7 +55,7 @@ export function createBot(): Bot {
   registerCallbacks(bot);
   registerText(bot);
 
-  bot.catch((err) => {
+  bot.catch(err => {
     log.error('Unhandled bot error', err.error);
   });
 
@@ -90,50 +94,50 @@ export async function registerMenu(bot: Bot): Promise<void> {
 // ── commands ──────────────────────────────────────────────────────────────────
 
 function registerCommands(bot: Bot): void {
-  bot.command('start', async (ctx) => {
+  bot.command('start', async ctx => {
     await showHome(ctx);
   });
 
-  bot.command('menu', async (ctx) => {
+  bot.command('menu', async ctx => {
     await showHome(ctx);
   });
 
-  bot.command('portfolio', async (ctx) => {
+  bot.command('portfolio', async ctx => {
     if (!(await requireUnlocked(ctx))) return;
     await showPortfolio(ctx);
   });
 
-  bot.command('wallets', async (ctx) => {
+  bot.command('wallets', async ctx => {
     if (!(await requireUnlocked(ctx))) return;
     await W.showWallets(ctx);
   });
 
-  bot.command('positions', async (ctx) => {
+  bot.command('positions', async ctx => {
     if (!(await requireUnlocked(ctx))) return;
     await showPositions(ctx);
   });
 
-  bot.command('pnl', async (ctx) => {
+  bot.command('pnl', async ctx => {
     if (!(await requireUnlocked(ctx))) return;
     await showPnl(ctx);
   });
 
-  bot.command('copy', async (ctx) => {
+  bot.command('copy', async ctx => {
     if (!(await requireUnlocked(ctx))) return;
     await T.showCopyTrade(ctx);
   });
 
-  bot.command('funds', async (ctx) => {
+  bot.command('funds', async ctx => {
     if (!(await requireUnlocked(ctx))) return;
     await T.showConsolidateMenu(ctx);
   });
 
-  bot.command('settings', async (ctx) => {
+  bot.command('settings', async ctx => {
     if (!(await requireUnlocked(ctx))) return;
     await showSettings(ctx);
   });
 
-  bot.command('history', async (ctx) => {
+  bot.command('history', async ctx => {
     const entries = db.tradeLog(15);
     if (entries.length === 0) {
       await ctx.reply('No batch operations recorded yet.');
@@ -152,7 +156,7 @@ function registerCommands(bot: Bot): void {
     await ctx.reply(lines.join('\n'), { parse_mode: 'HTML' });
   });
 
-  bot.command('help', async (ctx) => {
+  bot.command('help', async ctx => {
     await ctx.reply(
       [
         '<b>How this works</b>',
@@ -180,7 +184,7 @@ function registerCommands(bot: Bot): void {
 const ACK_AFTER_MS = 700;
 
 function registerCallbacks(bot: Bot): void {
-  bot.on('callback_query:data', async (ctx) => {
+  bot.on('callback_query:data', async ctx => {
     const data = ctx.callbackQuery.data;
     const [action, ...args] = data.split(':');
 
@@ -188,7 +192,10 @@ function registerCallbacks(bot: Bot): void {
     // reset stays reachable: a forgotten passphrase is the likeliest reason to
     // be here, and it destroys the keys rather than using them.
     if (!isUnlocked() && action !== 'home' && action !== 'factory_reset') {
-      await ctx.answerCallbackQuery({ text: 'Send your old passphrase once to finish opening this vault.', show_alert: true });
+      await ctx.answerCallbackQuery({
+        text: 'Send your old passphrase once to finish opening this vault.',
+        show_alert: true,
+      });
       return;
     }
 
@@ -294,7 +301,10 @@ async function routeCallback(ctx: Context, action: string, args: string[]): Prom
     case 'confirm': {
       const confirmation = takeConfirmation(userId, args[0] ?? '');
       if (!confirmation) {
-        await ctx.answerCallbackQuery({ text: 'That confirmation expired. Start again.', show_alert: true });
+        await ctx.answerCallbackQuery({
+          text: 'That confirmation expired. Start again.',
+          show_alert: true,
+        });
         return;
       }
       log.info(`Confirmed action: ${confirmation.label}`);
@@ -304,12 +314,14 @@ async function routeCallback(ctx: Context, action: string, args: string[]): Prom
     // token card
     case 'tokeninfo': {
       const mint = mintFromId(args[0] ?? '');
-      if (!mint) return void ctx.answerCallbackQuery({ text: 'Token reference expired.', show_alert: true });
+      if (!mint)
+        return void ctx.answerCallbackQuery({ text: 'Token reference expired.', show_alert: true });
       return T.showTokenCard(ctx, mint, true);
     }
     case 'holders': {
       const mint = mintFromId(args[0] ?? '');
-      if (!mint) return void ctx.answerCallbackQuery({ text: 'Token reference expired.', show_alert: true });
+      if (!mint)
+        return void ctx.answerCallbackQuery({ text: 'Token reference expired.', show_alert: true });
       return T.showHolders(ctx, mint);
     }
 
@@ -324,9 +336,14 @@ async function routeCallback(ctx: Context, action: string, args: string[]): Prom
     }
     case 'buycustom': {
       const mint = mintFromId(args[0] ?? '');
-      if (!mint) return void ctx.answerCallbackQuery({ text: 'Token reference expired.', show_alert: true });
+      if (!mint)
+        return void ctx.answerCallbackQuery({ text: 'Token reference expired.', show_alert: true });
       setPending(userId, { kind: 'custom_buy', mint });
-      return render(ctx, '<b>🟢 Send the SOL amount to buy per wallet.</b>\n\n<i>e.g. 0.25</i>', backButton());
+      return render(
+        ctx,
+        '<b>🟢 Send the SOL amount to buy per wallet.</b>\n\n<i>e.g. 0.25</i>',
+        backButton(),
+      );
     }
     case 'sell': {
       const mint = mintFromId(args[0] ?? '');
@@ -338,33 +355,41 @@ async function routeCallback(ctx: Context, action: string, args: string[]): Prom
     }
     case 'autosell': {
       const mint = mintFromId(args[0] ?? '');
-      if (!mint) return void ctx.answerCallbackQuery({ text: 'Token reference expired.', show_alert: true });
+      if (!mint)
+        return void ctx.answerCallbackQuery({ text: 'Token reference expired.', show_alert: true });
       return T.showAutoSell(ctx, mint);
     }
     case 'rmenu': {
       const mint = mintFromId(args[1] ?? '');
-      if (!mint) return void ctx.answerCallbackQuery({ text: 'Token reference expired.', show_alert: true });
+      if (!mint)
+        return void ctx.answerCallbackQuery({ text: 'Token reference expired.', show_alert: true });
       return T.showRulePresets(ctx, mint, args[0] ?? '');
     }
 
     case 'rule': {
       const [what, tokenRef, pctRaw] = [args[0] ?? '', args[1] ?? '', args[2] ?? '0'];
       const mint = mintFromId(tokenRef);
-      if (!mint) return void ctx.answerCallbackQuery({ text: 'Token reference expired.', show_alert: true });
+      if (!mint)
+        return void ctx.answerCallbackQuery({ text: 'Token reference expired.', show_alert: true });
       if (what === 'clear') return T.clearAutoRules(ctx, mint);
 
       const kind =
-        what === 'tp' ? 'take_profit'
-        : what === 'sl' ? 'stop_loss'
-        : what === 'dip' ? 'limit_buy'
-        : what === 'lsell' ? 'limit_sell'
-        : 'trailing_stop';
+        what === 'tp'
+          ? 'take_profit'
+          : what === 'sl'
+            ? 'stop_loss'
+            : what === 'dip'
+              ? 'limit_buy'
+              : what === 'lsell'
+                ? 'limit_sell'
+                : 'trailing_stop';
       return T.addAutoRule(ctx, mint, kind, Number(pctRaw));
     }
 
     case 'dca_add': {
       const mint = mintFromId(args[0] ?? '');
-      if (!mint) return void ctx.answerCallbackQuery({ text: 'Token reference expired.', show_alert: true });
+      if (!mint)
+        return void ctx.answerCallbackQuery({ text: 'Token reference expired.', show_alert: true });
       return T.promptDca(ctx, mint);
     }
 
@@ -411,7 +436,11 @@ async function routeCallback(ctx: Context, action: string, args: string[]): Prom
     case 'export':
     case 'remove': {
       const walletId = walletFromShortId(args[0] ?? '');
-      if (!walletId) return void ctx.answerCallbackQuery({ text: 'Wallet reference expired.', show_alert: true });
+      if (!walletId)
+        return void ctx.answerCallbackQuery({
+          text: 'Wallet reference expired.',
+          show_alert: true,
+        });
 
       switch (action) {
         case 'wallet':
@@ -441,16 +470,32 @@ async function routeCallback(ctx: Context, action: string, args: string[]): Prom
     }
     case 'set_slippage':
       setPending(userId, { kind: 'set_slippage' });
-      return render(ctx, '<b>Send the slippage percent.</b>\n\n<i>e.g. 15 — memecoins usually need 10-25.</i>', backButton('settings'));
+      return render(
+        ctx,
+        '<b>Send the slippage percent.</b>\n\n<i>e.g. 15 — memecoins usually need 10-25.</i>',
+        backButton('settings'),
+      );
     case 'set_priority_fee':
       setPending(userId, { kind: 'set_priority_fee' });
-      return render(ctx, '<b>Send the priority fee in SOL.</b>\n\n<i>e.g. 0.0001 — raise it when the network is congested.</i>', backButton('settings'));
+      return render(
+        ctx,
+        '<b>Send the priority fee in SOL.</b>\n\n<i>e.g. 0.0001 — raise it when the network is congested.</i>',
+        backButton('settings'),
+      );
     case 'set_jito_tip':
       setPending(userId, { kind: 'set_jito_tip' });
-      return render(ctx, '<b>Send the Jito tip in SOL.</b>\n\n<i>Only used in bundle mode. e.g. 0.0001</i>', backButton('settings'));
+      return render(
+        ctx,
+        '<b>Send the Jito tip in SOL.</b>\n\n<i>Only used in bundle mode. e.g. 0.0001</i>',
+        backButton('settings'),
+      );
     case 'set_reserve':
       setPending(userId, { kind: 'set_reserve' });
-      return render(ctx, '<b>Send the SOL to leave in each wallet when sweeping.</b>\n\n<i>e.g. 0.002</i>', backButton('settings'));
+      return render(
+        ctx,
+        '<b>Send the SOL to leave in each wallet when sweeping.</b>\n\n<i>e.g. 0.002</i>',
+        backButton('settings'),
+      );
 
     case 'toggle_fee_mode': {
       const next = db.settings().priorityFeeMode === 'auto' ? 'fixed' : 'auto';
@@ -575,7 +620,7 @@ async function routeCallback(ctx: Context, action: string, args: string[]): Prom
 // ── free text ─────────────────────────────────────────────────────────────────
 
 function registerText(bot: Bot): void {
-  bot.on('message:text', async (ctx) => {
+  bot.on('message:text', async ctx => {
     const text = ctx.message.text.trim();
     if (text.startsWith('/')) return; // commands are handled above
 
@@ -601,10 +646,13 @@ function registerText(bot: Bot): void {
       await deleteMessage(ctx);
       try {
         await unlockAndConvert(text, resealAll);
-        await ctx.reply('🔓 <b>Done — that was the last time.</b>\n\nThe vault opens itself from now on.', {
-          parse_mode: 'HTML',
-          reply_markup: mainMenu(),
-        });
+        await ctx.reply(
+          '🔓 <b>Done — that was the last time.</b>\n\nThe vault opens itself from now on.',
+          {
+            parse_mode: 'HTML',
+            reply_markup: mainMenu(),
+          },
+        );
       } catch {
         await ctx.reply('That did not open the vault. Send the passphrase again.');
       }
@@ -627,8 +675,6 @@ async function handlePending(
   pending: NonNullable<ReturnType<typeof takePending>>,
   text: string,
 ): Promise<void> {
-  const userId = ctx.from!.id;
-
   switch (pending.kind) {
     // the last passphrase this bot will ever ask for; see the message handler
     case 'unlock': {
@@ -730,39 +776,38 @@ async function handlePending(
     }
 
     case 'set_slippage':
-      return applyNumericSetting(ctx, text, 0.1, 100, (v) => {
+      return applyNumericSetting(ctx, text, 0.1, 100, v => {
         db.updateSettings({ slippagePercent: v });
         return `Slippage set to ${v}%`;
       });
 
     case 'set_priority_fee':
-      return applyNumericSetting(ctx, text, 0, 1, (v) => {
+      return applyNumericSetting(ctx, text, 0, 1, v => {
         db.updateSettings({ priorityFeeSol: v });
         return `Priority fee set to ${v} SOL`;
       });
 
     case 'set_jito_tip':
-      return applyNumericSetting(ctx, text, 0, 1, (v) => {
+      return applyNumericSetting(ctx, text, 0, 1, v => {
         db.updateSettings({ jitoTipSol: v });
         return `Jito tip set to ${v} SOL`;
       });
 
     case 'set_reserve':
-      return applyNumericSetting(ctx, text, 0, 1, (v) => {
+      return applyNumericSetting(ctx, text, 0, 1, v => {
         db.updateSettings({ sweepReserveSol: v });
         return `Sweep reserve set to ${v} SOL`;
       });
 
-
     case 'set_fee_ceiling':
-      return applyNumericSetting(ctx, text, 0.00001, 0.5, (v) => {
+      return applyNumericSetting(ctx, text, 0.00001, 0.5, v => {
         db.updateSettings({ priorityFeeCeilingSol: v });
         return `Priority fee ceiling set to ${v} SOL`;
       });
 
     case 'set_buy_presets': {
       const values = parseNumberList(text, 5);
-      if (!values || values.some((v) => v <= 0 || v > config.safety.maxBuySolPerWallet)) {
+      if (!values || values.some(v => v <= 0 || v > config.safety.maxBuySolPerWallet)) {
         await ctx.reply(
           `Send up to 5 amounts between 0 and ${config.safety.maxBuySolPerWallet} SOL, e.g. 0.02 0.1 0.5`,
         );
@@ -777,7 +822,7 @@ async function handlePending(
 
     case 'set_sell_presets': {
       const values = parseNumberList(text, 4);
-      if (!values || values.some((v) => v <= 0 || v > 100)) {
+      if (!values || values.some(v => v <= 0 || v > 100)) {
         await ctx.reply('Send up to 4 percentages between 1 and 100, e.g. 20 50 80 100');
         return;
       }
@@ -803,7 +848,7 @@ function parseNumberList(text: string, max: number): number[] | undefined {
   if (parts.length === 0 || parts.length > max) return undefined;
 
   const values = parts.map(Number);
-  if (values.some((v) => !Number.isFinite(v))) return undefined;
+  if (values.some(v => !Number.isFinite(v))) return undefined;
 
   return values;
 }
@@ -843,7 +888,7 @@ const LEGACY_PASSPHRASE_PROMPT = [
   '',
   'This vault was made before passphrases were removed, and its keys are still sealed under yours.',
   '',
-  'Send it now. The bot re-seals everything with a key it keeps itself and never asks again.',
+  'Send it now. The bot saves the verified key for future restarts and never asks again.',
 ].join('\n');
 
 /** Remove a message the operator sent that contained a secret. */

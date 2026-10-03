@@ -9,8 +9,10 @@ import {
 import { solanaKeypair } from '../store/wallets.js';
 import { chunk, errMessage } from '../util.js';
 import { log } from '../logger.js';
+import { TransactionRejectedError, TransactionSubmissionUnknownError } from './errors.js';
 import type { WalletRecord, ExecutionResult, BatchSummary } from '../types.js';
 import type { ProgressFn } from './engine.js';
+import { withExecution } from '../services/execution.js';
 
 /**
  * Distribution — the opposite direction to a sweep.
@@ -130,6 +132,15 @@ export async function executeFunding(
   priorityFeeSol: number,
   onProgress?: ProgressFn,
 ): Promise<BatchSummary> {
+  return withExecution(() => executeFundingLocked(source, plan, priorityFeeSol, onProgress));
+}
+
+async function executeFundingLocked(
+  source: WalletRecord,
+  plan: FundPlan,
+  priorityFeeSol: number,
+  onProgress?: ProgressFn,
+): Promise<BatchSummary> {
   const startedAt = Date.now();
   const results: ExecutionResult[] = [];
 
@@ -154,7 +165,13 @@ export async function executeFunding(
     signer = solanaKeypair(source);
   } catch (err) {
     for (const t of plan.transfers) {
-      results.push({ walletId: t.walletId, label: t.label, address: t.address, ok: false, error: errMessage(err) });
+      results.push({
+        walletId: t.walletId,
+        label: t.label,
+        address: t.address,
+        ok: false,
+        error: errMessage(err),
+      });
     }
     return summarise(results, startedAt);
   }
@@ -166,7 +183,7 @@ export async function executeFunding(
     try {
       const signature = await sendSolBatch(
         signer,
-        group.map((t) => ({ to: t.address, lamports: t.lamports })),
+        group.map(t => ({ to: t.address, lamports: t.lamports })),
         priorityFeeSol,
       );
 
@@ -189,6 +206,13 @@ export async function executeFunding(
           address: t.address,
           ok: false,
           error: errMessage(err),
+          ...(err instanceof TransactionSubmissionUnknownError ||
+          err instanceof TransactionRejectedError
+            ? { signature: err.signature }
+            : {}),
+          ...(err instanceof TransactionSubmissionUnknownError
+            ? { confirmationUnknown: true }
+            : {}),
         });
       }
     } finally {
@@ -331,8 +355,8 @@ export function requiredForBuy(
 function summarise(results: ExecutionResult[], startedAt: number): BatchSummary {
   return {
     results,
-    succeeded: results.filter((r) => r.ok).length,
-    failed: results.filter((r) => !r.ok).length,
+    succeeded: results.filter(r => r.ok).length,
+    failed: results.filter(r => !r.ok).length,
     startedAt,
     finishedAt: Date.now(),
   };

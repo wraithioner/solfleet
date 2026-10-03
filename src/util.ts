@@ -1,6 +1,6 @@
 /** Small helpers shared across the bot. No external deps. */
 
-export const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+export const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 
 export function chunk<T>(items: T[], size: number): T[][] {
   const out: T[][] = [];
@@ -20,13 +20,16 @@ export async function pMap<T, R>(
   const results = new Array<R>(items.length);
   let cursor = 0;
 
-  const workers = Array.from({ length: Math.min(Math.max(1, limit), items.length || 1) }, async () => {
-    while (true) {
-      const i = cursor++;
-      if (i >= items.length) return;
-      results[i] = await fn(items[i]!, i);
-    }
-  });
+  const workers = Array.from(
+    { length: Math.min(Math.max(1, limit), items.length || 1) },
+    async () => {
+      while (true) {
+        const i = cursor++;
+        if (i >= items.length) return;
+        results[i] = await fn(items[i]!, i);
+      }
+    },
+  );
 
   await Promise.all(workers);
   return results;
@@ -79,12 +82,18 @@ export function escapeHtml(s: string): string {
 }
 
 export function errMessage(err: unknown): string {
-  if (err instanceof Error) return err.message;
-  if (typeof err === 'string') return err;
   try {
-    return JSON.stringify(err);
+    if (err instanceof Error) return String(err.message);
+    if (typeof err === 'string') return err;
+    const json = JSON.stringify(err);
+    if (json !== undefined) return json;
   } catch {
+    // Thrown values can be circular or expose a failing serialization hook.
+  }
+  try {
     return String(err);
+  } catch {
+    return 'Unknown error';
   }
 }
 
@@ -99,7 +108,8 @@ export async function fetchJson<T>(
   try {
     const res = await fetch(url, { ...rest, signal: ctrl.signal });
     const text = await res.text();
-    if (!res.ok) throw new Error(`HTTP ${res.status} from ${new URL(url).host}: ${text.slice(0, 300)}`);
+    if (!res.ok)
+      throw new Error(`HTTP ${res.status} from ${new URL(url).host}: ${text.slice(0, 300)}`);
     return text ? (JSON.parse(text) as T) : ({} as T);
   } finally {
     clearTimeout(timer);
@@ -193,7 +203,7 @@ export function fmtPriceUsd(p: number | undefined): string {
 
   const marker = String(zeros)
     .split('')
-    .map((d) => SUBSCRIPT[Number(d)] ?? d)
+    .map(d => SUBSCRIPT[Number(d)] ?? d)
     .join('');
 
   return `$0.0${marker}${digits}`;
@@ -227,5 +237,5 @@ export function fmtDuration(ms: number): string {
 
 /** Escape text for Telegram's legacy Markdown parse mode. */
 export function esc(s: string): string {
-  return s.replace(/([_*`\[\]])/g, '\\$1');
+  return s.replace(/([_*`[\]])/g, '\\$1');
 }

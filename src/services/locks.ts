@@ -5,23 +5,11 @@ import { log } from '../logger.js';
 import { config } from '../config.js';
 
 /**
- * What a token's vesting contracts actually say.
- *
- * The concentration number every index reports counts a vesting vault as a
- * holder, because from the outside that is what it is: one address, a large
- * balance. Measured on a live launch that read 63.5% concentrated when 50.2%
- * of it was locked until the year 2095 — supply nobody alive will sell, judged
- * identically to a whale who can hit the book this block.
- *
- * The same read catches the opposite trick. A "vesting stream" whose start and
- * end are one second apart is not vesting, it is an airdrop wearing vesting's
- * clothes: on that same launch, 110 million tokens went to nine wallets in the
- * eight seconds after the coin was created, every one of them emptied on
- * arrival. The launch index scored its insider share at 0%.
- *
- * Streamflow only. It is what pump.fun launches use, and a lock this cannot
- * read is simply not discounted — an unknown locker leaves the number exactly
- * as strict as it is today.
+ * Streamflow outstanding balances, final schedule dates and short completed
+ * distributions. The decoded subset omits withdrawal rates, cliffs and
+ * cancellation/update permissions, so it does not prove an unavailable amount.
+ * Safety keeps these balances in concentration until that proof and a matched
+ * counted vault identity are available.
  */
 const STREAMFLOW_PROGRAM = 'strmRqUCoQUgGUan5YhzUZa6KqdzwX5L6FpUxfmKg5m';
 
@@ -44,16 +32,7 @@ const OFF = {
   depositedAmount: 417,
 } as const;
 
-/**
- * The shipped answer to "how far away must an unlock be before it stops
- * counting as supply that can land on you".
- *
- * A year is longer than any memecoin's life, so it is the safe place to start
- * — but it is a judgement, not a fact. What the concentration limit is really
- * asking is whether this can reach the book while you are in the position, and
- * for somebody whose positions close in minutes a ninety-day cliff answers no
- * just as firmly. So the line is a setting, and this is only its default.
- */
+/** Stored for compatibility; no horizon currently authorizes a safety discount. */
 export const DEFAULT_LOCK_HORIZON_DAYS = 365;
 export const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -77,20 +56,14 @@ const STREAM_PAGE_SIZE = 1000;
 const MAX_STREAM_PAGES = 5;
 
 export interface LockedSupply {
-  /** Share of total supply this stream is still holding. */
+  /** Share of supply deposited but not withdrawn. It may already be claimable. */
   pct: number;
-  /** When it releases. */
+  /** Final schedule date, not evidence that all tokens stay locked until then. */
   unlockAt: number;
 }
 
 export interface TokenLocks {
-  /**
-   * Every stream still holding supply, and when each one lets go.
-   *
-   * Per stream rather than one "locked" number, because how far away an unlock
-   * has to be before it stops mattering is the operator's setting. Collapsing
-   * it here would bake one answer into the read.
-   */
+  /** Outstanding balances with future final dates; some may already be claimable. */
   locked: LockedSupply[];
   /** Share of supply handed out through streams that never actually locked. */
   launchDistPct: number;
@@ -98,14 +71,14 @@ export interface TokenLocks {
   launchDistWallets: number;
 }
 
-/** Share of supply that will not unlock for at least `horizonMs`. */
+/** Outstanding balances whose final schedule date exceeds the horizon. Display only. */
 export function lockedBeyond(locked: LockedSupply[], horizonMs: number, now = Date.now()): number {
-  return locked.filter((l) => l.unlockAt - now >= horizonMs).reduce((sum, l) => sum + l.pct, 0);
+  return locked.filter(l => l.unlockAt - now >= horizonMs).reduce((sum, l) => sum + l.pct, 0);
 }
 
 /** The furthest unlock among them, for naming a year out loud. */
 export function furthestUnlock(locked: LockedSupply[]): number | undefined {
-  return locked.length === 0 ? undefined : Math.max(...locked.map((l) => l.unlockAt));
+  return locked.length === 0 ? undefined : Math.max(...locked.map(l => l.unlockAt));
 }
 
 export interface Stream {
@@ -173,9 +146,8 @@ async function streamAccounts(mint: string, timeoutMs: number): Promise<Buffer[]
   let paginationKey: string | null = null;
 
   for (let page = 0; page < MAX_STREAM_PAGES; page++) {
-    const body: RpcResponse<{ accounts: AccountRow[]; paginationKey: string | null }> = await fetchJson(
-      config.solana.rpcUrl,
-      {
+    const body: RpcResponse<{ accounts: AccountRow[]; paginationKey: string | null }> =
+      await fetchJson(config.solana.rpcUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         timeoutMs,
@@ -185,17 +157,21 @@ async function streamAccounts(mint: string, timeoutMs: number): Promise<Buffer[]
           method: 'getProgramAccountsV2',
           params: [
             STREAMFLOW_PROGRAM,
-            { encoding: 'base64', limit: STREAM_PAGE_SIZE, filters, ...(paginationKey ? { paginationKey } : {}) },
+            {
+              encoding: 'base64',
+              limit: STREAM_PAGE_SIZE,
+              filters,
+              ...(paginationKey ? { paginationKey } : {}),
+            },
           ],
         }),
-      },
-    );
+      });
 
     if (body.error || !body.result) {
       // the endpoint does not offer it — pay the ten and get the same answer
       const conn = rpc();
       const all = await conn.getProgramAccounts(new PublicKey(STREAMFLOW_PROGRAM), { filters });
-      return all.map((a) => a.account.data);
+      return all.map(a => a.account.data);
     }
 
     for (const row of body.result.accounts) out.push(Buffer.from(row.account.data[0], 'base64'));
@@ -204,16 +180,17 @@ async function streamAccounts(mint: string, timeoutMs: number): Promise<Buffer[]
     if (!paginationKey) break;
   }
 
+  if (paginationKey) throw new Error('Streamflow scan was incomplete');
+
   return out;
 }
 
 /**
  * Read every Streamflow stream against one mint.
  *
- * Undefined on any failure, and the caller treats that as "no lock data" — the
- * discount is not applied and the coin is judged exactly as strictly as it is
- * today. A lock lookup that failed open would hand a free concentration
- * discount to every token whose RPC call happened to time out.
+ * Undefined on failure. Outstanding amounts and stream end dates are display
+ * evidence, not proof that funds cannot already be claimed or that a stream
+ * vault is part of the sampled holder set. No concentration discount applies.
  */
 export async function readTokenLocks(
   mint: string,
@@ -227,8 +204,8 @@ export async function readTokenLocks(
      * Scanning a program's accounts is the slowest query here — measured at
      * 530ms against a paid endpoint, and the one most likely to be far worse
      * against a struggling one. Past the deadline the answer is "unknown",
-     * which discounts nothing and leaves the coin judged as it is today. A
-     * copy is not worth holding open for it.
+     * with no relaxation of concentration. A copy is not worth holding open
+     * for an optional stream lookup.
      */
     const [supplyRes, accounts] = await withDeadline(
       Promise.all([conn.getTokenSupply(new PublicKey(mint)), streamAccounts(mint, timeoutMs)]),
@@ -239,7 +216,7 @@ export async function readTokenLocks(
     if (supply <= 0n) return undefined;
 
     const streams = accounts
-      .map((data) => decodeStream(data))
+      .map(data => decodeStream(data))
       .filter((s): s is Stream => s !== undefined);
 
     return summariseLocks(streams, supply, now);
@@ -257,13 +234,23 @@ export async function readTokenLocks(
  * wrong in a direction that costs money.
  */
 export function summariseLocks(streams: Stream[], supply: bigint, now = Date.now()): TokenLocks {
+  if (supply <= 0n || !Number.isFinite(now)) throw new Error('Invalid vesting supply or timestamp');
   const locked: LockedSupply[] = [];
   const recipients = new Set<string>();
   let launchDist = 0n;
 
-  const pct = (v: bigint): number => (Number(v) / Number(supply)) * 100;
+  const pct = (v: bigint): number => Number((v * 100_000_000n + supply - 1n) / supply) / 1_000_000;
 
   for (const s of streams) {
+    if (
+      s.deposited < 0n ||
+      s.withdrawn < 0n ||
+      s.withdrawn > s.deposited ||
+      ![s.start, s.end, s.canceledAt].every(Number.isSafeInteger) ||
+      s.end < s.start
+    ) {
+      throw new Error('Invalid vesting stream');
+    }
     /*
      * Released, and released the moment it was created. An allocation routed
      * through a vesting program so a dashboard reads it as vested.
@@ -272,7 +259,7 @@ export function summariseLocks(streams: Stream[], supply: bigint, now = Date.now
      * recipient's either way, and waiting for it would miss streams set up
      * seconds before a copy is decided.
      */
-    if (s.end - s.start <= INSTANT_STREAM_MS && s.end <= now) {
+    if (s.canceledAt === 0 && s.end - s.start <= INSTANT_STREAM_MS && s.end <= now) {
       launchDist += s.deposited;
       recipients.add(s.recipient);
       continue;

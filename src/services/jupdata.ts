@@ -1,4 +1,6 @@
-import { fetchJson, errMessage } from '../util.js';
+import { errMessage } from '../util.js';
+import { endpoints } from '../config.js';
+import { fetchJupiterJson } from './jupiter-client.js';
 import { log } from '../logger.js';
 
 /**
@@ -65,13 +67,16 @@ interface RawJupToken {
  * treat absence as too-new rather than as suspicious, because for this source
  * absence usually means exactly that.
  */
-export async function getJupTokenData(mint: string, timeoutMs = 2500): Promise<JupTokenData | null> {
+export async function getJupTokenData(
+  mint: string,
+  timeoutMs = 2500,
+): Promise<JupTokenData | null> {
   try {
-    const res = await fetchJson<RawJupToken[]>(
-      `https://lite-api.jup.ag/tokens/v2/search?query=${mint}`,
+    const res = await fetchJupiterJson<RawJupToken[]>(
+      `${endpoints.jupiterTokens}?query=${encodeURIComponent(mint)}`,
       { timeoutMs },
     );
-    const t = res.find((x) => x.id === mint);
+    const t = res.find(x => x.id === mint);
     if (!t) return null;
 
     const s = t.stats5m ?? {};
@@ -86,7 +91,9 @@ export async function getJupTokenData(mint: string, timeoutMs = 2500): Promise<J
       organicPct5m: total > 0 ? (organic / total) * 100 : undefined,
       organicScore: t.organicScore,
       organicScoreLabel: t.organicScoreLabel,
-      topHoldersPct: t.audit?.topHoldersPercentage,
+      // The API's conditional audit attributes can be null. Null is an absent
+      // answer, never a known zero-percent holder concentration.
+      topHoldersPct: t.audit?.topHoldersPercentage ?? undefined,
       mintAuthorityDisabled: t.audit?.mintAuthorityDisabled,
       freezeAuthorityDisabled: t.audit?.freezeAuthorityDisabled,
       firstPoolAt: t.firstPool?.createdAt ? Date.parse(t.firstPool.createdAt) : undefined,

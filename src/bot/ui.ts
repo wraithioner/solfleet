@@ -14,7 +14,7 @@ import type { Settings, ValueMark, CopyDecision } from '../store/db.js';
 import { formatAccountPnl, markAgo, formatValueChange, type AccountPnl } from '../services/pnl.js';
 import type { Portfolio } from '../services/portfolio.js';
 import type { TokenInfo } from '../services/tokeninfo.js';
-import { assessToken, DEFAULT_SAFETY, formatAge, formatHorizon, type SafetyLimits } from '../services/safety.js';
+import { assessToken, DEFAULT_SAFETY, formatAge } from '../services/safety.js';
 import type { BatchSummary, WalletRecord } from '../types.js';
 
 /** Telegram HTML mode needs exactly these three escaped. */
@@ -38,14 +38,20 @@ const SOLSCAN_ACC = (addr: string) => `https://solscan.io/account/${addr}`;
  */
 export function mainMenu(): InlineKeyboard {
   return new InlineKeyboard()
-    .text('💼 Portfolio', 'portfolio').primary()
-    .text('🪙 Positions', 'positions').primary()
+    .text('💼 Portfolio', 'portfolio')
+    .primary()
+    .text('🪙 Positions', 'positions')
+    .primary()
     .row()
-    .text('📈 P&L', 'pnl').primary()
-    .text('👛 Wallets', 'wallets').primary()
+    .text('📈 P&L', 'pnl')
+    .primary()
+    .text('👛 Wallets', 'wallets')
+    .primary()
     .row()
-    .text('💸 Move Funds', 'consolidate_menu').primary()
-    .text('👥 Copy Trade', 'copy_trade').success()
+    .text('💸 Move Funds', 'consolidate_menu')
+    .primary()
+    .text('👥 Copy Trade', 'copy_trade')
+    .success()
     .row()
     .text('⚙️ Settings', 'settings');
 }
@@ -65,6 +71,8 @@ export function renderPortfolio(p: Portfolio, group: string | null, pnl?: Accoun
 
   // the one number the screen exists to show, given the room to be seen
   lines.push(`<b>${fmtUsd(p.totals.grandTotalUsd)}</b>`);
+  if (p.errors.length > 0)
+    lines.push('<i>Known value only — some balances or prices are unavailable.</i>');
   const split = [
     `${fmtAmount(p.totals.solTotal, 4)} ◎`,
     p.totals.tokenUsd > 0 ? `${fmtUsd(p.totals.tokenUsd)} in tokens` : '',
@@ -95,7 +103,7 @@ export function renderPortfolio(p: Portfolio, group: string | null, pnl?: Accoun
   }
 
   if (p.solana.length > 0) {
-    const funded = p.solana.filter((b) => b.native > 0);
+    const funded = p.solana.filter(b => b.native > 0);
     lines.push(`<b>👛 Wallets</b>  ${funded.length}/${p.solana.length} funded`);
 
     // showing every wallet blows past Telegram's message limit past ~40 wallets
@@ -110,7 +118,7 @@ export function renderPortfolio(p: Portfolio, group: string | null, pnl?: Accoun
 
   if (p.errors.length > 0) {
     lines.push('');
-    lines.push('<i>⚠️ ' + h(p.errors.slice(0, 3).join(' | ')) + '</i>');
+    lines.push(`<i>⚠️ ${h(p.errors.slice(0, 3).join(' | '))}</i>`);
   }
 
   return lines.join('\n');
@@ -133,10 +141,13 @@ export function updatedStamp(): string {
 
 export function portfolioKeyboard(): InlineKeyboard {
   return new InlineKeyboard()
-    .text('🔄 Refresh', 'portfolio').primary()
-    .text('🪙 Positions', 'positions').primary()
+    .text('🔄 Refresh', 'portfolio')
+    .primary()
+    .text('🪙 Positions', 'positions')
+    .primary()
     .row()
-    .text('📈 P&L', 'pnl').primary()
+    .text('📈 P&L', 'pnl')
+    .primary()
     .text('💸 Sweep SOL → Main', 'sweep_sol_confirm')
     .row()
     .text('← Menu', 'home');
@@ -176,7 +187,8 @@ export function renderPnl(a: AccountPnl, marks: ValueMark[], currentUsd: number)
         `   ${solCell(a.unpricedCostSol)}  <i>in ${a.unpricedCount} position${a.unpricedCount === 1 ? '' : 's'} nothing would price</i>`,
       );
     }
-    if (a.feesSol > 0) lines.push(`   ${solCell(a.feesSol)}  <i>fees &amp; rent, included above</i>`);
+    if (a.feesSol > 0)
+      lines.push(`   ${solCell(a.feesSol)}  <i>fees &amp; rent, included above</i>`);
     lines.push('');
 
     /*
@@ -205,7 +217,9 @@ export function renderPnl(a: AccountPnl, marks: ValueMark[], currentUsd: number)
     lines.push('');
 
     if (a.best && a.best.netSol > 0) {
-      lines.push(`🏆 <b>${h(a.best.symbol)}</b>  +${a.best.netSol.toFixed(4)} ◎  (+${a.best.netPct.toFixed(0)}%)`);
+      lines.push(
+        `🏆 <b>${h(a.best.symbol)}</b>  +${a.best.netSol.toFixed(4)} ◎  (+${a.best.netPct.toFixed(0)}%)`,
+      );
     }
     if (a.worst && a.worst.netSol < 0) {
       lines.push(
@@ -232,7 +246,9 @@ export function renderPnl(a: AccountPnl, marks: ValueMark[], currentUsd: number)
     .map(([label, ms]) => {
       const mark = markAgo(marks, ms);
       // the label sits in a monospace cell so 24h, 7d and 30d line up
-      return mark ? `   <code>${label.padEnd(4)}</code>${formatValueChange(mark, currentUsd)}` : null;
+      return mark
+        ? `   <code>${label.padEnd(4)}</code>${formatValueChange(mark, currentUsd)}`
+        : null;
     })
     .filter((l): l is string => l !== null);
 
@@ -249,16 +265,21 @@ export function renderPnl(a: AccountPnl, marks: ValueMark[], currentUsd: number)
 }
 
 export function pnlKeyboard(): InlineKeyboard {
-  return new InlineKeyboard()
-    .text('🔄 Refresh', 'pnl').primary()
-    .text('🪙 Positions', 'positions').primary()
-    .row()
-    // reads past sales back off the chain, for the ones that were never
-    // recorded — money that arrived while nothing was writing it down
-    .text('🔧 Rebuild from chain', 'pnl_rebuild')
-    .row()
-    .text('💼 Portfolio', 'portfolio').primary()
-    .text('← Menu', 'home');
+  return (
+    new InlineKeyboard()
+      .text('🔄 Refresh', 'pnl')
+      .primary()
+      .text('🪙 Positions', 'positions')
+      .primary()
+      .row()
+      // reads past sales back off the chain, for the ones that were never
+      // recorded — money that arrived while nothing was writing it down
+      .text('🔧 Rebuild from chain', 'pnl_rebuild')
+      .row()
+      .text('💼 Portfolio', 'portfolio')
+      .primary()
+      .text('← Menu', 'home')
+  );
 }
 
 /**
@@ -289,19 +310,26 @@ export function renderCopyDecisions(entries: CopyDecision[]): string {
    */
   for (const e of entries) {
     const when = fmtAge(Date.now() - e.at);
-    lines.push(`<b>${h(e.symbol ?? shortAddr(e.mint, 4, 4))}</b>  <i>${when} ago · ${h(e.target)}</i>`);
+    lines.push(
+      `<b>${h(e.symbol ?? shortAddr(e.mint, 4, 4))}</b>  <i>${when} ago · ${h(e.target)}</i>`,
+    );
     lines.push(`   ${h(e.reason)}`);
     lines.push(`   <code>${h(e.mint)}</code>`);
   }
 
-  lines.push('', '<i>A skip is usually the limits working. Copy trading → Safety to change them.</i>');
+  lines.push(
+    '',
+    '<i>A skip is usually the limits working. Copy trading → Safety to change them.</i>',
+  );
   return lines.join('\n');
 }
 
 export function copyDecisionsKeyboard(): InlineKeyboard {
   return new InlineKeyboard()
-    .text('🔄 Refresh', 'copy_decisions').primary()
-    .text('🛡 Safety', 'copy_safety').primary()
+    .text('🔄 Refresh', 'copy_decisions')
+    .primary()
+    .text('🛡 Safety', 'copy_safety')
+    .primary()
     .row()
     .text('← Copy trading', 'copy_trade');
 }
@@ -352,10 +380,14 @@ export function renderTokenCard(info: TokenInfo, limits = DEFAULT_SAFETY): strin
 
   // aligned labels so the numbers form a column the eye can run down
   if (info.marketCap !== undefined) {
-    const fdv = info.fdv !== undefined && info.fdv !== info.marketCap ? `  <i>fdv ${fmtUsdShort(info.fdv)}</i>` : '';
+    const fdv =
+      info.fdv !== undefined && info.fdv !== info.marketCap
+        ? `  <i>fdv ${fmtUsdShort(info.fdv)}</i>`
+        : '';
     lines.push(`📊 Mcap      <b>${fmtUsdShort(info.marketCap)}</b>${fdv}`);
   }
-  if (info.liquidityUsd !== undefined) lines.push(`💧 Liquidity  ${fmtUsdShort(info.liquidityUsd)}`);
+  if (info.liquidityUsd !== undefined)
+    lines.push(`💧 Liquidity  ${fmtUsdShort(info.liquidityUsd)}`);
   if (info.volume24h !== undefined) {
     const v1 = info.volume1h !== undefined ? `  <i>1h ${fmtUsdShort(info.volume1h)}</i>` : '';
     lines.push(`📈 Volume    ${fmtUsdShort(info.volume24h)}${v1}`);
@@ -413,8 +445,27 @@ export function renderTokenCard(info: TokenInfo, limits = DEFAULT_SAFETY): strin
     if (info.holderCount !== undefined) {
       lines.push(`   👥 Holders    <b>${fmtCount(info.holderCount)}</b>`);
     }
-    lines.push(`   🏆 Top 10     ${judged(info.top10Pct, limits.maxTop10Pct)}`);
-    lines.push(`   🧑‍💻 Dev holds  ${judged(info.creatorHoldsPct, limits.maxDevPct, '%', 2)}`);
+    lines.push(
+      `   🏆 Top 10     ${judged(info.holdersUnavailable ? undefined : info.top10Pct, limits.maxTop10Pct)}`,
+    );
+    if (
+      !info.holdersUnavailable &&
+      info.top10PctUpperBound !== undefined &&
+      info.top10PctUpperBound > (info.top10Pct ?? 0)
+    ) {
+      lines.push(
+        `   🔎 Sample bound  up to <b>${info.top10PctUpperBound.toFixed(1)}%</b>; unsampled holdings included in safety.`,
+      );
+    }
+    lines.push(
+      `   🧑‍💻 Dev holds  ${judged(info.creatorBalanceUnavailable ? undefined : info.creatorHoldsPct, limits.maxDevPct, '%', 2)}`,
+    );
+    if (info.lockedSupply && info.lockedSupply.length > 0) {
+      const outstanding = info.lockedSupply.reduce((sum, stream) => sum + stream.pct, 0);
+      lines.push(
+        `   ⏳ Vesting    <b>${outstanding.toFixed(1)}%</b> remains in streams; potentially claimable. <i>No concentration discount.</i>`,
+      );
+    }
 
     /*
      * The line no reading of the token itself can produce.
@@ -441,7 +492,9 @@ export function renderTokenCard(info: TokenInfo, limits = DEFAULT_SAFETY): strin
           : '';
       lines.push(
         `   🧑‍🤝‍🧑 5m market  <b>${fmtCount(info.traders5m)}</b> traders` +
-          (info.netBuyers5m !== undefined ? `, <b>${fmtCount(info.netBuyers5m)}</b> net buyers` : '') +
+          (info.netBuyers5m !== undefined
+            ? `, <b>${fmtCount(info.netBuyers5m)}</b> net buyers`
+            : '') +
           organic,
       );
     }
@@ -453,9 +506,17 @@ export function renderTokenCard(info: TokenInfo, limits = DEFAULT_SAFETY): strin
   // exactly the mistake this line exists to prevent.
   if (info.chain === 'solana') {
     const mint =
-      info.mintAuthority === undefined ? '❓ unknown' : info.mintAuthority ? '⚠️ ACTIVE' : '✅ revoked';
+      info.mintAuthority === undefined
+        ? '❓ unknown'
+        : info.mintAuthority
+          ? '⚠️ ACTIVE'
+          : '✅ revoked';
     const freeze =
-      info.freezeAuthority === undefined ? '❓ unknown' : info.freezeAuthority ? '🚨 ACTIVE' : '✅ revoked';
+      info.freezeAuthority === undefined
+        ? '❓ unknown'
+        : info.freezeAuthority
+          ? '🚨 ACTIVE'
+          : '✅ revoked';
 
     /*
      * A verdict, not just the readings.
@@ -500,7 +561,9 @@ export function renderTokenCard(info: TokenInfo, limits = DEFAULT_SAFETY): strin
       lines.push('🎓 <b>Graduated</b> — trading on the AMM');
     } else if (info.curveProgressPct !== undefined) {
       lines.push('<b>🚀 pump.fun curve</b>');
-      lines.push(`   ${progressBar(info.curveProgressPct)} <b>${info.curveProgressPct.toFixed(1)}%</b> to graduation`);
+      lines.push(
+        `   ${progressBar(info.curveProgressPct)} <b>${info.curveProgressPct.toFixed(1)}%</b> to graduation`,
+      );
       if (info.curveMcapSol !== undefined) {
         lines.push(`   <i>${fmtAmount(info.curveMcapSol, 2)} SOL on the curve</i>`);
       }
@@ -509,17 +572,19 @@ export function renderTokenCard(info: TokenInfo, limits = DEFAULT_SAFETY): strin
     // the launch wallet's remaining stake — the clearest rug signal pump.fun gives
     if (info.creator) {
       const stake =
-        info.creatorHoldsPct === undefined
+        info.creatorBalanceUnavailable || info.creatorHoldsPct === undefined
           ? '❓ unknown'
           : info.creatorHoldsPct === 0
             ? '✅ sold out / holds none'
             : `${info.creatorHoldsPct >= 5 ? '⚠️' : '·'} ${info.creatorHoldsPct.toFixed(2)}% of supply`;
-      lines.push(`👤 Dev <a href="${SOLSCAN_ACC(info.creator)}">${shortAddr(info.creator, 4, 4)}</a> holds: ${stake}`);
+      lines.push(
+        `👤 Dev <a href="${SOLSCAN_ACC(info.creator)}">${shortAddr(info.creator, 4, 4)}</a> holds: ${stake}`,
+      );
     }
   }
 
   // holder distribution
-  if (info.holdersUnavailable && info.top10Pct === undefined) {
+  if (info.holdersUnavailable) {
     lines.push('');
     lines.push('<b>👥 Top holders</b>');
     lines.push('<i>Unavailable — RPC rejected the query. Use a private endpoint.</i>');
@@ -540,7 +605,9 @@ export function renderTokenCard(info: TokenInfo, limits = DEFAULT_SAFETY): strin
       lines.push(`   ${progressBar(info.top10Pct)} <b>${info.top10Pct.toFixed(1)}%</b> ${light}`);
     }
 
-    const shown = info.holders.filter((x) => x.tag !== 'bonding curve' && x.tag !== 'pool').slice(0, 5);
+    const shown = info.holders
+      .filter(x => x.tag !== 'bonding curve' && x.tag !== 'pool')
+      .slice(0, 5);
     for (const [i, hold] of shown.entries()) {
       const tag = hold.tag ? ` <i>${h(hold.tag)}</i>` : '';
       const pct = hold.pctOfSupply.toFixed(2).padStart(5);
@@ -595,7 +662,11 @@ export function fmtAge(ms: number): string {
   return months < 12 ? `${months}mo` : `${Math.floor(months / 12)}y`;
 }
 
-export function tokenKeyboard(mint: string, settings: Settings, holdsPosition: boolean): InlineKeyboard {
+export function tokenKeyboard(
+  mint: string,
+  settings: Settings,
+  holdsPosition: boolean,
+): InlineKeyboard {
   const id = tokenId(mint);
   const kb = new InlineKeyboard();
 
@@ -618,10 +689,13 @@ export function tokenKeyboard(mint: string, settings: Settings, holdsPosition: b
   }
 
   kb.row();
-  kb.text('🤖 Automation', `autosell:${id}`).primary()
-    .text('👥 Holders', `holders:${id}`).primary();
+  kb.text('🤖 Automation', `autosell:${id}`)
+    .primary()
+    .text('👥 Holders', `holders:${id}`)
+    .primary();
   kb.row();
-  kb.text('🔄 Refresh', `tokeninfo:${id}`).primary()
+  kb.text('🔄 Refresh', `tokeninfo:${id}`)
+    .primary()
     .url('📈 Chart', `https://dexscreener.com/search?q=${mint}`)
     .text('← Menu', 'home');
 
@@ -637,7 +711,8 @@ export function renderHolders(info: TokenInfo): string {
   }
 
   if (info.totalSupply) lines.push(`Total supply: ${fmtAmount(info.totalSupply, 0)}`);
-  if (info.top10Pct !== undefined) lines.push(`Top 10 (excluding pools): <b>${info.top10Pct.toFixed(2)}%</b>`);
+  if (info.top10Pct !== undefined)
+    lines.push(`Top 10 (excluding pools): <b>${info.top10Pct.toFixed(2)}%</b>`);
   lines.push('');
 
   for (const [i, hold] of info.holders.slice(0, 20).entries()) {
@@ -664,7 +739,9 @@ export function renderWalletList(wallets: WalletRecord[], activeGroup: string | 
       const flags = [w.isMain ? '★ main' : '', w.disabled ? '⏸ off' : '', ...w.groups]
         .filter(Boolean)
         .join(', ');
-      lines.push(`· <b>${h(w.label)}</b> <code>${shortAddr(w.address, 5, 5)}</code>${flags ? ` — <i>${h(flags)}</i>` : ''}`);
+      lines.push(
+        `· <b>${h(w.label)}</b> <code>${shortAddr(w.address, 5, 5)}</code>${flags ? ` — <i>${h(flags)}</i>` : ''}`,
+      );
     }
     if (wallets.length > 25) lines.push(`<i>…and ${wallets.length - 25} more</i>`);
     lines.push('');
@@ -677,11 +754,13 @@ export function renderWalletList(wallets: WalletRecord[], activeGroup: string | 
 
 export function walletsKeyboard(wallets: WalletRecord[]): InlineKeyboard {
   const kb = new InlineKeyboard()
-    .text('➕ New wallet', 'gen').text('🌱 Derive HD set', 'derive_menu')
+    .text('➕ New wallet', 'gen')
+    .text('🌱 Derive HD set', 'derive_menu')
     .row()
     .text('📥 Import key', 'import_key')
     .row()
-    .text('🏷 Manage', 'wallet_manage').text('🎯 Group filter', 'group_filter')
+    .text('🏷 Manage', 'wallet_manage')
+    .text('🎯 Group filter', 'group_filter')
     .row();
 
   if (wallets.length > 0) kb.text('📤 Export addresses', 'export_addresses').row();
@@ -704,11 +783,14 @@ export function walletManageKeyboard(wallets: WalletRecord[]): InlineKeyboard {
 export function walletDetailKeyboard(w: WalletRecord): InlineKeyboard {
   const id = shortWalletId(w.id);
   return new InlineKeyboard()
-    .text('★ Set as main', `setmain:${id}`).text('🏷 Rename', `rename:${id}`)
+    .text('★ Set as main', `setmain:${id}`)
+    .text('🏷 Rename', `rename:${id}`)
     .row()
-    .text(w.disabled ? '▶️ Enable' : '⏸ Disable', `toggle:${id}`).text('🏷 Group', `group:${id}`)
+    .text(w.disabled ? '▶️ Enable' : '⏸ Disable', `toggle:${id}`)
+    .text('🏷 Group', `group:${id}`)
     .row()
-    .text('🔑 Export key', `export:${id}`).text('🗑 Remove', `remove:${id}`)
+    .text('🔑 Export key', `export:${id}`)
+    .text('🗑 Remove', `remove:${id}`)
     .row()
     .text('← Back', 'wallet_manage');
 }
@@ -723,7 +805,9 @@ export function renderBatchSummary(title: string, summary: BatchSummary): string
   if (total > 0) {
     lines.push(`${pressureBar((summary.succeeded / total) * 100)}`);
   }
-  lines.push(`✅ <b>${summary.succeeded}</b> filled   ❌ <b>${summary.failed}</b> failed   ⏱ ${elapsed}`);
+  lines.push(
+    `✅ <b>${summary.succeeded}</b> filled   ❌ <b>${summary.failed}</b> failed   ⏱ ${elapsed}`,
+  );
 
   /*
    * Failures first, and grouped.
@@ -732,7 +816,7 @@ export function renderBatchSummary(title: string, summary: BatchSummary): string
    * error lines is one fact printed fifty times — and it pushes the fact off
    * the screen. What the operator needs is the reason and how many hit it.
    */
-  const failures = summary.results.filter((r) => !r.ok);
+  const failures = summary.results.filter(r => !r.ok);
   if (failures.length > 0) {
     const byReason = new Map<string, string[]>();
     for (const r of failures) {
@@ -741,14 +825,18 @@ export function renderBatchSummary(title: string, summary: BatchSummary): string
     }
 
     lines.push('');
-    for (const [reason, labels] of [...byReason].sort((a, b) => b[1].length - a[1].length).slice(0, 4)) {
+    for (const [reason, labels] of [...byReason]
+      .sort((a, b) => b[1].length - a[1].length)
+      .slice(0, 4)) {
       lines.push(`❌ <b>${labels.length}×</b> <i>${h(reason)}</i>`);
-      lines.push(`   <i>${h(labels.slice(0, 4).join(', '))}${labels.length > 4 ? ` +${labels.length - 4}` : ''}</i>`);
+      lines.push(
+        `   <i>${h(labels.slice(0, 4).join(', '))}${labels.length > 4 ? ` +${labels.length - 4}` : ''}</i>`,
+      );
     }
     if (byReason.size > 4) lines.push(`<i>…and ${byReason.size - 4} other reasons</i>`);
   }
 
-  const filled = summary.results.filter((r) => r.ok && r.signature);
+  const filled = summary.results.filter(r => r.ok && r.signature);
   if (filled.length > 0) {
     lines.push('');
     for (const r of filled.slice(0, 10)) {
@@ -778,7 +866,9 @@ export function renderSettings(s: Settings, walletCount: number): string {
     '',
     '<b>Fees</b>',
     `   Priority      <b>${s.priorityFeeSol} ◎</b>` +
-      (s.priorityFeeMode === 'auto' ? `  <i>auto, max ${s.priorityFeeCeilingSol}</i>` : '  <i>fixed</i>'),
+      (s.priorityFeeMode === 'auto'
+        ? `  <i>auto, max ${s.priorityFeeCeilingSol}</i>`
+        : '  <i>fixed</i>'),
     ...(s.executionMode === 'bundle' ? [`   Jito tip      <b>${s.jitoTipSol} ◎</b>`] : []),
     `   Sweep keeps   <b>${s.sweepReserveSol} ◎</b>  <i>per wallet</i>`,
     '',
@@ -788,7 +878,7 @@ export function renderSettings(s: Settings, walletCount: number): string {
     '',
     '<b>Copy trade safety</b>',
     `   Top 10 max    <b>${s.copySafety.maxTop10Pct}%</b>`,
-    `   Locked supply <b>ignored past ${formatHorizon(s.copySafety.lockHorizonDays)}</b>`,
+    '   Vesting       <b>no concentration discount without verified proof</b>',
     `   Dev max       <b>${s.copySafety.maxDevPct}%</b>`,
     `   Max age       <b>${s.copySafety.maxAgeHours > 0 ? formatAge(s.copySafety.maxAgeHours) : 'any'}</b>`,
     `   1h volume     <b>${s.copySafety.minVolume1hUsd > 0 ? `min $${s.copySafety.minVolume1hUsd.toLocaleString('en-US')}` : 'any'}</b>`,
@@ -805,20 +895,26 @@ export function renderSettings(s: Settings, walletCount: number): string {
 
 export function settingsKeyboard(s: Settings, legacyCount = 0): InlineKeyboard {
   const kb = new InlineKeyboard()
-    .text('Slippage', 'set_slippage').text('Priority fee', 'set_priority_fee')
+    .text('Slippage', 'set_slippage')
+    .text('Priority fee', 'set_priority_fee')
     .row()
-    .text(`Fee mode: ${s.priorityFeeMode}`, 'toggle_fee_mode').text('Fee ceiling', 'set_fee_ceiling')
+    .text(`Fee mode: ${s.priorityFeeMode}`, 'toggle_fee_mode')
+    .text('Fee ceiling', 'set_fee_ceiling')
     .row()
-    .text(`Mode: ${s.executionMode}`, 'toggle_mode').text('Jito tip', 'set_jito_tip')
+    .text(`Mode: ${s.executionMode}`, 'toggle_mode')
+    .text('Jito tip', 'set_jito_tip')
     .row()
-    .text('Sweep reserve', 'set_reserve').text('Group filter', 'group_filter')
+    .text('Sweep reserve', 'set_reserve')
+    .text('Group filter', 'group_filter')
     .row()
-    .text('🟢 Buy presets', 'set_buy_presets').text('🔴 Sell presets', 'set_sell_presets')
+    .text('🟢 Buy presets', 'set_buy_presets')
+    .text('🔴 Sell presets', 'set_sell_presets')
     .row()
     // the limits that decide a copy buy live on the copy-trade screen, but this
     // is where people go looking for a number they want to change
-    .text('🛡 Copy trade safety', 'copy_safety').primary()
-    .row()
+    .text('🛡 Copy trade safety', 'copy_safety')
+    .primary()
+    .row();
 
   // only on the installs that actually carry them, so nobody else sees the row
   if (legacyCount > 0) kb.text(`📦 Export legacy keys (${legacyCount})`, 'legacy_keys').row();
@@ -830,7 +926,8 @@ export function settingsKeyboard(s: Settings, legacyCount = 0): InlineKeyboard {
 
 export function confirmKeyboard(confirmId: string, cancelTo = 'home'): InlineKeyboard {
   return new InlineKeyboard()
-    .text('✅ Confirm', `confirm:${confirmId}`).success()
+    .text('✅ Confirm', `confirm:${confirmId}`)
+    .success()
     .text('✖️ Cancel', cancelTo);
 }
 

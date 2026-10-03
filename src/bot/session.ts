@@ -1,5 +1,7 @@
 import crypto from 'node:crypto';
 import type { Context } from 'grammy';
+import { executionEpoch } from '../services/execution.js';
+import { db } from '../store/db.js';
 
 /**
  * In-memory conversational state. Single-operator bot, so a plain Map keyed by
@@ -46,6 +48,8 @@ export interface SessionState {
 export interface ConfirmAction {
   label: string;
   createdAt: number;
+  epoch: number;
+  accountState: string;
   /**
    * Receives the context of the tap that confirmed it, not the one that staged
    * it. A confirmation staged from a typed message has no message to edit, so an
@@ -56,6 +60,29 @@ export interface ConfirmAction {
 }
 
 const sessions = new Map<number, SessionState>();
+
+/** A confirmation must still describe the settings and wallet set on screen. */
+function confirmationState(): string {
+  return JSON.stringify({
+    settings: db.settings(),
+    wallets: db.raw().wallets.map(w => ({
+      id: w.id,
+      address: w.address,
+      isMain: w.isMain,
+      disabled: w.disabled,
+      groups: w.groups,
+    })),
+  });
+}
+
+/** Never overwrite the action or address referenced by an existing button. */
+function freshId(existing: ReadonlyMap<string, unknown>, bytes: number): string {
+  let id: string;
+  do {
+    id = crypto.randomBytes(bytes).toString('hex');
+  } while (existing.has(id));
+  return id;
+}
 
 export function session(userId: number): SessionState {
   let s = sessions.get(userId);
@@ -75,6 +102,7 @@ export function session(userId: number): SessionState {
  * that a forgotten prompt is gone before the next thing is typed.
  */
 const PENDING_TTL_MS = 5 * 60_000;
+const CONFIRMATION_TTL_MS = 5 * 60_000;
 
 export function setPending(userId: number, pending: PendingInput | undefined): void {
   const s = session(userId);
@@ -128,15 +156,21 @@ export function stageConfirmation(
   run: (ctx: Context) => Promise<void>,
 ): string {
   const s = session(userId);
-  const id = crypto.randomBytes(4).toString('hex');
+  const id = freshId(s.confirmations, 4);
 
   // drop anything the operator walked away from
-  const cutoff = Date.now() - 5 * 60_000;
+  const cutoff = Date.now() - CONFIRMATION_TTL_MS;
   for (const [key, action] of s.confirmations) {
     if (action.createdAt < cutoff) s.confirmations.delete(key);
   }
 
-  s.confirmations.set(id, { label, createdAt: Date.now(), run });
+  s.confirmations.set(id, {
+    label,
+    createdAt: Date.now(),
+    epoch: executionEpoch(),
+    accountState: confirmationState(),
+    run,
+  });
   return id;
 }
 
@@ -144,6 +178,15 @@ export function takeConfirmation(userId: number, id: string): ConfirmAction | un
   const s = session(userId);
   const action = s.confirmations.get(id);
   if (action) s.confirmations.delete(id);
+  // Check at the moment of use as well as when staging another action: the
+  // operator may return to an old button without creating a newer prompt.
+  if (
+    !action ||
+    action.epoch !== executionEpoch() ||
+    action.accountState !== confirmationState() ||
+    Date.now() - action.createdAt > CONFIRMATION_TTL_MS
+  )
+    return undefined;
   return action;
 }
 
@@ -170,7 +213,7 @@ export function tokenId(mint: string): string {
   const existing = idsByToken.get(mint);
   if (existing) return existing;
 
-  const id = crypto.randomBytes(4).toString('hex');
+  const id = freshId(tokenIds, 4);
   tokenIds.set(id, mint);
   idsByToken.set(mint, id);
 
@@ -191,7 +234,7 @@ const idsByWallet = new Map<string, string>();
 export function shortWalletId(walletId: string): string {
   const existing = idsByWallet.get(walletId);
   if (existing) return existing;
-  const id = crypto.randomBytes(3).toString('hex');
+  const id = freshId(walletIds, 3);
   walletIds.set(id, walletId);
   idsByWallet.set(walletId, id);
   evictOldest(walletIds, idsByWallet, 2000);
@@ -204,4 +247,13 @@ export function walletFromShortId(id: string): string | undefined {
 
 export function clearSession(userId: number): void {
   sessions.delete(userId);
+}
+
+/** A factory reset invalidates every operator's old prompts and buttons. */
+export function clearAllSessions(): void {
+  sessions.clear();
+  tokenIds.clear();
+  idsByToken.clear();
+  walletIds.clear();
+  idsByWallet.clear();
 }

@@ -1,7 +1,9 @@
-import { VersionedTransaction } from '@solana/web3.js';
+import type { VersionedTransaction } from '@solana/web3.js';
 import bs58 from 'bs58';
 import { endpoints } from '../config.js';
 import { fetchJson, sleep } from '../util.js';
+import { TransactionRejectedError, TransactionSubmissionUnknownError } from './errors.js';
+import { assertExecutionCurrent } from '../services/execution.js';
 
 /**
  * Jito bundle submission. A bundle is an ordered list of up to 5 transactions
@@ -21,17 +23,29 @@ export async function sendBundle(transactions: VersionedTransaction[]): Promise<
   if (transactions.length === 0) throw new Error('Nothing to send.');
   if (transactions.length > 5) throw new Error('A Jito bundle holds at most 5 transactions.');
 
-  const encoded = transactions.map((tx) => bs58.encode(tx.serialize()));
+  const encoded = transactions.map(tx => bs58.encode(tx.serialize()));
 
-  const res = await fetchJson<JitoRpcResponse<string>>(endpoints.jitoBundles, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'sendBundle', params: [encoded] }),
-    timeoutMs: 20_000,
-  });
+  const firstSignature = bs58.encode(transactions[0]!.signatures[0]!);
+  // Cancellation before dispatch is definite; it must not be labelled an
+  // uncertain submission or retried with a wallet that has been removed.
+  assertExecutionCurrent();
+  let res: JitoRpcResponse<string>;
+  try {
+    res = await fetchJson<JitoRpcResponse<string>>(endpoints.jitoBundles, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'sendBundle', params: [encoded] }),
+      timeoutMs: 20_000,
+    });
+  } catch (err) {
+    throw new TransactionSubmissionUnknownError(firstSignature, err);
+  }
 
-  if (res.error) throw new Error(`Jito rejected the bundle: ${res.error.message}`);
-  if (!res.result) throw new Error('Jito accepted the request but returned no bundle id.');
+  if (res.error)
+    throw new TransactionRejectedError(`Jito rejected the bundle: ${res.error.message}`);
+  if (!res.result) {
+    throw new TransactionSubmissionUnknownError(firstSignature, 'Jito returned no bundle id.');
+  }
   return res.result;
 }
 
@@ -39,20 +53,38 @@ export type BundleState = 'Pending' | 'Landed' | 'Failed' | 'Invalid' | 'Unknown
 
 export async function getBundleStatus(bundleId: string): Promise<BundleState> {
   try {
-    const res = await fetchJson<JitoRpcResponse<{ value: Array<{ confirmation_status?: string; err?: unknown }> }>>(
-      endpoints.jitoBundles,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getBundleStatuses', params: [[bundleId]] }),
-        timeoutMs: 15_000,
-      },
-    );
+    const res = await fetchJson<
+      JitoRpcResponse<{ value: Array<{ confirmation_status?: string; err?: unknown }> }>
+    >(endpoints.jitoBundles, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'getBundleStatuses',
+        params: [[bundleId]],
+      }),
+      timeoutMs: 15_000,
+    });
 
+    if (res.error) return 'Unknown';
     const entry = res.result?.value?.[0];
     if (!entry) return 'Pending';
-    if (entry.err) return 'Failed';
-    if (entry.confirmation_status === 'confirmed' || entry.confirmation_status === 'finalized') return 'Landed';
+    // Jito serializes a successful Rust Result as { Ok: null }, not just null.
+    // Treating that object as an error hides real fills and can rearm an order
+    // which has already traded. An explicit Err always takes precedence.
+    const err = entry.err;
+    const success =
+      err === null ||
+      err === undefined ||
+      (typeof err === 'object' &&
+        !Array.isArray(err) &&
+        Object.keys(err).length === 1 &&
+        'Ok' in err &&
+        err.Ok === null);
+    if (!success) return 'Failed';
+    if (entry.confirmation_status === 'confirmed' || entry.confirmation_status === 'finalized')
+      return 'Landed';
     return 'Pending';
   } catch {
     return 'Unknown';
@@ -92,7 +124,7 @@ export async function recentJitoTipSol(): Promise<number | null> {
       { timeoutMs: 8_000 },
     );
 
-    const tip = res?.[0]?.['landed_tips_75th_percentile'];
+    const tip = res?.[0]?.landed_tips_75th_percentile;
     return typeof tip === 'number' && tip > 0 ? tip : null;
   } catch {
     return null;

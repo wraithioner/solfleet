@@ -105,8 +105,7 @@ export function quoteBuy(curve: BondingCurve, solIn: number): number {
   if (lamportsIn <= 0n) return 0;
 
   const afterFee = lamportsIn - (lamportsIn * FEE_BPS) / BPS;
-  const tokensOut =
-    (afterFee * curve.virtualTokenReserves) / (curve.virtualSolReserves + afterFee);
+  const tokensOut = (afterFee * curve.virtualTokenReserves) / (curve.virtualSolReserves + afterFee);
 
   return Number(tokensOut) / 10 ** TOKEN_DECIMALS;
 }

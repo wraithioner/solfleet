@@ -3,13 +3,18 @@ import { rpc, getMintBalances } from '../chains/solana.js';
 import { endpoints, EVM_LOOKUP_CHAINS } from '../config.js';
 import { fetchJson, errMessage } from '../util.js';
 import { log } from '../logger.js';
-import { fetchBondingCurve, curveMarketCapSol, curveProgress, bondingCurvePda } from '../trade/curve.js';
+import {
+  fetchBondingCurve,
+  curveMarketCapSol,
+  curveProgress,
+  bondingCurvePda,
+} from '../trade/curve.js';
 import { getSolPrice } from './prices.js';
 import { getTokenMetadata } from './metadata.js';
 import { getMintAuthorities } from './mintauth.js';
 import { getRugcheck } from './rugcheck.js';
 import { getJupTokenData } from './jupdata.js';
-import { readTokenLocks, lockedBeyond, furthestUnlock, DEFAULT_LOCK_HORIZON_DAYS, DAY_MS, type LockedSupply } from './locks.js';
+import { readTokenLocks, type LockedSupply } from './locks.js';
 import { allWallets } from '../store/wallets.js';
 import type { Chain } from '../types.js';
 
@@ -61,6 +66,8 @@ export interface TokenInfo {
   creator?: string;
   /** How much of the supply the launcher still holds, as a percentage. */
   creatorHoldsPct?: number;
+  /** An indexed creator percentage cannot replace a failed chain balance read. */
+  creatorBalanceUnavailable?: boolean;
 
   totalSupply?: number;
   /** Needed to turn a raw balance into a human amount. */
@@ -71,21 +78,19 @@ export interface TokenInfo {
   freezeAuthority?: string | null;
   /** Mint belongs to Token-2022, which can attach behaviour to transfers. */
   token2022?: boolean;
+  /** The actual mint could not be validated, even if an index knows its name. */
+  mintReadUnavailable?: boolean;
   /** Token-2022 extensions that can stop or tax a sale. Empty = none found. */
   traps?: string[];
   holders?: HolderInfo[];
   /** True when the holder query failed — distinct from "no holders". */
   holdersUnavailable?: boolean;
   top10Pct?: number;
+  /** Conservative wallet concentration bound including all unsampled supply. */
+  top10PctUpperBound?: number;
   /** Share of supply in a vesting vault, of the concentration figure above. */
   lockerPct?: number;
-  /**
-   * Every vesting stream still holding supply, and when each one releases.
-   *
-   * Kept as the list rather than a single locked figure, because how far away
-   * an unlock has to be before it stops counting is the operator's setting —
-   * the gate applies it, this only reports what is there.
-   */
+  /** Outstanding stream balances and final dates; these receive no safety discount. */
   lockedSupply?: LockedSupply[];
   /** Share handed out through streams that locked nothing, and to how many. */
   launchDistPct?: number;
@@ -138,12 +143,17 @@ const SOLANA_MINT_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 const EVM_ADDR_RE = /^0x[a-fA-F0-9]{40}$/;
 
 /** Pull a token address out of arbitrary pasted text, if there is one. */
-export function extractTokenAddress(text: string): { address: string; kind: 'solana' | 'evm' } | null {
+export function extractTokenAddress(
+  text: string,
+): { address: string; kind: 'solana' | 'evm' } | null {
   const cleaned = text.trim();
 
   // handle pasted links: pump.fun/coin/<mint>, dexscreener.com/solana/<pair>, ...
-  const fromUrl = cleaned.match(/(?:coin|token|solana|ethereum|base|bsc|arbitrum|polygon)\/([1-9A-HJ-NP-Za-km-z]{32,44}|0x[a-fA-F0-9]{40})/);
-  const candidate = fromUrl?.[1] ?? cleaned.split(/\s+/).find((w) => SOLANA_MINT_RE.test(w) || EVM_ADDR_RE.test(w));
+  const fromUrl = cleaned.match(
+    /(?:coin|token|solana|ethereum|base|bsc|arbitrum|polygon)\/([1-9A-HJ-NP-Za-km-z]{32,44}|0x[a-fA-F0-9]{40})/,
+  );
+  const candidate =
+    fromUrl?.[1] ?? cleaned.split(/\s+/).find(w => SOLANA_MINT_RE.test(w) || EVM_ADDR_RE.test(w));
 
   if (!candidate) return null;
   if (EVM_ADDR_RE.test(candidate)) return { address: candidate, kind: 'evm' };
@@ -206,7 +216,13 @@ async function fetchPairsOnChain(chainId: string, address: string): Promise<DexP
       { timeoutMs: 12_000 },
     );
     const pairs = Array.isArray(res) ? res : (res.pairs ?? []);
-    return pairs.filter((p) => p.baseToken?.address?.toLowerCase() === address.toLowerCase());
+    return pairs.filter(
+      p =>
+        p.chainId === chainId &&
+        (chainId === 'solana'
+          ? p.baseToken?.address === address
+          : p.baseToken?.address?.toLowerCase() === address.toLowerCase()),
+    );
   } catch {
     return [];
   }
@@ -230,14 +246,17 @@ async function fetchPairsAnywhere(address: string): Promise<DexPair[]> {
       { timeoutMs: 12_000 },
     );
     return (res.pairs ?? []).filter(
-      (p) => p.baseToken?.address?.toLowerCase() === address.toLowerCase(),
+      p => p.baseToken?.address?.toLowerCase() === address.toLowerCase(),
     );
   } catch {
     return [];
   }
 }
 
-async function loadMarketData(address: string, kind: 'solana' | 'evm'): Promise<Partial<TokenInfo>> {
+async function loadMarketData(
+  address: string,
+  kind: 'solana' | 'evm',
+): Promise<Partial<TokenInfo>> {
   try {
     // An EVM address is not unique across chains — forks reuse the exact same
     // contract address — so search each chain explicitly instead of trusting an
@@ -245,7 +264,7 @@ async function loadMarketData(address: string, kind: 'solana' | 'evm'): Promise<
     let pairs =
       kind === 'solana'
         ? await fetchPairsOnChain('solana', address)
-        : (await Promise.all(EVM_LOOKUP_CHAINS.map((c) => fetchPairsOnChain(c, address)))).flat();
+        : (await Promise.all(EVM_LOOKUP_CHAINS.map(c => fetchPairsOnChain(c, address)))).flat();
 
     // nothing on any chain we know by name — widen the search rather than
     // reporting a token that plainly exists as "unknown"
@@ -256,7 +275,9 @@ async function loadMarketData(address: string, kind: 'solana' | 'evm'): Promise<
     if (pairs.length === 0) return {};
 
     // the deepest pool is the one whose price and market cap mean anything
-    const best = pairs.reduce((a, b) => ((b.liquidity?.usd ?? 0) > (a.liquidity?.usd ?? 0) ? b : a));
+    const best = pairs.reduce((a, b) =>
+      (b.liquidity?.usd ?? 0) > (a.liquidity?.usd ?? 0) ? b : a,
+    );
 
     /*
      * Age comes from the FIRST market, not the deepest one.
@@ -272,8 +293,8 @@ async function loadMarketData(address: string, kind: 'solana' | 'evm'): Promise<
      * A copy-trade age limit built on that number would wave through precisely
      * the coins it exists to refuse, so it is built on the oldest pair instead.
      */
-    const firstMarket = pairs.reduce(
-      (a, b) => ((b.pairCreatedAt ?? Infinity) < (a.pairCreatedAt ?? Infinity) ? b : a),
+    const firstMarket = pairs.reduce((a, b) =>
+      (b.pairCreatedAt ?? Infinity) < (a.pairCreatedAt ?? Infinity) ? b : a,
     );
 
     /*
@@ -309,15 +330,15 @@ async function loadMarketData(address: string, kind: 'solana' | 'evm'): Promise<
       marketCap: best.marketCap,
       fdv: best.fdv,
       liquidityUsd: best.liquidity?.usd,
-      volume24h: sum((p) => p.volume?.h24),
-      volume1h: sum((p) => p.volume?.h1),
-      buys24h: sum((p) => p.txns?.h24?.buys),
-      sells24h: sum((p) => p.txns?.h24?.sells),
+      volume24h: sum(p => p.volume?.h24),
+      volume1h: sum(p => p.volume?.h1),
+      buys24h: sum(p => p.txns?.h24?.buys),
+      sells24h: sum(p => p.txns?.h24?.sells),
       pairCreatedAt: firstMarket.pairCreatedAt,
       dex: best.dexId,
       imageUrl: best.info?.imageUrl,
-      websites: best.info?.websites?.map((w) => w.url),
-      socials: best.info?.socials?.map((s) => s.url),
+      websites: best.info?.websites?.map(w => w.url),
+      socials: best.info?.socials?.map(s => s.url),
     };
   } catch (err) {
     log.warn(`DexScreener lookup failed for ${address}: ${errMessage(err)}`);
@@ -339,29 +360,10 @@ async function loadMarketData(address: string, kind: 'solana' | 'evm'): Promise<
  */
 const HOLDER_DEADLINE_MS = 4000;
 
-/**
- * How long a copied buy will wait for the same query.
- *
- * A card is read by somebody who can wait four seconds. A copied entry is a
- * race, and four seconds is a materially worse fill on a token doing its first
- * minutes. Measured against a live endpoint the whole lookup took 4001ms and
- * the holder query contributed nothing to any of it — it timed out every time,
- * while the launch index answered in 116ms with a concentration figure that is
- * better anyway, because it can tell a pool from a whale.
- *
- * Kept as a short wait rather than removed, so the on-chain read still covers
- * the case where the index is unreachable and the RPC is quick.
- */
+/** Copied buys use a shorter deadline; a timed-out chain read refuses the entry. */
 const FAST_HOLDER_DEADLINE_MS = 1200;
 
-/**
- * How long the lock lookup gets.
- *
- * Same reasoning as the holder deadline above and a different number, because
- * this query is worth more. It answered in 530ms on measurement and it is what
- * stops a coin being refused over supply locked until 2095 — so a copied entry
- * waits for it rather than skipping it, just not indefinitely.
- */
+/** Bound the informational stream scan and launch distribution lookup. */
 const LOCK_DEADLINE_MS = 4000;
 const FAST_LOCK_DEADLINE_MS = 1500;
 
@@ -398,7 +400,7 @@ async function poolOwners(owners: string[]): Promise<Set<string>> {
   if (owners.length === 0) return pools;
 
   try {
-    const infos = await rpc().getMultipleAccountsInfo(owners.map((o) => new PublicKey(o)));
+    const infos = await rpc().getMultipleAccountsInfo(owners.map(o => new PublicKey(o)));
     owners.forEach((owner, i) => {
       const program = infos[i]?.owner?.toBase58();
       if (program && POOL_PROGRAMS.has(program)) pools.add(owner);
@@ -410,8 +412,11 @@ async function poolOwners(owners: string[]): Promise<Set<string>> {
   return pools;
 }
 
-async function loadSolanaHolders(mint: string, deadlineMs = HOLDER_DEADLINE_MS): Promise<Partial<TokenInfo>> {
-  const timeout = new Promise<Partial<TokenInfo>>((resolve) =>
+async function loadSolanaHolders(
+  mint: string,
+  deadlineMs = HOLDER_DEADLINE_MS,
+): Promise<Partial<TokenInfo>> {
+  const timeout = new Promise<Partial<TokenInfo>>(resolve =>
     setTimeout(() => resolve({ holdersUnavailable: true }), deadlineMs).unref?.(),
   );
   return Promise.race([readSolanaHolders(mint), timeout]);
@@ -427,55 +432,91 @@ async function readSolanaHolders(mint: string): Promise<Partial<TokenInfo>> {
     ]);
 
     const decimals = supplyRes.value.decimals;
-    const totalSupply = Number(supplyRes.value.amount) / 10 ** decimals;
-    if (totalSupply === 0) return { totalSupply: 0, decimals, holders: [] };
+    if (!Number.isInteger(decimals) || decimals < 0 || decimals > 255)
+      throw new Error('Invalid mint decimals');
+    const supplyRaw = BigInt(supplyRes.value.amount);
+    const totalSupply = Number(supplyRaw) / 10 ** decimals;
+    if (supplyRaw <= 0n) return { totalSupply: 0, decimals, holders: [], holdersUnavailable: true };
 
     const accounts = largest.value.slice(0, 20);
-    if (accounts.length === 0) return { totalSupply, decimals, holders: [] };
+    if (accounts.length === 0)
+      return { totalSupply, decimals, holders: [], holdersUnavailable: true };
 
     // getTokenLargestAccounts returns token accounts, not owners — resolve them
-    const parsed = await rpc().getMultipleParsedAccounts(accounts.map((a) => a.address));
+    const parsed = await rpc().getMultipleParsedAccounts(accounts.map(a => a.address));
 
     const curvePda = bondingCurvePda(mint).toBase58();
-    const ourAddresses = new Set(allWallets().filter((w) => w.kind === 'solana').map((w) => w.address));
+    const ourAddresses = new Set(
+      allWallets()
+        .filter(w => w.kind === 'solana')
+        .map(w => w.address),
+    );
 
-    const holders: HolderInfo[] = [];
+    const grouped = new Map<string, { raw: bigint; tag?: string }>();
+    const sampledAccounts = new Set<string>();
+    let sampledRaw = 0n;
 
     accounts.forEach((acc, i) => {
+      const tokenAddress = acc.address.toBase58();
+      if (sampledAccounts.has(tokenAddress)) throw new Error('Duplicate largest token account');
+      sampledAccounts.add(tokenAddress);
       const data = parsed.value[i]?.data;
-      const owner =
+      const token =
         data && typeof data === 'object' && 'parsed' in data
-          ? ((data as { parsed: { info?: { owner?: string } } }).parsed?.info?.owner ?? acc.address.toBase58())
-          : acc.address.toBase58();
+          ? (data as { parsed: { info?: { owner?: string; mint?: string } } }).parsed?.info
+          : undefined;
+      if (token?.mint !== mint) throw new Error('Largest token account mint did not match');
+      const owner = token.owner;
+      if (!owner) throw new Error('Largest token account owner could not be resolved');
+      new PublicKey(owner);
 
-      const amount = Number(acc.uiAmountString ?? 0);
-      if (amount === 0) return;
+      const raw = BigInt(acc.amount);
+      if (raw === 0n) return;
+      if (raw < 0n || raw > supplyRaw) throw new Error('Invalid token account amount');
+      sampledRaw += raw;
+      if (sampledRaw > supplyRaw) throw new Error('Sampled balances exceed mint supply');
 
       let tag: string | undefined;
       if (owner === curvePda) tag = 'bonding curve';
       else if (ourAddresses.has(owner)) tag = 'you';
 
-      holders.push({
-        owner,
-        amount,
-        pctOfSupply: (amount / totalSupply) * 100,
-        tag,
-      });
+      const prior = grouped.get(owner);
+      grouped.set(owner, { raw: (prior?.raw ?? 0n) + raw, tag });
     });
+
+    const holders: HolderInfo[] = [...grouped].map(([owner, h]) => ({
+      owner,
+      amount: Number(h.raw) / 10 ** decimals,
+      // Round the ratio upward so precision loss cannot understate a risk.
+      pctOfSupply: Number((h.raw * 100_000_000n + supplyRaw - 1n) / supplyRaw) / 1_000_000,
+      tag: h.tag,
+    }));
 
     holders.sort((a, b) => b.amount - a.amount);
 
     // the curve is one kind of market; a graduated coin's pool is the other,
     // and it is far larger — see POOL_PROGRAMS
-    const pools = await poolOwners(holders.filter((h) => !h.tag).map((h) => h.owner));
+    const pools = await poolOwners(holders.filter(h => !h.tag).map(h => h.owner));
     for (const h of holders) if (pools.has(h.owner)) h.tag = 'pool';
 
     // liquidity sitting in the curve or a pool is not concentration risk, so
     // exclude it from the "top holders" number that actually matters
-    const realHolders = holders.filter((h) => h.tag !== 'bonding curve' && h.tag !== 'pool');
+    const realHolders = holders.filter(h => h.tag !== 'bonding curve' && h.tag !== 'pool');
     const top10Pct = realHolders.slice(0, 10).reduce((sum, h) => sum + h.pctOfSupply, 0);
+    // Twenty accounts cannot establish the ten largest wallets: an owner can
+    // split across arbitrarily many accounts. Treat every unsampled token as
+    // belonging to those wallets to obtain a safe upper bound, without an
+    // unbounded full-mint scan. Pool accounts still count towards coverage.
+    const knownTop10Raw = realHolders
+      .slice(0, 10)
+      .reduce((sum, h) => sum + grouped.get(h.owner)!.raw, 0n);
+    const boundRaw = knownTop10Raw + supplyRaw - sampledRaw;
+    const top10PctUpperBound = Math.min(
+      100,
+      Number((boundRaw * 100_000_000n + supplyRaw - 1n) / supplyRaw) / 1_000_000,
+    );
 
-    const owned = holders.filter((h) => h.tag === 'you');
+    const owned = holders.filter(h => h.tag === 'you');
     const ownedAmount = owned.reduce((s, h) => s + h.amount, 0);
 
     return {
@@ -483,6 +524,7 @@ async function readSolanaHolders(mint: string): Promise<Partial<TokenInfo>> {
       decimals,
       holders,
       top10Pct,
+      top10PctUpperBound,
       ownedPct: (ownedAmount / totalSupply) * 100,
       ownedAmount,
     };
@@ -519,16 +561,23 @@ async function loadCurveData(mint: string): Promise<Partial<TokenInfo>> {
     // large share can end the chart in one transaction.
     if (curve.creator && curve.tokenTotalSupply > 0n) {
       try {
-        const held = await getMintBalances([curve.creator], mint);
+        const [held, supplyRes] = await Promise.all([
+          getMintBalances([curve.creator], mint),
+          rpc().getTokenSupply(new PublicKey(mint)),
+        ]);
+        const supply = BigInt(supplyRes.value.amount);
+        if (supply <= 0n) throw new Error('Creator balance has no valid mint supply');
         const raw = held.get(curve.creator) ?? 0n;
         if (raw > 0n) {
-          out.creatorHoldsPct = (Number(raw) / Number(curve.tokenTotalSupply)) * 100;
+          out.creatorHoldsPct = Number((raw * 100_000_000n + supply - 1n) / supply) / 1_000_000;
         } else {
           out.creatorHoldsPct = 0;
         }
       } catch {
-        /* leave undefined — unknown, which the card states rather than implying zero */
+        out.creatorBalanceUnavailable = true;
       }
+    } else {
+      out.creatorBalanceUnavailable = true;
     }
 
     return out;
@@ -584,7 +633,8 @@ export async function getTokenInfo(
     // DexScreener wins on market cap once a pool exists; before that the curve
     // is the only source, so only let it fill an empty field
     const merged: TokenInfo = { ...base, ...curve, ...holders, ...market, chain: 'solana' };
-    if (market.marketCap === undefined && curve.marketCap !== undefined) merged.marketCap = curve.marketCap;
+    if (market.marketCap === undefined && curve.marketCap !== undefined)
+      merged.marketCap = curve.marketCap;
 
     if (authorities) {
       merged.mintAuthority = authorities.mintAuthority;
@@ -592,6 +642,8 @@ export async function getTokenInfo(
       merged.decimals ??= authorities.decimals;
       merged.token2022 = authorities.token2022;
       merged.traps = authorities.traps;
+    } else {
+      merged.mintReadUnavailable = true;
     }
 
     // on-chain metadata is the fallback, never the override — an indexed name
@@ -606,15 +658,12 @@ export async function getTokenInfo(
     /*
      * The index's numbers where it has them, ours where it does not.
      *
-     * It is preferred for concentration rather than merely consulted, because
-     * it can name a pool and a cluster of one person's wallets and we cannot.
-     * Our own read stays as the fallback for the moments it is unreachable —
-     * and `holdersUnavailable` is cleared when it answers, since the figure is
-     * then known even though our RPC query was throttled out of returning it.
+     * Independent observations are retained at their larger value. An index
+     * must not relax a high on-chain concentration or creator balance.
      */
     if (rug) {
       merged.rugcheckScore = rug.score;
-      merged.rugcheckRisks = rug.risks.map((r) => ({ name: r.name, level: r.level }));
+      merged.rugcheckRisks = rug.risks.map(r => ({ name: r.name, level: r.level }));
       merged.insiderPct = rug.insiderPct;
       merged.insiderWallets = rug.insiderWallets;
       merged.holderCount = rug.totalHolders;
@@ -628,12 +677,15 @@ export async function getTokenInfo(
        * The index's concentration figure, without pretending our own read
        * worked. `holdersUnavailable` means one thing — the RPC refused us —
        * and clearing it here to signal "but we know anyway" made the card
-       * claim a holder list it did not have. The gate only ever complains
-       * when the figure is missing entirely, so supplying it is enough.
+       * claim a holder list it did not have. A failed chain read remains a
+       * refusal even when an index supplies a concentration estimate.
        */
-      if (rug.top10Pct !== undefined) merged.top10Pct = rug.top10Pct;
+      if (rug.top10Pct !== undefined)
+        merged.top10Pct = Math.max(merged.top10Pct ?? 0, rug.top10Pct);
       if (rug.lockerPct !== undefined) merged.lockerPct = rug.lockerPct;
-      if (rug.creatorPct !== undefined) merged.creatorHoldsPct ??= rug.creatorPct;
+      if (rug.creatorPct !== undefined)
+        merged.creatorHoldsPct = Math.max(merged.creatorHoldsPct ?? 0, rug.creatorPct);
+      merged.creator ??= rug.creator;
       if (merged.liquidityUsd === undefined && rug.liquidityUsd !== undefined) {
         merged.liquidityUsd = rug.liquidityUsd;
       }
@@ -644,8 +696,7 @@ export async function getTokenInfo(
      *
      * devMints and the five-minute trader count exist in no other source this
      * bot reads. The concentration and holder figures are third opinions — the
-     * launch index outranks them because it can name a pool, so they only fill
-     * gaps.
+     * larger reported concentration remains a reason for caution.
      */
     if (jup) {
       merged.devMints = jup.devMints;
@@ -654,7 +705,8 @@ export async function getTokenInfo(
       merged.organicPct5m = jup.organicPct5m;
       merged.organicScoreLabel = jup.organicScoreLabel;
       merged.holderCount ??= jup.holderCount;
-      merged.top10Pct ??= jup.topHoldersPct;
+      if (jup.topHoldersPct !== undefined)
+        merged.top10Pct = Math.max(merged.top10Pct ?? 0, jup.topHoldersPct);
       if (merged.creatorPriorTokens === undefined && jup.devMints !== undefined) {
         // devMints counts this token too; prior launches are one fewer
         merged.creatorPriorTokens = Math.max(0, jup.devMints - 1);
@@ -665,6 +717,31 @@ export async function getTokenInfo(
       merged.lockedSupply = locks.locked;
       merged.launchDistPct = locks.launchDistPct;
       merged.launchDistWallets = locks.launchDistWallets;
+    }
+
+    // A creator identified by the index still needs an exhaustive chain balance.
+    // Its reported percentage is evidence of a larger holding, never proof of zero.
+    if (merged.creator && !curve.creator) {
+      try {
+        if (!authorities || authorities.supplyRaw <= 0n)
+          throw new Error('No validated mint supply');
+        const held = await Promise.race([
+          getMintBalances([merged.creator], address),
+          new Promise<never>((_, reject) =>
+            setTimeout(
+              () => reject(new Error('Creator balance lookup exceeded its deadline')),
+              opts.fast ? FAST_HOLDER_DEADLINE_MS : HOLDER_DEADLINE_MS,
+            ).unref(),
+          ),
+        ]);
+        const raw = held.get(merged.creator) ?? 0n;
+        const pct =
+          Number((raw * 100_000_000n + authorities.supplyRaw - 1n) / authorities.supplyRaw) /
+          1_000_000;
+        merged.creatorHoldsPct = Math.max(merged.creatorHoldsPct ?? 0, pct);
+      } catch {
+        merged.creatorBalanceUnavailable = true;
+      }
     }
 
     addWarnings(merged);
@@ -698,37 +775,27 @@ function addWarnings(info: TokenInfo): void {
   }
 
   if (info.chain === 'solana' && info.freezeAuthority === undefined) {
-    info.warnings.push('Could not read the mint authorities — freeze and mint risk are unknown, not absent.');
+    info.warnings.push(
+      'Could not read the mint authorities — freeze and mint risk are unknown, not absent.',
+    );
   }
 
   if (info.holdersUnavailable) {
-    info.warnings.push('Holder distribution unavailable — the RPC rejected the query (rate limit?). Concentration is unknown, not zero.');
+    info.warnings.push(
+      'Holder distribution unavailable — the RPC rejected the query (rate limit?). Concentration is unknown, not zero.',
+    );
   }
 
-  /*
-   * Concentration net of supply that is locked away for good.
-   *
-   * The raw figure counts a vesting vault as a holder, which on a live launch
-   * read 63.5% concentrated when 50.2% of it was locked until 2095. Saying
-   * that out loud on the card is the point — the number and the reason for it,
-   * rather than a quietly softened number nobody can check.
-   */
-  const locked = Math.min(
-    info.lockerPct ?? 0,
-    info.lockedSupply === undefined
-      ? 0
-      : lockedBeyond(info.lockedSupply, DEFAULT_LOCK_HORIZON_DAYS * DAY_MS),
-  );
-  const free = info.top10Pct === undefined ? undefined : Math.max(0, info.top10Pct - locked);
+  // An end date alone does not prove that a vesting balance is unavailable.
+  const free = info.top10Pct;
 
   if (free !== undefined && free > 50) {
     info.warnings.push(`Top 10 wallets hold ${free.toFixed(1)}% of supply — heavy concentration.`);
   }
-  if (locked > 0) {
-    const furthest = furthestUnlock(info.lockedSupply ?? []);
-    const until = furthest ? new Date(furthest).getUTCFullYear() : undefined;
+  if (info.lockedSupply && info.lockedSupply.length > 0) {
+    const outstanding = info.lockedSupply.reduce((sum, stream) => sum + stream.pct, 0);
     info.warnings.push(
-      `${locked.toFixed(1)}% of supply is locked${until ? ` until ${until}` : ''} — not counted as concentration.`,
+      `${outstanding.toFixed(1)}% of supply remains in vesting streams. Their final dates do not prove when funds can be withdrawn; concentration receives no discount.`,
     );
   }
 
@@ -746,7 +813,9 @@ function addWarnings(info: TokenInfo): void {
   }
 
   if (info.liquidityUsd !== undefined && info.liquidityUsd < 5_000 && !info.isPumpFun) {
-    info.warnings.push(`Only ${Math.round(info.liquidityUsd).toLocaleString()} USD of liquidity — expect severe slippage.`);
+    info.warnings.push(
+      `Only ${Math.round(info.liquidityUsd).toLocaleString()} USD of liquidity — expect severe slippage.`,
+    );
   }
 
   if (info.pairCreatedAt) {
@@ -754,7 +823,11 @@ function addWarnings(info: TokenInfo): void {
     if (ageHours < 1) info.warnings.push(`Pair is ${Math.round(ageHours * 60)} minutes old.`);
   }
 
-  if (info.volume24h !== undefined && info.liquidityUsd && info.volume24h > info.liquidityUsd * 50) {
+  if (
+    info.volume24h !== undefined &&
+    info.liquidityUsd &&
+    info.volume24h > info.liquidityUsd * 50
+  ) {
     info.warnings.push('Volume is very large relative to liquidity — possible wash trading.');
   }
 

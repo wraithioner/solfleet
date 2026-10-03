@@ -46,11 +46,12 @@ export interface PositionPnl {
  */
 export function entryPrice(pos: PositionRecord | undefined): number | null {
   if (!pos) return null;
+  if (pos.basisKnown === false || (pos.basisKnown === undefined && pos.sellFills > 0)) return null;
   // the position on the books, not every one this coin has ever been — see the
   // note on basisSol in the store
   const sol = pos.basisSol ?? pos.investedSol;
   const tokens = pos.basisTokens ?? pos.tokensBought;
-  if (sol <= 0 || tokens <= 0) return null;
+  if (!Number.isFinite(sol) || !Number.isFinite(tokens) || sol <= 0 || tokens <= 0) return null;
   return sol / tokens;
 }
 
@@ -70,15 +71,16 @@ export function formatEntry(pos: PositionRecord | undefined, nowSol: number | nu
 export function positionPnl(pos: PositionRecord, currentValueSol: number): PositionPnl {
   const investedSol = pos.investedSol;
   const realisedSol = pos.realisedSol;
-  const netSol = realisedSol + currentValueSol - investedSol;
+  const cost = costOf(pos);
+  const netSol = realisedSol + currentValueSol - cost;
 
   return {
     investedSol,
     realisedSol,
     currentValueSol,
     netSol,
-    netPct: investedSol > 0 ? (netSol / investedSol) * 100 : 0,
-    inProfitOnRealised: realisedSol >= investedSol && investedSol > 0,
+    netPct: cost > 0 ? (netSol / cost) * 100 : 0,
+    inProfitOnRealised: realisedSol >= cost && cost > 0,
   };
 }
 
@@ -107,12 +109,12 @@ export function exitResult(
   solReceived: number,
 ): { profitSol: number; pct: number } | null {
   if (!pos || tokensSold <= 0 || solReceived <= 0) return null;
-
-  const sol = pos.basisSol ?? pos.investedSol;
+  const entry = entryPrice(pos);
+  if (entry === null) return null;
   const tokens = pos.basisTokens ?? pos.tokensBought;
-  if (sol <= 0 || tokens <= 0) return null;
+  if (tokensSold > tokens * (1 + 1e-9)) return null;
 
-  const costOfSold = (sol / tokens) * tokensSold;
+  const costOfSold = entry * tokensSold;
   if (costOfSold <= 0) return null;
 
   return {
@@ -233,7 +235,7 @@ export function accountPnl(
       unpricedCostSol += cost;
     }
     const open = value > 0 || unpriced;
-    if (cost > 0 || pos.realisedSol > 0) (open ? openCount++ : closedCount++);
+    if (cost > 0 || pos.realisedSol > 0) open ? openCount++ : closedCount++;
 
     const netSol = pos.realisedSol + value - cost;
     if (cost > 0 && !unpriced) {

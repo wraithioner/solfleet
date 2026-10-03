@@ -76,12 +76,12 @@ at all. Everyone else gets silence, not an error.
   screen already listing the warnings. Before money moves, a copied token is
   checked against every limit below, each one adjustable under
   **Copy trading → 🛡 Safety** (defaults shown):
-  - top 10 wallets hold over **20%** of supply — supply locked for at least
-    **365 days** (also adjustable) isn't counted as concentration, since a
-    vesting vault is a whale only until it can actually sell
+  - top 10 wallets hold over **20%** of supply. Vesting balances are displayed,
+    but do not reduce concentration: a future stream end does not prove its
+    tokens cannot already be claimed, or that its vault is a counted holder
   - the launch wallet still holds over **1%**
   - the mint or freeze authority is still live, or a Token-2022 mint carries a
-    transfer hook, transfer fee, or permanent delegate
+    transfer hook, transfer fee, permanent delegate, or live pause authority
   - wallets the index reads as one person (an allocation bundled out at
     creation) hold over **20%**
   - the developer has minted more than **20** tokens, which reads as a
@@ -131,7 +131,9 @@ at all. Everyone else gets silence, not an error.
   socket can drop, and a dropped socket nobody notices is a copy trader that
   silently stopped copying — so the sweep continues, finds almost everything
   already claimed, and catches whatever fell through a reconnect. Every path
-  claims a signature before it spends, so one transaction is copied once
+  persists a target-scoped receipt before attempting a trade. Unreadable RPC
+  receipts retry; a crash after the durable claim can miss a copy, and the bot
+  favors avoiding repeated spending. Unknown history gaps pause the target
 - **A wallet that floods is dropped rather than throttled.** Subscribing to a
   program or an exchange wallet pushes hundreds of transactions a second, and a
   read per transaction buries the endpoint in rate-limit errors within one —
@@ -270,8 +272,10 @@ at all. Everyone else gets silence, not an error.
 
 **1. Install**
 
+Use Node 22 or 24. The supported minimum for the project's TSX commands is Node 20.18.
+
 ```bash
-npm install
+npm ci
 ```
 
 **2. Configure**
@@ -287,6 +291,17 @@ Fill in three things at minimum:
 | `BOT_TOKEN` | [@BotFather](https://t.me/BotFather) → `/newbot` |
 | `OWNER_IDS` | [@userinfobot](https://t.me/userinfobot) → your numeric ID |
 | `SOLANA_RPC_URL` | Helius, QuickNode, or Triton — see the warning below |
+
+Jupiter requests use `https://api.jup.ag`. Optionally set `JUPITER_API_KEY` from
+the [Jupiter Developer Platform](https://developers.jup.ag/docs/portal/migration)
+for the keyed allowance. Quotes, swaps, prices and token metadata share one
+queue: requests start at least 2000 ms apart without a key, or 1000 ms apart
+with a key by default. Set `JUPITER_REQUEST_INTERVAL_MS` to match your plan;
+zero is intended for offline fixtures. Each request's timeout includes queue
+wait, so busy keyless batches can return unavailable prices or metadata, or
+fail to obtain a quote. Expired requests leave the queue without sending.
+`JUPITER_API_BASE_URL` accepts an HTTPS origin for an intentional gateway proxy;
+the key is sent only to that origin, and redirects are refused.
 
 **3. Run**
 
@@ -380,7 +395,7 @@ you can configure.
 | Master key | Random 32 bytes in `data/vault.key` at 0600, held in one closure, zeroed on shutdown |
 | Secrets in chat | Private keys and seed phrases are deleted from the chat on receipt; exports self-destruct after 60s |
 | Logs | A redaction filter strips anything shaped like a private key before it's written |
-| Access | Non-owner updates are dropped without a reply |
+| Access | Only owner updates in private chats are accepted; group and channel updates are dropped |
 | Destructive actions | Every write operation requires a second confirming tap |
 
 **What this does not protect against: anyone who can read the data directory.**
@@ -495,10 +510,10 @@ Past +25% the screen says so in bold.
 npm run check
 ```
 
-Runs three layers:
+Runs offline checks, also enforced on pull requests by GitHub Actions:
 
 - `typecheck` — full TypeScript strict-mode pass
-- `smoke` — 157 offline assertions: vault crypto (round-trip, unique IVs, tamper
+- `smoke` — the existing offline suite: vault crypto (round-trip, unique IVs, tamper
   rejection, dropping a passphrase without losing a key, a key file that is
   wrong or missing being refused loudly, and a vault that opens itself at boot),
   wallet
@@ -514,7 +529,16 @@ Runs three layers:
   caught here rather than in Telegram), a check that every button the keyboards
   emit reaches a route — a dead button looks exactly like a slow one — address
   parsing, concurrency helpers, log redaction
-- `netcheck` — 20 live read-only checks against Solana RPC, DexScreener, Jupiter,
+- `regressions` — mocked transaction responses, automation failures, vault
+  migration write failures, private-chat access, expiring and changed-context
+  confirmations, incomplete portfolio reads, copy-event retries and restart
+  receipts, cancellation during a transaction build, partial-sale cost basis,
+  Token-2022 safety, builder message validation, and ambiguous history repair.
+  These tests never contact Telegram or an RPC.
+
+Run `npm run check:live` to add the network checks, or run them individually:
+
+- `netcheck` — live read-only checks against Solana RPC, DexScreener, Jupiter,
   PumpPortal and the pump.fun program, including that Jupiter can still route a
   token on its bonding curve — a fallback nobody verifies is a fallback that
   fails the first time it is needed
@@ -594,10 +618,16 @@ src/
 ### On pump.fun execution
 
 Transactions are built by PumpPortal's *local* API and signed here, with keys
-that never leave the process. No third party can move your funds. The upside over
-hand-rolling the instructions is that pump.fun changes its program layout without
-notice — account ordering, the creator-vault PDA — and that stays their problem
-rather than becoming a wave of failed transactions on your side.
+that never leave the process. Signing authorizes the entire returned message.
+Before signing, the bot checks the sole signer and payer, compute fee ceiling,
+recognized venue envelope, and permitted direct SOL/token setup instructions.
+Jupiter quotes are also bound to the requested mints, amount, slippage and mode.
+
+These checks do not decode every swap account or CPI debit. PumpPortal currently
+uses an opaque wrapper with no published IDL found in this review; that program
+and both builders remain trust dependencies for complete swap intent. Unknown
+programs and unresolved lookup-table program or direct-debit accounts are refused.
+See [the deeper review](DEEP_REVIEW.md) for evidence and remaining work.
 
 Quoting is done independently by reading the bonding curve directly, so the price
 on screen is the real on-chain price rather than whatever an API reports.

@@ -14,7 +14,9 @@ import { positionPnl, entryPrice, accountPnl } from '../../services/pnl.js';
 import { getSolBalances, LAMPORTS } from '../../chains/solana.js';
 import { fmtAmount, fmtUsd, fmtPriceUsd, errMessage } from '../../util.js';
 import { log } from '../../logger.js';
-import { tokenId, setPending, clearSession, stageConfirmation } from '../session.js';
+import { tokenId, setPending, clearAllSessions, stageConfirmation } from '../session.js';
+import { withExecutionMaintenance } from '../../services/execution.js';
+import { stopSubscriptions } from '../../services/copytrade.js';
 import {
   mainMenu,
   renderPortfolio,
@@ -34,11 +36,7 @@ import { InlineKeyboard, InputFile } from 'grammy';
  * Edit the message a callback came from, transparently handling the fact that
  * token cards are photos (caption) while every other screen is text.
  */
-export async function render(
-  ctx: Context,
-  text: string,
-  keyboard?: InlineKeyboard,
-): Promise<void> {
+export async function render(ctx: Context, text: string, keyboard?: InlineKeyboard): Promise<void> {
   const msg = ctx.callbackQuery?.message;
   const opts = {
     parse_mode: 'HTML' as const,
@@ -71,7 +69,7 @@ export async function showHome(ctx: Context): Promise<void> {
         '',
         'This vault was made before passphrases were removed, and its keys are still sealed under yours.',
         '',
-        'Send it now. Everything gets re-sealed with a key the bot keeps itself, and you will never be asked again.',
+        'Send it now. The verified key is saved so the bot can open your wallets after a restart, and you will never be asked again.',
       ].join('\n'),
       { parse_mode: 'HTML' },
     );
@@ -102,7 +100,11 @@ export async function showHome(ctx: Context): Promise<void> {
     '',
     // the boot log says this too, but nobody reads a boot log
     ...(config.solana.isPublicRpc
-      ? ['⚠️ <b>Public RPC</b> — balance screens will stall.', '<i>Set SOLANA_RPC_URL to a private endpoint.</i>', '']
+      ? [
+          '⚠️ <b>Public RPC</b> — balance screens will stall.',
+          '<i>Set SOLANA_RPC_URL to a private endpoint.</i>',
+          '',
+        ]
       : []),
     '<i>Paste a token address to trade it.</i>',
   ].join('\n');
@@ -137,10 +139,13 @@ export async function showPortfolio(ctx: Context): Promise<void> {
 
   try {
     const portfolio = await buildPortfolio({ group: settings.activeGroup, includeTokens: true });
-    // marked from the wallets on screen, so the line agrees with the number
-    // above it; the dedicated screen always reads the whole account
+    // The ledger is account-wide. A filtered or unreadable set of holdings
+    // cannot be compared to its full cost without inventing losses.
     const held = openValueSol(portfolio);
-    const pnl = accountPnl(db.positions(), held.marks, portfolio.totals.solPriceUsd, held.unpriced);
+    const pnl =
+      settings.activeGroup === null && portfolio.errors.length === 0
+        ? accountPnl(db.positions(), held.marks, portfolio.totals.solPriceUsd, held.unpriced)
+        : undefined;
 
     await render(
       ctx,
@@ -148,7 +153,11 @@ export async function showPortfolio(ctx: Context): Promise<void> {
       portfolioKeyboard(),
     );
   } catch (err) {
-    await render(ctx, `❌ Could not load the portfolio.\n\n<i>${h(errMessage(err))}</i>`, backButton());
+    await render(
+      ctx,
+      `❌ Could not load the portfolio.\n\n<i>${h(errMessage(err))}</i>`,
+      backButton(),
+    );
   }
 }
 
@@ -192,7 +201,8 @@ export async function rebuildPnl(ctx: Context): Promise<void> {
           `· <b>${h(r.symbol ?? r.mint.slice(0, 6))}</b>  ${fmtAmount(r.was, 4)} → <b>${fmtAmount(r.now, 4)} ◎</b>`,
         );
       }
-      if (result.repaired.length > 12) lines.push(`<i>…and ${result.repaired.length - 12} more</i>`);
+      if (result.repaired.length > 12)
+        lines.push(`<i>…and ${result.repaired.length - 12} more</i>`);
     } else if (result.complete) {
       lines.push('<i>Nothing was missing — every recorded sale already matches the chain.</i>');
     }
@@ -211,8 +221,8 @@ export async function rebuildPnl(ctx: Context): Promise<void> {
         result.walletsRead === 0
           ? '⚠️ <b>Nothing could be read.</b> This is not an all-clear — the scan never got going.'
           : `⚠️ <b>Only part of the history was read</b> (${result.walletsRead}/${result.walletsTotal} wallets, ` +
-            `${result.transactionsScanned.toLocaleString('en-US')} transactions). More may still be missing.`,
-        '<i>The provider rate limited the scan. Run it again — it picks up whatever it finds.</i>',
+              `${result.transactionsScanned.toLocaleString('en-US')} transactions). More may still be missing.`,
+        '<i>Some history was unavailable or its sale proceeds could not be attributed. Unsupported or ambiguous transactions remain incomplete.</i>',
       );
       if (result.failures.length > 0) {
         lines.push(`<i>${h(result.failures.slice(0, 2).join(' | '))}</i>`);
@@ -231,7 +241,8 @@ export async function rebuildPnl(ctx: Context): Promise<void> {
       ctx,
       lines.join('\n'),
       new InlineKeyboard()
-        .text('📈 Back to P&L', 'pnl').primary()
+        .text('📈 Back to P&L', 'pnl')
+        .primary()
         .text('🔧 Run again', 'pnl_rebuild')
         .row(),
     );
@@ -252,6 +263,11 @@ export async function showPnl(ctx: Context): Promise<void> {
 
   try {
     const portfolio = await buildPortfolio({ group: null, includeTokens: true });
+    if (portfolio.errors.length > 0) {
+      throw new Error(
+        `Incomplete portfolio: ${portfolio.errors.slice(0, 3).join(' | ')} Try refreshing when balances and prices are available.`,
+      );
+    }
     const held = openValueSol(portfolio);
     const pnl = accountPnl(db.positions(), held.marks, portfolio.totals.solPriceUsd, held.unpriced);
 
@@ -267,7 +283,11 @@ export async function showPnl(ctx: Context): Promise<void> {
       pnlKeyboard(),
     );
   } catch (err) {
-    await render(ctx, `❌ Could not work out the P&amp;L.\n\n<i>${h(errMessage(err))}</i>`, backButton());
+    await render(
+      ctx,
+      `❌ Could not work out the P&amp;L.\n\n<i>${h(errMessage(err))}</i>`,
+      backButton(),
+    );
   }
 }
 
@@ -282,20 +302,32 @@ export async function showPositions(ctx: Context): Promise<void> {
     if (positions.length === 0) {
       await render(
         ctx,
-        `<b>🪙 Positions</b>\n\n<i>No token positions across the selected wallets.</i>\n\n${updatedStamp()}`,
+        `<b>🪙 Positions</b>\n\n<i>${portfolio.errors.length > 0 ? 'Token holdings could not be read completely. Refresh before relying on this view.' : 'No token positions across the selected wallets.'}</i>\n\n${updatedStamp()}`,
         new InlineKeyboard()
-          .text('🔄 Refresh', 'positions').primary()
-          .text('📈 P&L', 'pnl').primary()
+          .text('🔄 Refresh', 'positions')
+          .primary()
+          .text('📈 P&L', 'pnl')
+          .primary()
           .row()
           .text('← Menu', 'home'),
       );
       return;
     }
 
-    const owned = positions.filter((p) => p.boughtHere);
-    const unsolicited = positions.filter((p) => !p.boughtHere);
+    const owned = positions.filter(p => p.boughtHere);
+    const unsolicited = positions.filter(p => !p.boughtHere);
 
     const lines = ['<b>🪙 Positions</b>', ''];
+    if (settings.activeGroup !== null)
+      lines.push(
+        `<i>Group ${h(settings.activeGroup)} holdings; account-wide profit is on P&amp;L.</i>`,
+        '',
+      );
+    if (portfolio.errors.length > 0)
+      lines.push(
+        '<i>Known holdings only. Valuation is incomplete; profit figures are withheld.</i>',
+        '',
+      );
     const kb = new InlineKeyboard();
 
     const solPrice = portfolio.totals.solPriceUsd;
@@ -313,13 +345,24 @@ export async function showPositions(ctx: Context): Promise<void> {
     for (const p of owned.slice(0, 12)) {
       const record = db.position(p.mint);
       const valueSol = solPrice > 0 ? p.totalUsd / solPrice : 0;
-      const pnl = record && record.investedSol > 0 ? positionPnl(record, valueSol) : null;
+      const pnl =
+        settings.activeGroup === null &&
+        portfolio.errors.length === 0 &&
+        !p.unpriced &&
+        solPrice > 0 &&
+        record &&
+        record.investedSol > 0
+          ? positionPnl(record, valueSol)
+          : null;
 
       const light = pnl === null ? '·' : pnl.netSol >= 0 ? '🟢' : '🔴';
-      const move = pnl === null ? '' : `  <b>${pnl.netPct >= 0 ? '+' : ''}${pnl.netPct.toFixed(1)}%</b>`;
-      lines.push(`${light} <b>${h(p.symbol)}</b>  ${fmtUsd(p.totalUsd)}${move}`);
+      const move =
+        pnl === null ? '' : `  <b>${pnl.netPct >= 0 ? '+' : ''}${pnl.netPct.toFixed(1)}%</b>`;
+      lines.push(
+        `${light} <b>${h(p.symbol)}</b>  ${p.unpriced ? 'value unavailable' : fmtUsd(p.totalUsd)}${move}`,
+      );
 
-      if (record && record.investedSol > 0) {
+      if (record && pnl) {
         const nowSol = p.totalAmount > 0 ? valueSol / p.totalAmount : null;
         const entry = entryPrice(record);
         if (entry !== null) {
@@ -327,9 +370,9 @@ export async function showPositions(ctx: Context): Promise<void> {
           lines.push(`   entry ${fmtPriceUsd(entry * solPrice)}${arrow}`);
         }
 
-        const banked = pnl!.realisedSol > 0 ? ` · banked ${pnl!.realisedSol.toFixed(3)} ◎` : '';
+        const banked = pnl.realisedSol > 0 ? ` · banked ${pnl.realisedSol.toFixed(3)} ◎` : '';
         lines.push(
-          `   in ${pnl!.investedSol.toFixed(3)} ◎ · worth ${valueSol.toFixed(3)} ◎${banked}`,
+          `   in ${pnl.investedSol.toFixed(3)} ◎ · worth ${valueSol.toFixed(3)} ◎${banked}`,
         );
       }
 
@@ -351,10 +394,16 @@ export async function showPositions(ctx: Context): Promise<void> {
      */
     if (unsolicited.length > 0) {
       lines.push('');
-      lines.push(`<b>📥 Arrived on their own</b> — ${unsolicited.length} token${unsolicited.length === 1 ? '' : 's'}`);
-      lines.push('<i>Not bought here. Airdropped tokens are usually worthless and sometimes bait; "Sell everything" leaves them alone.</i>');
+      lines.push(
+        `<b>📥 Arrived on their own</b> — ${unsolicited.length} token${unsolicited.length === 1 ? '' : 's'}`,
+      );
+      lines.push(
+        '<i>Not bought here. Airdropped tokens are usually worthless and sometimes bait; "Sell everything" leaves them alone.</i>',
+      );
       for (const p of unsolicited.slice(0, 5)) {
-        lines.push(`· ${h(p.symbol)} — ${fmtAmount(p.totalAmount, 2)}${p.totalUsd > 0 ? ` · ${fmtUsd(p.totalUsd)}` : ' · no market'}`);
+        lines.push(
+          `· ${h(p.symbol)} — ${fmtAmount(p.totalAmount, 2)}${p.totalUsd > 0 ? ` · ${fmtUsd(p.totalUsd)}` : ' · no market'}`,
+        );
       }
       if (unsolicited.length > 5) lines.push(`<i>…and ${unsolicited.length - 5} more</i>`);
     }
@@ -402,7 +451,9 @@ export async function showFactoryReset(ctx: Context): Promise<void> {
 
   // a wipe takes these too, and they are invisible everywhere else
   if (legacy.length > 0) {
-    lines.push(`<b>${legacy.length}</b> legacy wallet${legacy.length === 1 ? '' : 's'} from the multi-chain version`);
+    lines.push(
+      `<b>${legacy.length}</b> legacy wallet${legacy.length === 1 ? '' : 's'} from the multi-chain version`,
+    );
     lines.push('<i>Settings → Export legacy keys, before you do this.</i>');
   }
 
@@ -416,7 +467,7 @@ export async function showFactoryReset(ctx: Context): Promise<void> {
   // the number that should stop someone who is about to make a mistake
   if (wallets.length > 0) {
     try {
-      const balances = await getSolBalances(wallets.map((w) => w.address));
+      const balances = await getSolBalances(wallets.map(w => w.address));
       let total = 0n;
       let funded = 0;
       for (const lamports of balances.values()) {
@@ -427,8 +478,12 @@ export async function showFactoryReset(ctx: Context): Promise<void> {
       const sol = Number(total) / LAMPORTS;
       lines.push('');
       if (total > 0n) {
-        lines.push(`⚠️ <b>These wallets currently hold ${fmtAmount(sol, 6)} SOL</b> across ${funded} wallet${funded === 1 ? '' : 's'}.`);
-        lines.push('<b>That balance becomes permanently unspendable.</b> Sweep it to a wallet you control first, or export the keys.');
+        lines.push(
+          `⚠️ <b>These wallets currently hold ${fmtAmount(sol, 6)} SOL</b> across ${funded} wallet${funded === 1 ? '' : 's'}.`,
+        );
+        lines.push(
+          '<b>That balance becomes permanently unspendable.</b> Sweep it to a wallet you control first, or export the keys.',
+        );
       } else {
         lines.push('<i>No SOL balance found in these wallets.</i>');
       }
@@ -456,15 +511,17 @@ export async function executeFactoryReset(ctx: Context, text: string): Promise<v
     return;
   }
 
-  const had = allWallets().length;
+  const had = await withExecutionMaintenance(async () => {
+    await stopSubscriptions();
+    const count = allWallets().length;
+    destroyVault();
+    db.wipe();
+    clearAllSessions();
 
-  destroyVault();
-  db.wipe();
-  clearSession(ctx.from!.id);
-
-  // A reset that left no vault would leave the bot unusable until a restart,
-  // since nothing else creates one any more. Start the empty one right away.
-  initVaultWithKeyfile();
+    // Start the empty vault only after old operations have stopped using it.
+    initVaultWithKeyfile();
+    return count;
+  });
 
   log.warn(`Factory reset performed. ${had} wallets and the vault were deleted.`);
 
@@ -526,12 +583,16 @@ export async function showLegacyKeys(ctx: Context): Promise<void> {
   if (legacy.length > 20) lines.push(`<i>…and ${legacy.length - 20} more</i>`);
 
   lines.push('');
-  lines.push('Download the keys, import them into a wallet that speaks that chain, then delete them here.');
+  lines.push(
+    'Download the keys, import them into a wallet that speaks that chain, then delete them here.',
+  );
 
   const kb = new InlineKeyboard()
-    .text('🔑 Download keys', 'legacy_download').success()
+    .text('🔑 Download keys', 'legacy_download')
+    .success()
     .row()
-    .text('🗑 Delete them', 'legacy_forget').danger()
+    .text('🗑 Delete them', 'legacy_forget')
+    .danger()
     .row()
     .text('← Settings', 'settings');
 
@@ -552,7 +613,7 @@ export async function downloadLegacyKeys(ctx: Context): Promise<void> {
       return;
     }
 
-    const body = rows.map((r) => `${r.label}\t${r.chain}\t${r.address}\t${r.secret}`).join('\n');
+    const body = rows.map(r => `${r.label}\t${r.chain}\t${r.address}\t${r.secret}`).join('\n');
     const file = Buffer.from(`label\tchain\taddress\tprivate_key\n${body}\n`, 'utf8');
 
     const sent = await ctx.replyWithDocument(new InputFile(file, 'legacy-keys.tsv'), {
@@ -577,15 +638,23 @@ export async function promptForgetLegacy(ctx: Context): Promise<void> {
     return;
   }
 
-  const id = stageConfirmation(ctx.from!.id, `delete ${legacy.length} legacy wallets`, async (confirmCtx) => {
-    const removed = forgetLegacyWallets();
-    log.warn(`Deleted ${removed} legacy wallet record(s).`);
-    await render(
-      confirmCtx,
-      `🗑 Deleted <b>${removed}</b> legacy wallet record${removed === 1 ? '' : 's'}.`,
-      backButton('settings'),
-    );
-  });
+  const id = stageConfirmation(
+    ctx.from!.id,
+    `delete ${legacy.length} legacy wallets`,
+    async confirmCtx => {
+      const removed = await withExecutionMaintenance(async () => {
+        const count = forgetLegacyWallets();
+        clearAllSessions();
+        return count;
+      });
+      log.warn(`Deleted ${removed} legacy wallet record(s).`);
+      await render(
+        confirmCtx,
+        `🗑 Deleted <b>${removed}</b> legacy wallet record${removed === 1 ? '' : 's'}.`,
+        backButton('settings'),
+      );
+    },
+  );
 
   await render(
     ctx,

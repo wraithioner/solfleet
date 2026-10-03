@@ -19,7 +19,14 @@ import {
 } from '../../store/wallets.js';
 import { getSolBalance } from '../../chains/solana.js';
 import { errMessage, fmtAmount, shortAddr } from '../../util.js';
-import { setPending, shortWalletId, walletFromShortId, stageConfirmation } from '../session.js';
+import {
+  setPending,
+  shortWalletId,
+  walletFromShortId,
+  stageConfirmation,
+  clearAllSessions,
+} from '../session.js';
+import { withExecutionMaintenance } from '../../services/execution.js';
 import {
   renderWalletList,
   walletsKeyboard,
@@ -105,10 +112,10 @@ export async function promptImportKey(ctx: Context): Promise<void> {
 export async function handleImportKey(ctx: Context, text: string): Promise<void> {
   try {
     const w = importPrivateKey(text);
-    await ctx.reply(
-      `✅ Imported <b>${h(w.label)}</b>\n<code>${h(w.address)}</code>`,
-      { parse_mode: 'HTML', reply_markup: new InlineKeyboard().text('👛 Wallets', 'wallets') },
-    );
+    await ctx.reply(`✅ Imported <b>${h(w.label)}</b>\n<code>${h(w.address)}</code>`, {
+      parse_mode: 'HTML',
+      reply_markup: new InlineKeyboard().text('👛 Wallets', 'wallets'),
+    });
   } catch (err) {
     await ctx.reply(`❌ ${errMessage(err)}`);
   }
@@ -116,11 +123,14 @@ export async function handleImportKey(ctx: Context, text: string): Promise<void>
 
 export async function promptDerive(ctx: Context): Promise<void> {
   const kb = new InlineKeyboard()
-    .text('×5', 'derive:5').text('×10', 'derive:10')
+    .text('×5', 'derive:5')
+    .text('×10', 'derive:10')
     .row()
-    .text('×25', 'derive:25').text('×50', 'derive:50')
+    .text('×25', 'derive:25')
+    .text('×50', 'derive:50')
     .row()
-    .text('🔑 Show seed phrase', 'show_mnemonic').text('📥 Import seed', 'import_mnemonic')
+    .text('🔑 Show seed phrase', 'show_mnemonic')
+    .text('📥 Import seed', 'import_mnemonic')
     .row()
     .text('← Back', 'wallets');
 
@@ -131,7 +141,7 @@ export async function promptDerive(ctx: Context): Promise<void> {
       '',
       'All derived wallets come from one seed phrase, so a single backup restores every wallet.',
       '',
-      'Derivation uses <code>m/44\'/501\'/i\'/0\'</code> — Phantom\'s default path, so the same phrase restores these wallets in Phantom or Solflare.',
+      "Derivation uses <code>m/44'/501'/i'/0'</code> — Phantom's default path, so the same phrase restores these wallets in Phantom or Solflare.",
     ].join('\n'),
     kb,
   );
@@ -253,7 +263,9 @@ export async function handleRename(ctx: Context, walletId: string, label: string
 export async function handleGroup(ctx: Context, walletId: string, group: string): Promise<void> {
   try {
     const w = addToGroup(walletId, group);
-    await ctx.reply(`✅ <b>${h(w.label)}</b> is now in: ${h(w.groups.join(', '))}`, { parse_mode: 'HTML' });
+    await ctx.reply(`✅ <b>${h(w.label)}</b> is now in: ${h(w.groups.join(', '))}`, {
+      parse_mode: 'HTML',
+    });
   } catch (err) {
     await ctx.reply(`❌ ${errMessage(err)}`);
   }
@@ -263,9 +275,16 @@ export async function promptRemove(ctx: Context, walletId: string): Promise<void
   const w = walletById(walletId);
   if (!w) return;
 
-  const id = stageConfirmation(ctx.from!.id, `remove ${w.label}`, async (confirmCtx) => {
-    removeWallet(walletId);
-    await render(confirmCtx, `🗑 Removed <b>${h(w.label)}</b>.`, new InlineKeyboard().text('👛 Wallets', 'wallets'));
+  const id = stageConfirmation(ctx.from!.id, `remove ${w.label}`, async confirmCtx => {
+    await withExecutionMaintenance(async () => {
+      removeWallet(walletId);
+      clearAllSessions();
+    });
+    await render(
+      confirmCtx,
+      `🗑 Removed <b>${h(w.label)}</b>.`,
+      new InlineKeyboard().text('👛 Wallets', 'wallets'),
+    );
   });
 
   await render(
@@ -312,7 +331,9 @@ export async function exportAddresses(ctx: Context): Promise<void> {
     return;
   }
 
-  const body = wallets.map((w) => `${w.label}\t${w.address}\t${w.kind}\t${w.groups.join('|')}`).join('\n');
+  const body = wallets
+    .map(w => `${w.label}\t${w.address}\t${w.kind}\t${w.groups.join('|')}`)
+    .join('\n');
   const file = Buffer.from(`label\taddress\tchain\tgroups\n${body}\n`, 'utf8');
 
   await ctx.replyWithDocument(new InputFile(file, 'wallet-addresses.tsv'), {
@@ -327,7 +348,9 @@ export async function showGroupFilter(ctx: Context): Promise<void> {
   const gs = allGroups();
   const active = db.settings().activeGroup;
 
-  const kb = new InlineKeyboard().text(active === null ? '● All wallets' : '○ All wallets', 'setgroup:__all__').row();
+  const kb = new InlineKeyboard()
+    .text(active === null ? '● All wallets' : '○ All wallets', 'setgroup:__all__')
+    .row();
   for (const g of gs) {
     kb.text(`${active === g ? '●' : '○'} ${g}`, `setgroup:${g}`).row();
   }
@@ -347,7 +370,9 @@ export async function showGroupFilter(ctx: Context): Promise<void> {
 
 export async function setGroupFilter(ctx: Context, group: string): Promise<void> {
   db.updateSettings({ activeGroup: group === '__all__' ? null : group });
-  await ctx.answerCallbackQuery({ text: group === '__all__' ? 'Targeting all wallets' : `Targeting ${group}` });
+  await ctx.answerCallbackQuery({
+    text: group === '__all__' ? 'Targeting all wallets' : `Targeting ${group}`,
+  });
   await showGroupFilter(ctx);
 }
 

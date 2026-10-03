@@ -30,11 +30,9 @@ const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 const BONK = 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263';
 const WSOL = 'So11111111111111111111111111111111111111112';
 
-const { endpoints: endpointsForCheck } = await import('../src/config.js');
-
 console.log('\n── Solana RPC ──');
 
-const { rpc, getSolBalances, getSplBalances } = await import('../src/chains/solana.js');
+const { rpc, getSolBalances } = await import('../src/chains/solana.js');
 
 await check('getLatestBlockhash', async () => {
   const { blockhash } = await rpc().getLatestBlockhash();
@@ -78,7 +76,8 @@ await check('mint + freeze authority parsing', async () => {
   const usdc = await getMintAuthorities(USDC);
   const bonk = await getMintAuthorities(BONK);
   if (!usdc || !bonk) throw new Error('could not read a mint account');
-  if (!usdc.mintAuthority || !usdc.freezeAuthority) throw new Error('USDC should have both authorities active');
+  if (!usdc.mintAuthority || !usdc.freezeAuthority)
+    throw new Error('USDC should have both authorities active');
   if (bonk.mintAuthority || bonk.freezeAuthority) throw new Error('BONK should have both revoked');
   if (bonk.decimals !== 5) throw new Error(`BONK decimals read as ${bonk.decimals}, expected 5`);
   return 'USDC active / BONK revoked, decimals correct';
@@ -86,12 +85,12 @@ await check('mint + freeze authority parsing', async () => {
 
 console.log('\n── Token info pipeline ──');
 
-const { getTokenInfo, extractTokenAddress } = await import('../src/services/tokeninfo.js');
+const { getTokenInfo } = await import('../src/services/tokeninfo.js');
 
 await check('DexScreener market data (BONK)', async () => {
   const info = await getTokenInfo(BONK, 'solana');
   if (!info.priceUsd) throw new Error('no price returned');
-  return `${info.symbol} $${info.priceUsd.toExponential(3)} · mcap ${info.marketCap ? '$' + Math.round(info.marketCap).toLocaleString() : 'n/a'} · vol24h ${info.volume24h ? '$' + Math.round(info.volume24h).toLocaleString() : 'n/a'}`;
+  return `${info.symbol} $${info.priceUsd.toExponential(3)} · mcap ${info.marketCap ? `$${Math.round(info.marketCap).toLocaleString()}` : 'n/a'} · vol24h ${info.volume24h ? `$${Math.round(info.volume24h).toLocaleString()}` : 'n/a'}`;
 });
 
 await check('holder distribution (BONK)', async () => {
@@ -101,7 +100,7 @@ await check('holder distribution (BONK)', async () => {
   // That is a configuration limit, not a defect — what matters is that the bot
   // reports it as unknown rather than silently implying a clean distribution.
   if (info.holdersUnavailable) {
-    if (!info.warnings.some((w) => /Holder distribution unavailable/.test(w))) {
+    if (!info.warnings.some(w => /Holder distribution unavailable/.test(w))) {
       throw new Error('holder failure was not surfaced as a warning');
     }
     return 'RPC throttled the query — correctly surfaced as "unknown" (set a private SOLANA_RPC_URL)';
@@ -110,7 +109,8 @@ await check('holder distribution (BONK)', async () => {
   // the launch index supplies concentration when our own query is refused, so
   // an empty list with a figure beside it is covered rather than broken
   if (!info.holders || info.holders.length === 0) {
-    if (info.top10Pct !== undefined) return `RPC returned none; the launch index gives top10 = ${info.top10Pct.toFixed(1)}%`;
+    if (info.top10Pct !== undefined)
+      return `RPC returned none; the launch index gives top10 = ${info.top10Pct.toFixed(1)}%`;
     throw new Error('no holders and no failure flag');
   }
   return `${info.holders.length} top accounts, top10 = ${info.top10Pct?.toFixed(1)}%`;
@@ -136,11 +136,13 @@ await check('token age comes from the first market, not the deepest pool', async
     pairCreatedAt?: number;
     liquidity?: { usd?: number };
   }>;
-  const mine = pairs.filter((p) => p.baseToken?.address === BONK && p.pairCreatedAt);
+  const mine = pairs.filter(p => p.baseToken?.address === BONK && p.pairCreatedAt);
   if (mine.length === 0) throw new Error('no dated pairs returned — the endpoint changed shape');
 
-  const oldest = Math.min(...mine.map((p) => p.pairCreatedAt!));
-  const deepest = mine.reduce((a, b) => ((b.liquidity?.usd ?? 0) > (a.liquidity?.usd ?? 0) ? b : a));
+  const oldest = Math.min(...mine.map(p => p.pairCreatedAt!));
+  const deepest = mine.reduce((a, b) =>
+    (b.liquidity?.usd ?? 0) > (a.liquidity?.usd ?? 0) ? b : a,
+  );
 
   const info = await getTokenInfo(BONK, 'solana');
   if (info.pairCreatedAt !== oldest) {
@@ -148,7 +150,10 @@ await check('token age comes from the first market, not the deepest pool', async
   }
 
   const days = (t: number) => ((Date.now() - t) / 86_400_000).toFixed(1);
-  const gap = deepest.pairCreatedAt !== oldest ? `, deepest pool would say ${days(deepest.pairCreatedAt!)}d` : '';
+  const gap =
+    deepest.pairCreatedAt !== oldest
+      ? `, deepest pool would say ${days(deepest.pairCreatedAt!)}d`
+      : '';
   return `${mine.length} pairs, first traded ${days(oldest)}d ago${gap}`;
 });
 
@@ -198,11 +203,14 @@ await check('launch index covers a fresh pump.fun launch', async () => {
   const { getRugcheck } = await import('../src/services/rugcheck.js');
   const res = await fetch('https://api.dexscreener.com/token-profiles/latest/v1');
   const profiles = (await res.json()) as Array<{ chainId: string; tokenAddress: string }>;
-  const fresh = profiles.find((p) => p.chainId === 'solana' && p.tokenAddress.endsWith('pump'));
+  const fresh = profiles.find(p => p.chainId === 'solana' && p.tokenAddress.endsWith('pump'));
   if (!fresh) return 'no pump.fun token in the current feed — skipped';
 
   const report = await getRugcheck(fresh.tokenAddress, 8000);
-  if (!report) throw new Error(`no report for ${fresh.tokenAddress} — fresh launches are the ones copy trading buys`);
+  if (!report)
+    throw new Error(
+      `no report for ${fresh.tokenAddress} — fresh launches are the ones copy trading buys`,
+    );
   return `${fresh.tokenAddress.slice(0, 6)}… score ${report.score}, top10 ${report.top10Pct?.toFixed(1) ?? '?'}%, ${report.insiderWallets ?? 0} insider wallets`;
 });
 
@@ -214,11 +222,12 @@ await check('launch index covers a fresh pump.fun launch', async () => {
  */
 await check('a graduated token is judged on holders, not on its own pool', async () => {
   const { getRugcheck } = await import('../src/services/rugcheck.js');
-  const res = await fetch('https://api.dexscreener.com/token-pairs/v1/solana/' + BONK);
+  const res = await fetch(`https://api.dexscreener.com/token-pairs/v1/solana/${BONK}`);
   void res;
   const report = await getRugcheck(BONK, 8000);
   if (!report || report.top10Pct === undefined) throw new Error('no concentration figure');
-  if (report.top10Pct > 99) throw new Error(`top10 of ${report.top10Pct}% — the pool is being counted again`);
+  if (report.top10Pct > 99)
+    throw new Error(`top10 of ${report.top10Pct}% — the pool is being counted again`);
   return `top 10 hold ${report.top10Pct.toFixed(1)}% with pools excluded`;
 });
 
@@ -295,10 +304,12 @@ const throwaway = Keypair.generate().publicKey.toBase58();
  */
 let pumpMint: string | null = null;
 await check('discover a live pump.fun token', async () => {
-  const profiles = await fetch('https://api.dexscreener.com/token-profiles/latest/v1').then((r) => r.json());
+  const profiles = await fetch('https://api.dexscreener.com/token-profiles/latest/v1').then(r =>
+    r.json(),
+  );
   const candidate = (profiles as Array<{ chainId: string; tokenAddress: string }>)
-    .filter((p) => p.chainId === 'solana' && p.tokenAddress?.endsWith('pump'))
-    .map((p) => p.tokenAddress)[0];
+    .filter(p => p.chainId === 'solana' && p.tokenAddress?.endsWith('pump'))
+    .map(p => p.tokenAddress)[0];
   if (!candidate) throw new Error('none found in the latest profiles feed');
   pumpMint = candidate;
   return `${candidate.slice(0, 12)}…`;
@@ -321,7 +332,11 @@ await check('build a single buy transaction', async () => {
 
 await check('build a 3-transaction bundle', async () => {
   if (!pumpMint) throw new Error('skipped — no live pump token discovered');
-  const keys = [throwaway, Keypair.generate().publicKey.toBase58(), Keypair.generate().publicKey.toBase58()];
+  const keys = [
+    throwaway,
+    Keypair.generate().publicKey.toBase58(),
+    Keypair.generate().publicKey.toBase58(),
+  ];
   const txs = await buildTradeBundle(
     keys.map((publicKey, i) => ({
       publicKey,
@@ -365,7 +380,9 @@ const { fetchBondingCurve, detectPool } = await import('../src/trade/curve.js');
 
 await check('read a graduated token curve (BONK has none)', async () => {
   const curve = await fetchBondingCurve(BONK);
-  return curve ? `complete=${curve.complete}` : 'no curve account (not a pump.fun token) — handled as null';
+  return curve
+    ? `complete=${curve.complete}`
+    : 'no curve account (not a pump.fun token) — handled as null';
 });
 
 await check('detectPool routes correctly', async () => {
@@ -390,24 +407,31 @@ await check('detectPool routes correctly', async () => {
 await check('Jupiter covers most tokens still on their curve', async () => {
   const res = await fetch('https://api.dexscreener.com/token-profiles/latest/v1');
   const profiles = (await res.json()) as Array<{ chainId: string; tokenAddress: string }>;
-  const candidates = profiles.filter((p) => p.chainId === 'solana').slice(0, 8);
+  const candidates = profiles.filter(p => p.chainId === 'solana').slice(0, 8);
   if (candidates.length === 0) return 'no Solana tokens in the feed — skipped';
 
   let routable = 0;
   let tried = 0;
   for (const c of candidates) {
-    const quote = await fetch(
-      `${endpointsForCheck.jupiterQuote}?inputMint=${WSOL}&outputMint=${c.tokenAddress}` +
-        '&amount=10000000&slippageBps=1500',
-    );
     tried++;
-    if (quote.ok) routable++;
-    await new Promise((r) => setTimeout(r, 150));
+    try {
+      await getQuote({
+        inputMint: WSOL,
+        outputMint: c.tokenAddress,
+        amount: 10_000_000n,
+        slippageBps: 1500,
+      });
+      routable++;
+    } catch {
+      // A missing route or unavailable response does not prove routability.
+    }
   }
 
   const pct = Math.round((routable / tried) * 100);
   if (pct < 50) {
-    throw new Error(`only ${routable}/${tried} tokens routable — the PumpPortal fallback has largely gone`);
+    throw new Error(
+      `only ${routable}/${tried} tokens routable — the PumpPortal fallback has largely gone`,
+    );
   }
   return `${routable}/${tried} routable (${pct}%) — the fallback holds${pct < 100 ? ', though it is not total' : ''}`;
 });
